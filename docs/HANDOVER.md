@@ -76,6 +76,71 @@ without an account can settle any of it, and no automated agent should try.
 separate IP. Enforcement is automated, runs in waves, and associates accounts
 sharing an address. The risk is collateral rather than causal.
 
+## Per-profile network egress (ADR-016), and what is still missing
+
+A profile's `network.json` can now say `"mode": "vpn-required"`, which refuses
+to start the client at all unless `pvpn status` reports traffic actually
+passing — checked at both the shell's `launch.rs` and `cordial-run`'s own
+`main`, so starting the client directly cannot skip it. Read ADR-016 before
+touching any of this; the short version is below, with what to trust and what
+not to.
+
+**What this actually guarantees, and does not.** A `vpn-required` profile will
+never make even Cordial's own client-settings request on the machine's
+ordinary route while believing itself protected. It does **not** isolate two
+profiles running at once from each other — `pvpn`'s tunnel is one, global,
+machine-wide route, and ADR-012's own two-windows-at-once case means a second
+profile running alongside a `vpn-required` one shares whatever route is
+active, VPN or not. Read the mechanism's name literally: a launch gate, not a
+sandbox.
+
+**Why it stops at a gate rather than a namespace, and this is the load-bearing
+fact for whoever picks this up next.** `pvpn` drives Proton's own Linux client,
+which brings its tunnel up as a NetworkManager connection — confirmed by
+reading `bin/pvpn` in the sibling project, not assumed. NetworkManager is a
+system service in the host's own network namespace, so the interface it
+creates lands there regardless of which namespace the command that asked for
+it was run inside. `ip netns exec cordial-<profile> pvpn up` would not produce
+a namespace-scoped tunnel; it would produce the same machine-wide one `pvpn up`
+always produces. A real per-profile tunnel needs `pvpn` (or something
+alongside it) to hand over the WireGuard parameters an established connection
+negotiated, so a second, namespace-local interface can be brought up directly
+with `wg-quick`, bypassing NetworkManager entirely. Nothing in `pvpn` exposes
+that today. **This is the concrete next step**, not "make the namespace work"
+in the abstract — the namespace mechanics themselves (veth, routing, `ip netns
+exec`) are ordinary and not the hard part; extracting a usable tunnel
+definition out of a NetworkManager-managed Proton connection is.
+
+**`unshare --net -- ip link` fails with `Operation not permitted` in an
+ordinary unprivileged shell** — measured directly, on the machine this was
+written on, not assumed from `CAP_NET_ADMIN` documentation. Building the
+namespace path also means deciding how Cordial's packaging (Flatpak in
+particular) gets that capability at all, which ADR-007's existing argument
+against broad sandbox permissions bears on directly.
+
+**`INFERRED`, and deliberately not leaned on:** whether Roblox's own curl
+usage inside the engine honours `http_proxy`/`HTTPS_PROXY` is unresolved —
+the structural path for it to work is real (same process, same `environ`,
+`bionic/mod.rs` does not shim `getenv`), but whether Roblox's code explicitly
+disables that via `CURLOPT_PROXY` was not observed and cannot be without
+tracing a signed-in client. It does not matter for anything built here: the
+decision not to ship an `http_proxy`-shaped setting rests on `RtcIoRna` (the
+real-time game transport) not being HTTP at all, which holds regardless.
+
+**A measurement trap this work tripped over and is worth adding to the list
+above:** `CORDIAL_PROFILE_ROOT` was being guarded by three *different*,
+mutually unaware mutexes — one each in `profile.rs`, `profile_switcher.rs`,
+and (new, in this change) `launch.rs`. Each looked correct in isolation and
+none of them stopped a different file's tests setting the same process-wide
+variable at the same moment. It surfaced as one failure in several runs of
+`cargo test -p cordial-shell`, reading another test's scratch directory back
+mid-assertion — exactly the "passed anyway on the first run" shape
+`profile.rs`'s own tests already warn about. Fixed by sharing one mutex
+(`crate::PROFILE_ROOT_ENV`, declared in `main.rs`) across every file in that
+binary that touches the variable. If a future file needs to point
+`CORDIAL_PROFILE_ROOT` at a scratch directory in a test, use that one rather
+than adding a fourth private mutex that looks like it works.
+
 ## Open threads, with what is actually known
 
 **Fullscreen clips and letterboxes** until you switch workspaces and back. Not
