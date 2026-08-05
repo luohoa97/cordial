@@ -27,6 +27,28 @@ mod shell_config;
 mod updater;
 mod window;
 
+/// Guards `CORDIAL_PROFILE_ROOT` across every test in this binary that points
+/// it at a scratch directory.
+///
+/// **Shared rather than one per file, and that distinction is load-bearing.**
+/// `profile_switcher.rs` and `launch.rs` each used to keep their own private
+/// mutex for this, on the reasonable-looking assumption that a mutex local to
+/// a file's own `mod tests` was enough to stop its own tests interleaving.
+/// It stops that, and does nothing at all about a *different* file's tests
+/// setting the same process-wide variable at the same moment — two locks
+/// guarding one variable serialise nothing against each other. Measured, not
+/// assumed: adding `launch.rs`'s vpn-gate test surfaced this by actually
+/// failing `profile_switcher::tests::the_list_offers_no_profile_that_does_not_exist`
+/// on one run out of several, reading back
+/// `["CordialTest", "evr_l", "main"]` where only `["alt", "main"]` should have
+/// existed — another test's scratch directory, torn into view mid-assertion.
+/// It did not reproduce every run, which is exactly the "one-in-three flake"
+/// shape `profile.rs`'s own tests already warn about, and exactly why a fix
+/// that "seemed to work" on a single clean run would not have been evidence of
+/// anything.
+#[cfg(test)]
+pub(crate) static PROFILE_ROOT_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use libadwaita::gtk::gio;
 use libadwaita::prelude::*;
 use std::cell::RefCell;

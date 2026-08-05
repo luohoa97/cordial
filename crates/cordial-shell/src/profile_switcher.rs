@@ -470,16 +470,13 @@ fn create(parent: &gtk::Window, switcher: &Switcher) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// `CORDIAL_PROFILE_ROOT` is process-wide and cargo runs a test binary's
-    /// tests in parallel threads, so two tests pointing it at different scratch
-    /// directories interleave and read each other's. Same guard, and the same
-    /// reason, as `cordial_shell::profile`'s own tests.
-    static ENV: Mutex<()> = Mutex::new(());
 
     fn scratch(tag: &str) -> (PathBuf, std::sync::MutexGuard<'static, ()>) {
-        let guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        // Shared with `launch.rs`: `CORDIAL_PROFILE_ROOT` is process-wide, and
+        // a mutex private to this file only stops this file's own tests
+        // interleaving, not another file's in the same binary. See
+        // `crate::PROFILE_ROOT_ENV`'s own doc for the flake this fixed.
+        let guard = crate::PROFILE_ROOT_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let p = std::env::temp_dir().join(format!("cordial-switcher-test-{tag}"));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
