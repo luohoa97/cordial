@@ -14,6 +14,16 @@
 //! same contract in a crate this one cannot depend on without a cycle. Putting
 //! it in the library half means the runtime can adopt this copy and delete its
 //! own without the code moving twice. See that module's header.
+//!
+//! [`network`] and [`pvpn`] are here for the same shape of reason as
+//! `profile`, deliberately placed rather than accidentally landing here: both
+//! of Cordial's entry points — this crate's own `launch.rs`, and
+//! `cordial-run` invoked directly, which AGENTS.md documents as fully
+//! supported — need to refuse the same `vpn-required` profile the same way,
+//! and `cordial-runtime` already depends on this crate for `host_window`, so
+//! putting the gate here costs no new edge and needs no second copy.
 
 pub mod host_window;
+pub mod network;
 pub mod profile;
+pub mod pvpn;
