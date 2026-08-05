@@ -448,12 +448,13 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// `CORDIAL_PROFILE_ROOT` is process-wide and cargo runs tests in parallel
-    /// threads of one process, so two tests pointing it at different scratch
-    /// directories will interleave and read each other's. Copied from
-    /// `cordial_runtime::profile`'s own tests, where the note records that they
-    /// passed anyway on the first run — which is exactly how a one-in-three
-    /// flake gets committed.
+    /// `CORDIAL_PROFILE_ROOT` is process-wide and cargo runs a test binary's
+    /// tests in parallel threads of one process, so two tests pointing it at
+    /// different scratch directories will interleave and read each other's.
+    /// Same local-per-file pattern `install.rs` and `profile_switcher.rs`
+    /// already use for this crate's binary; this module's tests are compiled
+    /// into the library's own separate test binary, so this mutex only has
+    /// to cover this file's own tests, not theirs.
     static ENV: Mutex<()> = Mutex::new(());
 
     fn scratch(tag: &str) -> (PathBuf, std::sync::MutexGuard<'static, ()>) {
