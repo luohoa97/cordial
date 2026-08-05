@@ -126,6 +126,17 @@ pub fn spawn(
     run_seconds: Option<u64>,
     join_url: Option<&str>,
 ) -> Result<Instance, String> {
+    // Before anything is spawned at all, not merely before the join happens.
+    // `cordial-run` gates this too — see `network::ensure_launchable`'s own
+    // doc for why the check has to live at both entry points — but refusing
+    // here as well means a `vpn-required` profile launched with no VPN up
+    // never pays for starting the 1.5 GB engine process just to have it exit
+    // immediately; the user gets the same message a beat sooner and without
+    // a window ever appearing.
+    if let Err(refusal) = cordial_shell::network::ensure_launchable(claim.profile_dir()) {
+        return Err(refusal.to_string());
+    }
+
     let loader = loader_path()?;
     let run = run_seconds.unwrap_or(DEFAULT_RUN_SECONDS).to_string();
 
@@ -403,6 +414,54 @@ fn describe(loader: &Path, lib_dir: &Path, apk: &Path, run: &str, join_url: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `CORDIAL_PVPN_BIN` is only ever touched by this test, in this binary,
+    /// so a local mutex is enough for it. `CORDIAL_PROFILE_ROOT` is not: it
+    /// used to have one here too, private to this file, until that turned
+    /// out to be exactly the shape of the flake `crate::PROFILE_ROOT_ENV`'s
+    /// own doc comment records — two independent mutexes guarding one
+    /// process-wide variable serialise nothing against each other. This test
+    /// now shares that lock with `profile_switcher.rs` instead.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn a_vpn_required_profile_with_no_pvpn_refuses_before_the_loader_is_even_looked_for() {
+        let _pvpn_guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _root_guard = crate::PROFILE_ROOT_ENV.lock().unwrap_or_else(|e| e.into_inner());
+
+        let root = std::env::temp_dir().join("cordial-launch-gate-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("CORDIAL_PROFILE_ROOT", &root);
+        std::env::set_var("CORDIAL_PVPN_BIN", "/nonexistent/definitely-not-here/pvpn");
+
+        let claim = cordial_shell::profile::acquire("vpn-test").expect("a fresh profile is free");
+        cordial_shell::network::save(
+            claim.profile_dir(),
+            &cordial_shell::network::NetworkConfig { mode: cordial_shell::network::Mode::VpnRequired },
+        )
+        .unwrap();
+
+        let build = Build { apk: PathBuf::from("/nonexistent.apk"), lib_dir: PathBuf::from("/nonexistent") };
+        let result = spawn(&build, claim, Some(1), None);
+
+        std::env::remove_var("CORDIAL_PVPN_BIN");
+        std::env::remove_var("CORDIAL_PROFILE_ROOT");
+        let _ = std::fs::remove_dir_all(&root);
+
+        // The message names the actual gap (pvpn missing), not a made-up APK
+        // path or loader error -- proof the refusal happened before `spawn`
+        // got anywhere near looking for `cordial-run` or the build.
+        // `Result::expect_err` wants `Instance: Debug` for its own panic
+        // message, which `Instance` deliberately does not derive (it holds a
+        // live `Child`), so this matches instead.
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("a vpn-required profile with no pvpn must refuse to launch"),
+        };
+        assert!(err.contains("vpn-required"), "{err}");
+        assert!(err.contains("pvpn"), "{err}");
+    }
 
     #[test]
     fn the_loader_is_looked_for_beside_the_launcher_first() {

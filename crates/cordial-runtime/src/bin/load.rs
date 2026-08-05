@@ -380,6 +380,29 @@ fn main() -> ExitCode {
         }
     };
 
+    // Before anything this profile might do reaches a network, including the
+    // client-settings fetch further down -- which is a real HTTP request over
+    // `ureq`, made by Cordial itself, and would otherwise go out whatever
+    // route this instance happens to have. `--profile` (or its absence) has
+    // just been resolved by `parse()`, above, so `profile::active()` is
+    // settled and this is the earliest point this can be checked.
+    //
+    // This duplicates the same call `cordial-shell`'s `launch.rs` makes
+    // before it ever spawns this process -- deliberately, not by accident.
+    // AGENTS.md documents running `cordial-run` directly, without the shell,
+    // as a fully supported path (`cargo run --release --bin cordial-run --
+    // ...`), and a gate that only lived in the shell would be a `vpn-required`
+    // profile that silently stopped meaning anything the moment somebody
+    // started the client the other documented way. See
+    // `cordial_shell::network`'s own doc for what this does and does not
+    // guarantee.
+    if let Err(refusal) =
+        cordial_shell::network::ensure_launchable(&cordial_runtime::profile::active())
+    {
+        eprintln!("error: {refusal}");
+        return ExitCode::FAILURE;
+    }
+
     // Which backend, and who asked for it, before the engine has had a chance to
     // `dlopen` anything. Said out loud on every run: the questions it answers are
     // "why is this slow" and "why does this look different from yesterday", and
