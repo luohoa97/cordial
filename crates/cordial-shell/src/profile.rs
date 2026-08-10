@@ -9,21 +9,11 @@
 //! presents as a Cordial bug rather than as unsupported use, which is why the
 //! lock is not left to convention.
 //!
-//! **This is the same contract `cordial_runtime::profile` implements, written
-//! twice.** That is not a design; it is where the dependency graph left it.
-//! `cordial-runtime` depends on this crate for `host_window`, so this crate
-//! cannot depend on `cordial-runtime` without a cycle, and the launcher is the
-//! process that has to take the claim — `cordial-run` never calls its own
-//! `profile` module at all today, so the runtime's copy is currently unreached
-//! code. Two implementations of a lock that guards a credential is exactly the
-//! kind of pair that drifts, so this one lives in the *library* half of
-//! `cordial-shell` rather than in the binary: the runtime can adopt it and
-//! delete its copy without anything moving a second time. Wording of the
-//! refusal message is deliberately identical between the two so that a user
-//! searching for it finds one answer.
-//!
-//! The precedent for reimplementing rather than linking is `flags_file.rs`,
-//! which does the same for the flags path and says why in its own header.
+//! **This is the single implementation of ADR-012's profile claim.** It lives
+//! in the library half of `cordial-shell` so the launcher can take the claim
+//! and `cordial-runtime` can re-export it without a dependency cycle
+//! (`cordial-runtime` already depends on this crate for `host_window`). The
+//! runtime keeps only process-local state (`set_active` / `active`) on top.
 
 use std::ffi::c_int;
 use std::fs::File;
