@@ -23,9 +23,8 @@ use std::sync::{Mutex, OnceLock};
 pub const WINDOW_FORMAT_RGBA_8888: i32 = 1;
 
 /// KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask |
-/// PointerMotionMask | ExposureMask, from X.h. Not StructureNotifyMask or
-/// FocusChangeMask — this window's size is fixed for its lifetime and AGDK's
-/// own focus call already runs once, unconditionally, in `game_activity.cpp`.
+/// PointerMotionMask | ExposureMask | StructureNotifyMask | FocusChangeMask,
+/// from X.h.
 /// ExposureMask is what makes a damaged window (uncovered, restored,
 /// redirected through a compositor) generate `Expose`, which
 /// `pump_input_events` turns into `onSurfaceRedrawNeededNative` — without it
@@ -39,7 +38,8 @@ pub const WINDOW_FORMAT_RGBA_8888: i32 = 1;
 /// changed size: the engine kept rendering at the size it was told at startup
 /// while X cleared the window to its background colour, which is the black
 /// flash on every resize.
-const INPUT_EVENT_MASK: c_long = 0x1 | 0x2 | 0x4 | 0x8 | 0x40 | 0x8000 | 0x20000;
+const INPUT_EVENT_MASK: c_long =
+    0x1 | 0x2 | 0x4 | 0x8 | 0x40 | 0x8000 | 0x20000 | 0x200000;
 
 type Display = *mut c_void;
 type Window = c_ulong;
@@ -66,6 +66,22 @@ struct Xlib {
     connection_number: unsafe extern "C" fn(Display) -> c_int,
     pending: unsafe extern "C" fn(Display) -> c_int,
     next_event: unsafe extern "C" fn(Display, *mut c_void) -> c_int,
+
+    grab_pointer: unsafe extern "C" fn(
+        Display, Window, c_int, c_uint, c_int, c_int, Window, c_ulong, c_ulong,
+    ) -> c_int,
+    ungrab_pointer: unsafe extern "C" fn(Display, c_ulong) -> c_int,
+    warp_pointer: unsafe extern "C" fn(
+        Display, Window, Window, c_int, c_int, c_uint, c_uint, c_int, c_int,
+    ) -> c_int,
+    query_pointer: unsafe extern "C" fn(
+        Display, Window,
+        *mut Window, *mut Window,
+        *mut c_int, *mut c_int,
+        *mut c_int, *mut c_int,
+        *mut c_uint,
+    ) -> c_int,
+
     /// `XLookupString` doubles as the keysym lookup and the ASCII/Latin-1 text
     /// lookup, and — unlike `XKeycodeToKeysym` — takes the event's `state` into
     /// account, so Shift and the rest of the modifier state do not have to be
@@ -80,11 +96,6 @@ struct Xlib {
     ) -> c_ulong,
     define_cursor: unsafe extern "C" fn(Display, Window, c_ulong) -> c_int,
     free_pixmap: unsafe extern "C" fn(Display, c_ulong) -> c_int,
-    // ---- pointer capture for camera drags ----
-    grab_pointer: unsafe extern "C" fn(
-        Display, Window, c_int, c_uint, c_int, c_int, Window, c_ulong, c_ulong,
-    ) -> c_int,
-    ungrab_pointer: unsafe extern "C" fn(Display, c_ulong) -> c_int,
 }
 
 /// `XColor`. Only the pixel/RGB prefix is read by `XCreatePixmapCursor`, but the
@@ -143,13 +154,15 @@ impl Xlib {
             connection_number: sym!("XConnectionNumber"),
             pending: sym!("XPending"),
             next_event: sym!("XNextEvent"),
+            grab_pointer: sym!("XGrabPointer"),
+            ungrab_pointer: sym!("XUngrabPointer"),
+            warp_pointer: sym!("XWarpPointer"),
+            query_pointer: sym!("XQueryPointer"),
             lookup_string: sym!("XLookupString"),
             create_bitmap_from_data: sym!("XCreateBitmapFromData"),
             create_pixmap_cursor: sym!("XCreatePixmapCursor"),
             define_cursor: sym!("XDefineCursor"),
             free_pixmap: sym!("XFreePixmap"),
-            grab_pointer: sym!("XGrabPointer"),
-            ungrab_pointer: sym!("XUngrabPointer"),
         })
     }
 }
@@ -170,7 +183,7 @@ pub struct HostWindow {
     /// framebuffers from the answer.
     buffers: Mutex<Geometry>,
     input: Mutex<InputState>,
-    pointer_grabbed: AtomicBool,
+    pointer_lock: Mutex<PointerLockState>,
     fullscreen: AtomicBool,
 }
 
@@ -185,6 +198,31 @@ struct InputState {
     /// exact meaning: constant across a MOVE/UP sequence, not per-event.
     down_time_ms: i64,
     clock: std::time::Instant,
+}
+
+/// X11 pointer capture state.
+///
+/// X11 has no Wayland relative-pointer protocol in this backend, so the first
+/// implementation uses XGrabPointer + XWarpPointer and derives dx/dy from
+/// MotionNotify events around a fixed centre.
+struct PointerLockState {
+    locked: bool,
+    suppressed: bool,
+    ignore_next_warp: bool,
+    centre: (i32, i32),
+    saved_root: Option<(i32, i32)>,
+}
+
+impl PointerLockState {
+    fn new() -> Self {
+        Self {
+            locked: false,
+            suppressed: false,
+            ignore_next_warp: false,
+            centre: (0, 0),
+            saved_root: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -476,11 +514,11 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static HostWindow,
         //
         // `XDefineCursor` is scoped to this window: the pointer is invisible
         // while it is over Cordial and completely untouched everywhere else on
-        // the desktop. A camera drag deliberately takes a short-lived pointer
-        // grab below, but hiding the cursor itself must not affect the session
-        // while no drag is active. This project has already hijacked the
-        // developer's real pointer once with `XTestFakeMotionEvent`; every grab
-        // therefore has independent button-up and Escape release paths.
+        // the desktop. That matters more than it sounds. The global alternatives
+        // (`XFixesHideCursor`, grabbing the pointer) change the cursor for the
+        // whole session, and this project has already hijacked the developer's
+        // real pointer once with `XTestFakeMotionEvent` — window-scoped is the
+        // rule here, not a preference.
         //
         // `CORDIAL_SHOW_CURSOR=1` puts it back, for debugging input where seeing
         // where the host thinks the pointer is matters.
@@ -588,7 +626,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static HostWindow,
             down_time_ms: 0,
             clock: std::time::Instant::now(),
         }),
-        pointer_grabbed: AtomicBool::new(false),
+        pointer_lock: Mutex::new(PointerLockState::new()),
         fullscreen: AtomicBool::new(place.fullscreen),
     };
     // No touchscreen, and that is a statement about this backend rather than
@@ -600,6 +638,56 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static HostWindow,
     // interface on X11 has `CORDIAL_INPUT_TOUCH=1`, which overrides this.
     super::input::report_touchscreen(false);
     Ok(WINDOW.get_or_init(|| host))
+}
+
+/// Whether the pointer lock should be held, and what the Escape-suppression
+/// latch should become, given one pump's inputs.
+///
+/// Pulled out of `sync_pointer_lock` so the three independent reasons to want
+/// the lock — the engine's own request, a camera-button drag, and the forced
+/// override — and the latch that keeps Escape from being immediately undone by
+/// a button still held down the same frame are unit-testable without a live X
+/// server, the same reason [`is_final_expose`] and `input.rs`'s
+/// `resolve_mouse_delta`/`touchscreen_reported` take their inputs as plain
+/// values rather than reading global state themselves. A ~260-line addition
+/// with no unit test would otherwise be a first for this file.
+///
+/// The latch clears itself the first pump nothing is asking for the lock —
+/// `previously_suppressed` carried forward unchanged only while `asked` stays
+/// true — which is what lets a released Escape be re-armed by the next camera
+/// drag rather than staying suppressed for the rest of the session.
+fn pointer_lock_decision(
+    engine_wants: bool,
+    buttons: i32,
+    no_drag_lock: bool,
+    force: bool,
+    previously_suppressed: bool,
+) -> (bool, bool) {
+    const CAMERA_BUTTONS: i32 = super::input::BUTTON_SECONDARY | super::input::BUTTON_TERTIARY;
+    let dragging = !no_drag_lock && (buttons & CAMERA_BUTTONS) != 0;
+    let asked = engine_wants || dragging || force;
+    let suppressed = asked && previously_suppressed;
+    (asked && !suppressed, suppressed)
+}
+
+/// The relative motion implied by one `MotionNotify` while the pointer is
+/// locked, or `None` if the event is the synthetic echo of this backend's own
+/// `XWarpPointer` call back to the centre and must be swallowed rather than
+/// reported as movement.
+///
+/// Separate from [`HostWindow::dispatch_motion`] for the same reason as
+/// [`pointer_lock_decision`] above: the centre-relative arithmetic and the
+/// echo check are the two things in the locked motion path actually worth
+/// getting wrong, and neither needs a window to test.
+fn locked_pointer_delta(
+    event_pos: (i32, i32),
+    centre: (i32, i32),
+    ignore_next_warp: bool,
+) -> Option<(i32, i32)> {
+    if ignore_next_warp && event_pos == centre {
+        return None;
+    }
+    Some((event_pos.0 - centre.0, event_pos.1 - centre.1))
 }
 
 impl HostWindow {
@@ -679,8 +767,262 @@ impl HostWindow {
         self.fullscreen.store(on, Ordering::Relaxed);
     }
 
+    /// Take or release the pointer to match what the engine and the mouse are
+    /// currently asking for. Called at both ends of `pump_input_events`, so a
+    /// button released mid-drain still ungrabs before the next frame rather
+    /// than a whole pump late.
+    ///
+    /// This duplicates Wayland's own `sync_pointer_lock` (`wayland.rs:3622`)
+    /// rather than sharing it with it, which is exactly the thing ADR-024
+    /// asks not to happen to logic common to both backends. Not shared here
+    /// on purpose, for now: the two currently compute genuinely different
+    /// things from different primitives. Wayland reasons about a
+    /// pre-/post-acceleration delta pair handed to it by
+    /// `zwp_relative_pointer_v1`; this backend reasons about warping the
+    /// pointer back to a fixed centre and filtering out the synthetic
+    /// `MotionNotify` that warp itself produces. A shared function today
+    /// would be a wrapper over two unlike mechanisms, not one mechanism
+    /// written once.
+    ///
+    /// ADR-028 records the actual plan and should be read rather than
+    /// inferred from this comment: X11 input moves to XInput2, taking its
+    /// motion from `XI_RawMotion` instead of core `MotionNotify`. That
+    /// event's `raw_values` (pre-acceleration) and `valuators`
+    /// (post-acceleration) are exactly the pair Wayland already has, and once
+    /// both backends compute the same pair from the same kind of source, the
+    /// module ADR-024 asks for is a real refactor rather than a wrapper.
+    /// **This warp path does not go away once that lands.** ADR-028 keeps it
+    /// as the fallback for a server that refuses `XIQueryVersion` (older than
+    /// X.Org 1.7): core X11's `MotionNotify` has already been through the
+    /// server's own acceleration curve by the time it is reported, and no
+    /// core request recovers what the device actually sent, so the warp
+    /// cannot be the default but stays as the only thing that works when XI2
+    /// is not there to ask. Landing XI2 is sequenced after this change, not
+    /// inside it — see ADR-028's "Sequencing" — so `pointer_lock_decision`
+    /// and `locked_pointer_delta` above are not where that work belongs.
+    fn sync_pointer_lock(&self) {
+        let engine_wants = super::input::engine_wants_pointer_lock() == Some(true);
+
+        let buttons = self
+            .input
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .buttons;
+
+        let no_drag_lock = std::env::var_os("CORDIAL_NO_DRAG_LOCK").is_some();
+        let force = std::env::var_os("CORDIAL_FORCE_POINTER_LOCK").is_some();
+
+        if std::env::var_os("CORDIAL_NO_POINTER_LOCK").is_some() {
+            self.release_pointer_lock();
+            return;
+        }
+
+        let mut state = self
+            .pointer_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let (want, suppressed) =
+            pointer_lock_decision(engine_wants, buttons, no_drag_lock, force, state.suppressed);
+        state.suppressed = suppressed;
+        let held = state.locked;
+        drop(state);
+
+        if want && !held {
+            self.lock_pointer();
+        } else if !want && held {
+            self.release_pointer_lock();
+        }
+    }
+
+    fn lock_pointer(&self) {
+        let (width, height, _) = self.geometry();
+
+        if width <= 0 || height <= 0 {
+            return;
+        }
+
+        let centre = (width / 2, height / 2);
+        let root =
+            unsafe { (self.xlib.default_root_window)(self.display) };
+
+        let mut root_return = 0;
+        let mut child_return = 0;
+        let mut root_x = 0;
+        let mut root_y = 0;
+        let mut win_x = 0;
+        let mut win_y = 0;
+        let mut mask = 0;
+
+        let queried = unsafe {
+            (self.xlib.query_pointer)(
+                self.display,
+                root,
+                &mut root_return,
+                &mut child_return,
+                &mut root_x,
+                &mut root_y,
+                &mut win_x,
+                &mut win_y,
+                &mut mask,
+            )
+        };
+
+        let saved_root =
+            if queried != 0 { Some((root_x, root_y)) } else { None };
+
+        // X11 CurrentTime is 0.
+        // owner_events = True
+        // pointer_mode = GrabModeAsync
+        // keyboard_mode = GrabModeAsync
+        let result = unsafe {
+            (self.xlib.grab_pointer)(
+                self.display,
+                self.window,
+                1,
+                0x4 | 0x8 | 0x40,
+                1,
+                1,
+                self.window,
+                0,
+                0,
+            )
+        };
+
+        if result != 0 {
+            // Printed unconditionally, not gated on `trace_mouse()`. The grab
+            // this replaces (`set_pointer_capture`) reported a refusal
+            // unconditionally too: another client already holding the
+            // pointer is a real failure of the lock the user asked for, and
+            // burying it behind a trace flag nobody has set by default is
+            // exactly the kind of silent stub AGENTS.md rules out.
+            eprintln!("[cordial] X11 pointer lock was refused (XGrabPointer={result})");
+            return;
+        }
+
+        {
+            let mut state = self
+                .pointer_lock
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+
+            state.locked = true;
+            state.ignore_next_warp = true;
+            state.centre = centre;
+            state.saved_root = saved_root;
+        }
+
+        unsafe {
+            (self.xlib.warp_pointer)(
+                self.display,
+                0,
+                self.window,
+                0,
+                0,
+                0,
+                0,
+                centre.0,
+                centre.1,
+            );
+            (self.xlib.flush)(self.display);
+        }
+
+        super::input::reset_mouse_delta();
+        // `forget_pending_unlocked_delta`'s own doc says it is called "at
+        // every site that also calls `reset_mouse_delta`" -- nothing on the
+        // X11 path currently writes `PENDING_UNLOCKED_DELTA` (only
+        // `wayland.rs`'s `relative_pointer_motion` does), so there is never
+        // anything here to forget. Called anyway so the doc's claim stays
+        // true rather than true of Wayland only, and so a lock taken right
+        // as the pointer crosses into the canvas does not carry a stray
+        // sample forward if this backend ever grows a relative-motion source
+        // of its own.
+        super::input::forget_pending_unlocked_delta();
+
+        if super::input::trace_mouse() {
+            eprintln!(
+                "[cordial] X11 pointer lock acquired at ({}, {})",
+                centre.0,
+                centre.1
+            );
+        }
+    }
+
+    fn release_pointer_lock(&self) {
+        let (was_locked, saved_root) = {
+            let mut state = self
+                .pointer_lock
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+
+            let was_locked = state.locked;
+            let saved_root = state.saved_root.take();
+
+            state.locked = false;
+            state.ignore_next_warp = false;
+            state.centre = (0, 0);
+
+            (was_locked, saved_root)
+        };
+
+        if !was_locked {
+            return;
+        }
+
+        unsafe {
+            // X11 CurrentTime is 0.
+            (self.xlib.ungrab_pointer)(self.display, 0);
+
+            if let Some((x, y)) = saved_root {
+                let root =
+                    (self.xlib.default_root_window)(self.display);
+
+                (self.xlib.warp_pointer)(
+                    self.display,
+                    root,
+                    root,
+                    0,
+                    0,
+                    0,
+                    0,
+                    x,
+                    y,
+                );
+            }
+
+            (self.xlib.flush)(self.display);
+        }
+
+        super::input::reset_mouse_delta();
+        // See the matching call in `lock_pointer` for why this is here too.
+        super::input::forget_pending_unlocked_delta();
+
+        if super::input::trace_mouse() {
+            eprintln!("[cordial] X11 pointer lock released");
+        }
+    }
+
+    fn escape_pointer_lock(&self) -> bool {
+        let held = self
+            .pointer_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .locked;
+
+        if !held {
+            return false;
+        }
+
+        self.pointer_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .suppressed = true;
+
+        self.release_pointer_lock();
+        true
+    }
+
     pub fn close(&self) {
-        self.set_pointer_capture(false);
         // SAFETY: both handles came from this struct's own creation calls.
         unsafe {
             (self.xlib.destroy_window)(self.display, self.window);
@@ -741,6 +1083,7 @@ struct XInputEvent {
 const KEY_PRESS: c_int = 2;
 const KEY_RELEASE: c_int = 3;
 const MOTION_NOTIFY: c_int = 6;
+const FOCUS_OUT: c_int = 10;
 const BUTTON_PRESS: c_int = 4;
 const BUTTON_RELEASE: c_int = 5;
 const EXPOSE: c_int = 12;
@@ -892,73 +1235,6 @@ impl HostWindow {
         state.clock.elapsed().as_millis() as i64
     }
 
-    /// Confine the real X pointer to the client while a camera button is held.
-    ///
-    /// Roblox's Android cursor is drawn by the engine and can remain centred
-    /// while the host pointer continues moving outside the window. X11 has no
-    /// implicit Android-style capture, so without this explicit grab a right
-    /// drag controls the camera and the next click lands on another program.
-    fn set_pointer_capture(&self, capture: bool) {
-        if capture {
-            if self.pointer_grabbed.load(Ordering::Acquire) {
-                return;
-            }
-            const OWNER_EVENTS: c_int = 1;
-            const BUTTON_PRESS_MASK: c_uint = 1 << 2;
-            const BUTTON_RELEASE_MASK: c_uint = 1 << 3;
-            const POINTER_MOTION_MASK: c_uint = 1 << 6;
-            const GRAB_MODE_ASYNC: c_int = 1;
-            const CURRENT_TIME: c_ulong = 0;
-            // SAFETY: the display and window are live. `confine_to` is the
-            // same window receiving the events, no cursor override is made,
-            // and asynchronous modes ensure Xlib never blocks this pump.
-            let result = unsafe {
-                (self.xlib.grab_pointer)(
-                    self.display,
-                    self.window,
-                    OWNER_EVENTS,
-                    BUTTON_PRESS_MASK | BUTTON_RELEASE_MASK | POINTER_MOTION_MASK,
-                    GRAB_MODE_ASYNC,
-                    GRAB_MODE_ASYNC,
-                    self.window,
-                    0,
-                    CURRENT_TIME,
-                )
-            };
-            // `GrabSuccess` is zero. A compositor or another client may own a
-            // grab already; report that rather than claiming capture occurred.
-            if result == 0 {
-                self.pointer_grabbed.store(true, Ordering::Release);
-                if super::input::trace_mouse() {
-                    eprintln!("[cordial] X11 pointer captured for camera drag");
-                }
-            } else {
-                eprintln!("[cordial] X11 pointer capture was refused (XGrabPointer={result})");
-            }
-        } else if self.pointer_grabbed.swap(false, Ordering::AcqRel) {
-            const CURRENT_TIME: c_ulong = 0;
-            // SAFETY: this client owns the grab recorded by `pointer_grabbed`.
-            unsafe {
-                (self.xlib.ungrab_pointer)(self.display, CURRENT_TIME);
-                (self.xlib.flush)(self.display);
-            }
-            super::input::reset_mouse_delta();
-            // `forget_pending_unlocked_delta`'s own doc says it is called "at
-            // every site that also calls `reset_mouse_delta`" -- this was the
-            // one exception, harmless only because nothing on the X11 path
-            // ever writes `PENDING_UNLOCKED_DELTA` (only `wayland.rs`'s
-            // `relative_pointer_motion` does), so there is never anything
-            // here to forget. Added anyway so the doc's claim stays true
-            // rather than true of Wayland only, and so this backend does not
-            // become a silent trap if it ever grows a relative-motion source
-            // of its own.
-            super::input::forget_pending_unlocked_delta();
-            if super::input::trace_mouse() {
-                eprintln!("[cordial] X11 pointer capture released");
-            }
-        }
-    }
-
     fn dispatch_button(&self, handle: i64, ev: &XInputEvent, press: bool) {
         // The wheel first. X11 sends a press *and* a release for every detent,
         // and a wheel has no "released" state to report — sending both would
@@ -979,7 +1255,6 @@ impl HostWindow {
         let mut state = self.input.lock().unwrap_or_else(|e| e.into_inner());
         let now = state.clock.elapsed().as_millis() as i64;
 
-        let camera_button = android_button == BUTTON_SECONDARY || android_button == BUTTON_TERTIARY;
         if press {
             if state.buttons == 0 {
                 state.down_time_ms = now;
@@ -992,19 +1267,12 @@ impl HostWindow {
             // ACTION_BUTTON_PRESS names which button did it.
             deliver_mouse(handle, ACTION_DOWN, x, y, buttons, 0, now, down_time);
             deliver_mouse(handle, ACTION_BUTTON_PRESS, x, y, buttons, android_button, now, down_time);
-            if camera_button {
-                self.set_pointer_capture(true);
-            }
         } else {
             state.buttons &= !android_button;
             let (buttons, down_time) = (state.buttons, state.down_time_ms);
             drop(state);
             deliver_mouse(handle, ACTION_BUTTON_RELEASE, x, y, buttons, android_button, now, down_time);
             deliver_mouse(handle, ACTION_UP, x, y, buttons, 0, now, down_time);
-            const CAMERA_BUTTONS: i32 = BUTTON_SECONDARY | BUTTON_TERTIARY;
-            if buttons & CAMERA_BUTTONS == 0 {
-                self.set_pointer_capture(false);
-            }
         }
 
         // The interface's own input path, alongside AGDK's — and every button,
@@ -1015,8 +1283,100 @@ impl HostWindow {
     }
 
     fn dispatch_motion(&self, handle: i64, ev: &XInputEvent) {
+        {
+            let mut state = self
+                .pointer_lock
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+
+            if state.locked {
+                let centre = state.centre;
+
+                let Some((dx, dy)) =
+                    locked_pointer_delta((ev.x, ev.y), centre, state.ignore_next_warp)
+                else {
+                    state.ignore_next_warp = false;
+                    return;
+                };
+                let (cx, cy) = centre;
+
+                // Preserve the existing Android/AGDK motion path while the
+                // pointer is captured. The absolute position remains the
+                // capture centre, but Roblox still sees the same MotionEvent
+                // sequence it saw before pointer locking was introduced.
+                let input = self
+                    .input
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+
+                let buttons = input.buttons;
+                let down_time = input.down_time_ms;
+                let now = input.clock.elapsed().as_millis() as i64;
+                drop(input);
+
+                let action =
+                    if buttons != 0 {
+                        ACTION_MOVE
+                    } else {
+                        ACTION_HOVER_MOVE
+                    };
+
+                deliver_mouse(
+                    handle,
+                    action,
+                    cx as f32,
+                    cy as f32,
+                    buttons,
+                    0,
+                    now,
+                    down_time,
+                );
+
+                // The relative delta is still delivered through Roblox's
+                // NativeInputInterface path for camera rotation.
+                if dx != 0 || dy != 0 {
+                    drop(state);
+
+                    super::input::pass_mouse_move_delta(
+                        cx as f32,
+                        cy as f32,
+                        dx as f32,
+                        dy as f32,
+                    );
+
+                    let mut state = self
+                        .pointer_lock
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+
+                    state.ignore_next_warp = true;
+                    drop(state);
+
+                    unsafe {
+                        (self.xlib.warp_pointer)(
+                            self.display,
+                            0,
+                            self.window,
+                            0,
+                            0,
+                            0,
+                            0,
+                            cx,
+                            cy,
+                        );
+                        (self.xlib.flush)(self.display);
+                    }
+                }
+
+                return;
+            }
+        }
+
         let (x, y) = (ev.x as f32, ev.y as f32);
-        let state = self.input.lock().unwrap_or_else(|e| e.into_inner());
+        let state = self
+            .input
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let now = state.clock.elapsed().as_millis() as i64;
         let (buttons, down_time) = (state.buttons, state.down_time_ms);
         drop(state);
@@ -1054,11 +1414,8 @@ impl HostWindow {
         let meta = android_meta_state(ev.state);
         let now = self.now_ms();
 
-        // Independent escape hatch for an X11 grab. Button-up remains the
-        // ordinary release, but a game must never be able to leave the user's
-        // desktop pointer confined if its own input state gets stuck.
-        if down && keysym == 0xff1b {
-            self.set_pointer_capture(false);
+        if down && keysym == 0xff1b && self.escape_pointer_lock() {
+            return;
         }
 
         // XK_F11. Like the Wayland game window, this backend is not the GTK
@@ -1164,6 +1521,8 @@ impl HostWindow {
     /// Drain and deliver whatever X11 input is already queued, then return.
     /// See the module-level comment above for why this never blocks.
     fn pump_input_events(&self, handle: i64) {
+        self.sync_pointer_lock();
+
         // Before draining input: if the engine has opened or closed an editor
         // since last time, acknowledge it. Cheap — an atomic load and a
         // comparison unless something actually changed.
@@ -1210,6 +1569,16 @@ impl HostWindow {
                 KEY_PRESS | KEY_RELEASE => {
                     self.dispatch_key(handle, &mut buf, event_type == KEY_PRESS);
                 }
+                FOCUS_OUT => {
+                    self.release_pointer_lock();
+
+                    let mut state = self
+                        .input
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+
+                    state.buttons = 0;
+                }
                 EXPOSE => {
                     // SAFETY: `event_type == EXPOSE` means `XNextEvent` just
                     // filled `buf` as the `XExposeEvent` member of Xlib's
@@ -1231,6 +1600,8 @@ impl HostWindow {
                 _ => {}
             }
         }
+
+        self.sync_pointer_lock();
     }
 
     /// The window changed size. Update what the engine is told about it.
@@ -1512,6 +1883,47 @@ pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_lock_is_wanted_for_any_of_its_three_independent_reasons() {
+        // Nothing asking: no lock, and the latch has nothing to hold.
+        assert_eq!(pointer_lock_decision(false, 0, false, false, false), (false, false));
+        // The engine's own request, alone.
+        assert_eq!(pointer_lock_decision(true, 0, false, false, false), (true, false));
+        // A camera-button drag, alone -- and blocked by CORDIAL_NO_DRAG_LOCK.
+        assert_eq!(pointer_lock_decision(false, BUTTON_SECONDARY, false, false, false), (true, false));
+        assert_eq!(pointer_lock_decision(false, BUTTON_SECONDARY, true, false, false), (false, false));
+        // The primary button is not a camera button and must not arm the lock.
+        assert_eq!(pointer_lock_decision(false, BUTTON_PRIMARY, false, false, false), (false, false));
+        // The forced override, alone.
+        assert_eq!(pointer_lock_decision(false, 0, false, true, false), (true, false));
+    }
+
+    #[test]
+    fn the_escape_latch_holds_until_nothing_is_asking_any_more() {
+        // Escape has just suppressed the lock, but the engine (or a held
+        // camera button) is still asking for it the same pump: the latch
+        // must hold, not be immediately overridden.
+        assert_eq!(pointer_lock_decision(true, 0, false, false, true), (false, true));
+        // The ask has stopped -- the button was released, the engine let go
+        // -- so the latch clears and a later ask can re-arm the lock.
+        assert_eq!(pointer_lock_decision(false, 0, false, false, true), (false, false));
+    }
+
+    #[test]
+    fn the_warp_echo_is_swallowed_and_real_motion_is_not() {
+        // The synthetic MotionNotify this backend's own XWarpPointer produces
+        // lands exactly on the capture centre and must be dropped, or every
+        // recentring warp would report itself as a fresh delta.
+        assert_eq!(locked_pointer_delta((640, 360), (640, 360), true), None);
+        // The same coincidence with the latch already spent (a previous
+        // frame consumed the echo) is real motion, not another echo.
+        assert_eq!(locked_pointer_delta((640, 360), (640, 360), false), Some((0, 0)));
+        // Ordinary motion away from centre, latch armed or not, is never
+        // swallowed -- only an exact match does that.
+        assert_eq!(locked_pointer_delta((645, 358), (640, 360), true), Some((5, -2)));
+        assert_eq!(locked_pointer_delta((645, 358), (640, 360), false), Some((5, -2)));
+    }
 
     #[test]
     fn only_the_last_expose_in_a_batch_triggers_a_redraw() {
