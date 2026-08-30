@@ -41,7 +41,24 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-repo=$(git -C "$here" rev-parse --show-toplevel)
+# **Derived from this script's own path, not from `git rev-parse`.** It was the
+# latter, and it failed the first pacman run that got far enough to reach it:
+# `build-repo.sh: line 44: git: command not found`, exit 127. This workflow runs
+# in `archlinux:base-devel`, which does not ship git, and `actions/checkout@v4`
+# falls back to a REST tarball when git is absent -- so the checkout succeeded
+# and only this line noticed.
+#
+# Installing git in the container would have fixed the symptom and left the
+# cause: this script is two directories below the root and already knows it, so
+# asking git is a dependency bought for nothing. It also breaks wherever there
+# is no `.git` at all, which is the AUR source package, the Flatpak's `type: dir`
+# source and any release tarball -- the same class of failure
+# `crates/cordial-shell/build.rs` documents at length for the version string.
+#
+# packaging/rpm/build-repo.sh has the identical line and has not failed, because
+# yum.yml runs on `ubuntu-latest` rather than in a container. Same latent bug,
+# different luck.
+repo=$(cd "$here/../.." && pwd)
 
 # Fixed rather than a flag, matching packaging/apt/build-repo.sh's ARCH: this
 # repository ships one architecture today. Widen the day a second one exists.
