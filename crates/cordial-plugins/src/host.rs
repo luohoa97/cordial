@@ -318,9 +318,57 @@ impl Plugin {
         self.writer.clone()
     }
 
+    /// **A single `SIGKILL` to this pid is not enough**, and the first version
+    /// of this method sent exactly that. `sandbox.rs` passes bwrap
+    /// `--new-session`, which calls `setsid()` before bwrap forks again to set
+    /// up the sandboxed pid namespace -- so this pid is the leader of its own
+    /// session and process group, and bwrap's own inner fork lives in that
+    /// group too, ahead of the point where it execs Deno. `Child::kill` signals
+    /// only the one pid; `SIGKILL` cannot be caught, so it never gives bwrap
+    /// the chance to tear its own children down on the way out, and the inner
+    /// fork survives it, reparented to init with nothing left watching it.
+    ///
+    /// Measured directly: an otherwise clean, panic-free run of this crate's
+    /// own tests, with every `kill()` call reached, still left one such
+    /// process behind -- 21 seconds old and already reparented -- the same
+    /// shape as the sandboxed stragglers this whole guard exists to stop.
+    /// Signalling the *group* (the negative pid) reaches every process
+    /// `--new-session` put in it, however many times bwrap forked.
+    ///
+    /// SAFETY: `kill(2)` with a negative pid is process-group signalling, not
+    /// a memory operation. The only failures are ESRCH (the group is already
+    /// gone) and EPERM, and both are fine to ignore: either way there is
+    /// nothing left running that this call could still reach.
     pub fn kill(&mut self) {
+        let pid = self.child.id() as libc::pid_t;
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// **The reason this exists rather than trusting every caller to remember
+/// `kill()`.** `std::process::Child` is not killed on drop -- that is
+/// documented, deliberate, and exactly the wrong default for a sandboxed
+/// child nobody else is going to reap.
+///
+/// It went unnoticed because most fixtures make it look harmless: a plugin
+/// that keeps reading its own stdin notices the pipe close the moment a
+/// `Plugin` is dropped and exits on its own, EOF standing in for a kill
+/// nobody sent. `tests/fixtures/deaf_plugin.ts` does not read at all, so
+/// dropping it without calling `kill()` first leaves a live `bwrap`-sandboxed
+/// Deno process behind with nothing watching it -- measured on 2026-08-28,
+/// ten or more of exactly this shape were found still running, reparented to
+/// init, some past an hour old. Every caller in this file's own tests and in
+/// `cordial-runtime`'s already called `kill()` on the path where its
+/// assertions pass; what none of them survived was a panic *before* that
+/// call, which unwinds straight past it. A guard on the type is the only
+/// place that fires regardless of how the scope is left, including that one.
+impl Drop for Plugin {
+    fn drop(&mut self) {
+        self.kill();
     }
 }
 

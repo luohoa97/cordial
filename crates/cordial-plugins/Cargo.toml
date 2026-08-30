@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+libc = "0.2"
 minisign-verify = "0.2.5"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
