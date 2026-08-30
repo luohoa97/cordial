@@ -111,23 +111,59 @@ use super::input;
 
 /// `CORDIAL_GAMEPAD=1`. The off switch, defaulting to off.
 ///
-/// Off is the honest default while `gamepadType` is unestablished -- see the
-/// module comment. It is also the switch that makes the glyph sweep possible,
-/// so this is a knob for finishing the work rather than a setting to forget.
+/// On by default since 0.13.0. `CORDIAL_GAMEPAD=0` turns it off.
+///
+/// **This was off, and "off is the honest default while `gamepadType` is
+/// unestablished" was the reason. The ordinal is still unestablished; the
+/// judgement changed.** Refusing to guess kept Cordial from mislabelling a pad
+/// the way Sober #1018 does -- "Sober detects my PS4 controller as a XBOX one"
+/// -- and the cost of that refusal was no controller support of any kind. For a
+/// handheld, and Steam Deck is the case that forced the question, that is not
+/// the better side of the trade.
+///
+/// What actually goes wrong with a wrong ordinal is worth stating precisely,
+/// because it is smaller than "unverified" sounds. Sober #584 is "almost every
+/// single game thinks im on xbox" and #1810 is a DualShock 4 drawing the wrong
+/// face buttons. **The glyphs are wrong and the buttons work.** That is a
+/// cosmetic fault with a documented override, against a feature that otherwise
+/// does not exist.
+///
+/// The parts that are not guesses: the host half reads real `/dev/input/js*`
+/// nodes and its decoding is unit-tested, and the six natives are all present
+/// in this build. The single unknown is which integer names which brand of
+/// glyph, `CORDIAL_GAMEPAD_TYPE` overrides it, and the launch log says so the
+/// first time a pad is seen rather than leaving a user to find out.
 fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("CORDIAL_GAMEPAD").is_some())
+    *ON.get_or_init(|| enabled_for(std::env::var("CORDIAL_GAMEPAD").ok().as_deref()))
+}
+
+/// The gate's decision, separated from where it reads it.
+///
+/// Split out only so it can be tested: `enabled` caches into a `OnceLock`, so a
+/// test that set the variable would decide the answer for every other test in
+/// the binary and lose a coin-flip against whichever ran first.
+fn enabled_for(v: Option<&str>) -> bool {
+    // Present-but-"0" is off; absent is on. `devctl::is_enabled`'s idiom
+    // inverted, rather than a second spelling of the same idea.
+    !matches!(v, Some("0"))
 }
 
 /// `CORDIAL_GAMEPAD_PROBE=1` — announce one pad that does not exist, and send it
 /// no events.
 ///
-/// This is the sweep harness. Establishing what `gamepadType` means needs the
-/// engine to *draw* something for a connected pad, and drawing needs only the
-/// connect call and the capability declaration; it does not need a thumbstick to
-/// move, and it does not need anybody to own a controller. Without this the
-/// experiment is blocked on hardware that the machine this was written on does
-/// not have.
+/// This is the sweep harness, and **it does not currently work.** The paragraph
+/// here used to say drawing "needs only the connect call and the capability
+/// declaration; it does not need a thumbstick to move". The module comment
+/// records why that is wrong: Roblox switches its glyph set when an input is
+/// *used*, not when a device is announced, so a pad that connects and stays
+/// silent changes nothing on screen. A sweep of N = 0, 1, 2 and 99 confirmed it
+/// by finding every value identical.
+///
+/// Kept rather than deleted because the harness is most of what a working
+/// experiment needs -- announcing a pad with no hardware is the hard part, and
+/// it does that. What it is missing is sending a press and release afterwards,
+/// and being run inside a joined experience rather than at the shell.
 fn probe() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("CORDIAL_GAMEPAD_PROBE").is_some())
@@ -292,6 +328,25 @@ fn announce(id: i32, n_buttons: u8, n_axes: u8) {
         name.as_deref().unwrap_or("(no name in /sys)"),
         family.unwrap_or(Family::Unrecognised)
     );
+    // **Once per process, and it exists because "(UNVERIFIED)" above tells a
+    // user nothing they can act on.** Gamepad support ships on from 0.13.0 with
+    // the type ordinal still unestablished, so the first person to meet wrong
+    // glyphs should meet the override in the same breath rather than finding it
+    // in a source comment. Sober #584 and #1810 are the same symptom on the
+    // neighbouring runtime; the buttons work there too.
+    {
+        static SAID: OnceLock<()> = OnceLock::new();
+        SAID.get_or_init(|| {
+            eprintln!(
+                "[cordial] gamepad: the button glyphs Roblox draws may show the wrong \
+                 controller brand. Which integer means which brand is not established \
+                 -- see docs/analysis or the README. The buttons themselves work. \
+                 Override with CORDIAL_GAMEPAD_TYPE=<n>, or set CORDIAL_GAMEPAD=0 to \
+                 turn gamepad support off. If you find the value that draws your pad's \
+                 own glyphs, please report it: it settles this for everybody."
+            );
+        });
+    }
     input::deliver_gamepad_connect(id, ty);
     for i in 0..n_buttons {
         if let Some(code) = button_keycode(i) {
@@ -589,6 +644,28 @@ fn poll_probe() {
 
 #[cfg(test)]
 mod tests {
+    use super::{enabled_for};
+
+    /// **Gamepad support is on unless it is switched off, from 0.13.0.**
+    /// Pinned because the flip is a shipping decision rather than a detail: it
+    /// trades possibly-wrong glyphs, which Sober #584 and #1810 show are
+    /// cosmetic, against no controller support at all. Anyone reverting the
+    /// default should have to change a test that says why.
+    #[test]
+    fn gamepad_is_on_unless_explicitly_switched_off() {
+        assert!(enabled_for(None), "absent means on");
+        assert!(!enabled_for(Some("0")), "0 means off");
+    }
+
+    /// Anything that is not exactly "0" leaves it on, including the values
+    /// somebody would reach for expecting them to work.
+    #[test]
+    fn only_zero_switches_it_off() {
+        for on in ["1", "", "true", "yes", "off", "false", "no"] {
+            assert!(enabled_for(Some(on)), "CORDIAL_GAMEPAD={on:?} should leave it on");
+        }
+    }
+
     /// The names Linux's own drivers report, classified.
     ///
     /// The failure this catches: somebody adds a substring that is too greedy
