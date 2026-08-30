@@ -1,9 +1,16 @@
 //! The capability broker: the only thing that decides whether a call proceeds.
 //!
-//! Grants are per plugin and fixed once the broker is built. A plugin cannot
-//! request a capability at runtime and cannot widen its own grant — anything
-//! that let it do so would make the grant advisory, and an advisory capability
-//! system is decorative.
+//! Grants are per plugin and set from outside — **a plugin cannot request a
+//! capability at runtime and cannot widen its own grant**, whatever it sends
+//! down its own pipe. Anything that let it do so would make the grant
+//! advisory, and an advisory capability system is decorative. This says
+//! nothing about whether the *host* may call [`Broker::grant`] again after
+//! construction to replace what is there; `cordial-runtime`'s serving loop
+//! does exactly that, re-reading the grants file so a capability turned on in
+//! Settings reaches an already-running plugin rather than only the next one
+//! `start_all` spawns. The property this module guarantees is narrower and
+//! more important than "never changes": whatever the grant is at the moment
+//! of a call, it was put there by something other than the plugin asking.
 //!
 //! Denials are recorded rather than only refused. A plugin quietly failing
 //! because it lacks a capability is otherwise indistinguishable from a plugin

@@ -32,6 +32,7 @@ use std::collections::BTreeSet;
 
 use cordial_plugins::capability::Capability;
 use cordial_plugins::consent;
+use cordial_plugins::denials;
 use cordial_plugins::enablement;
 use cordial_plugins::grants;
 use cordial_plugins::plugin_data;
@@ -1117,6 +1118,28 @@ fn capability_description(cap: Capability) -> &'static str {
     cap.consequence()
 }
 
+/// A capability switch's subtitle: what granting it does, and — if `denials`
+/// has ever recorded this exact plugin trying and failing — the one line that
+/// wires `Broker::denials()` to somewhere a person can actually read it.
+///
+/// **This is the two-minute fix `broker.rs`'s own doc comment describes.**
+/// Without it, "not allowed" and "allowed and simply never called yet" look
+/// identical: both are a switch sitting off. `denials` only ever records a
+/// capability the plugin *asked for and was refused*, so this line is never
+/// speculative — it says a call was actually made and actually failed, which
+/// is a stronger and more specific fact than the row's own off state already
+/// shows.
+fn capability_row_subtitle(cap: Capability, refused: bool) -> String {
+    if refused {
+        format!(
+            "{}\n\nCordial has refused this at least once because it was not granted.",
+            capability_description(cap)
+        )
+    } else {
+        capability_description(cap).to_string()
+    }
+}
+
 /// Recompute and set `expander`'s subtitle from what is actually on disk,
 /// rather than from whatever a closure happened to capture when the row was
 /// built. Both the enable switch and every capability switch below call this
@@ -1337,19 +1360,28 @@ fn build_plugin_row(
 
     // One switch per capability the plugin actually requested — offering
     // one for something it never asked for would be a control with nothing
-    // to grant.
+    // to grant. Collected as they are built so a built-in's first-appearance
+    // consent prompt, below, can flip them on accept rather than duplicating
+    // the grant-and-refresh logic each one already carries in its own
+    // `connect_active_notify`.
+    let mut cap_rows: Vec<(Capability, adw::SwitchRow)> = Vec::new();
     if plugin.requested.is_empty() {
         expander.add_row(&adw::ActionRow::builder().title("Requests no capabilities").build());
     } else if let Some(dir) = profile_dir {
         let granted_here = grants::load(&grants::path_in(dir)).get(&id).cloned().unwrap_or_default();
+        // Read once per row build, the same moment grants and enablement
+        // already are — see the Plugins page's own doc comment for why "as of
+        // when the window opened" is the posture every control here takes.
+        let refused_here = denials::load(&denials::path_in(dir)).get(&id).cloned().unwrap_or_default();
         for &cap in &plugin.requested {
             let cap_row = adw::SwitchRow::builder()
                 .title(cap.name())
-                .subtitle(capability_description(cap))
+                .subtitle(capability_row_subtitle(cap, refused_here.contains(&cap)))
                 .active(granted_here.contains(&cap))
                 .build();
-            cap_row.set_subtitle_lines(2);
+            cap_row.set_subtitle_lines(3);
             expander.add_row(&cap_row);
+            cap_rows.push((cap, cap_row.clone()));
 
             let dir = dir.clone();
             let id = id.clone();
@@ -1362,6 +1394,20 @@ fn build_plugin_row(
                     eprintln!("shell: could not record {id}'s {} grant: {e}", cap.name());
                     row.set_active(!on);
                     return;
+                }
+                if on {
+                    // A denial recorded before this grant existed is no
+                    // longer telling the user anything true -- the plugin
+                    // will succeed the next time it asks -- so it is cleared
+                    // the moment the capability is, rather than left to
+                    // describe a state that has already changed underneath
+                    // it. Best effort: a row that fails to update its own
+                    // subtitle text is a cosmetic miss, not a reason to
+                    // refuse a grant that was otherwise recorded correctly.
+                    if let Err(e) = denials::clear(&denials::path_in(&dir), &id, cap) {
+                        eprintln!("shell: could not clear {id}'s recorded {} denial: {e}", cap.name());
+                    }
+                    row.set_subtitle(&capability_row_subtitle(cap, false));
                 }
                 refresh_plugin_subtitle(&expander, &plugin, Some(&dir), enable_row.is_active());
             });
@@ -1378,7 +1424,128 @@ fn build_plugin_row(
         );
     }
 
+    if tier == Tier::BuiltIn {
+        maybe_prompt_builtin_consent(parent, plugin, profile_dir, &expander, &enable_row, &cap_rows);
+    }
+
     expander
+}
+
+/// Ask a built-in plugin's first-appearance consent question, if this profile
+/// has not already been asked and there is anything to ask about.
+///
+/// **When this asks, and why not on enabling instead.** A user-installed
+/// plugin has one clear moment to ask: the install button click, which
+/// happens exactly once and starts the plugin switched off (`consent::
+/// starts_disabled`) until somebody turns it on. A built-in has no such
+/// moment and, unless it is one of `enablement::SHIPS_DISABLED`, already
+/// ships *enabled* — so tying this to the Enabled switch's off-to-on
+/// transition would never fire for the common case, because there is no such
+/// transition: the plugin was already on the first time this row was ever
+/// built, silently running with nothing granted, which is the exact bug this
+/// change exists to close. Asking the first time this profile's Plugins page
+/// renders the row is the moment that actually happens for every profile,
+/// old or new.
+///
+/// **This only ever touches capabilities, never `enablement`.** Built-ins are
+/// governed by `SHIPS_DISABLED`, a decision this file does not reopen (see
+/// the commit this landed in): consent here answers "may it do X", not
+/// "does it run at all", and conflating the two would make this prompt a
+/// second, competing policy for which built-ins start off.
+fn maybe_prompt_builtin_consent(
+    parent: &adw::PreferencesDialog,
+    plugin: &Plugin,
+    profile_dir: Option<&PathBuf>,
+    expander: &adw::ExpanderRow,
+    enable_row: &adw::SwitchRow,
+    cap_rows: &[(Capability, adw::SwitchRow)],
+) {
+    // Nowhere to record having asked, and nowhere to grant into — the same
+    // posture the capability switches above already take for an
+    // unresolvable profile.
+    let Some(dir) = profile_dir else { return };
+    let seen_path = consent::seen_path_in(dir);
+    let id = plugin.manifest.id.clone();
+    if consent::has_been_asked(&seen_path, &id) {
+        return;
+    }
+    // `Silent` means no code and no capabilities requested -- nothing to run
+    // and nothing it could reach. `verdict` is a pure read of the manifest,
+    // so there is nothing worth persisting for this case; the check above
+    // costs one small file read on every Settings page open, which is the
+    // same price every other row on this page already pays for grants and
+    // enablement.
+    let consent::Verdict::Ask(prompt) = consent::verdict(plugin) else { return };
+
+    let dialog = adw::AlertDialog::builder()
+        .heading(prompt.heading())
+        .body(consent_body_for_builtin(&prompt))
+        .build();
+    dialog.add_response("skip", "Not now");
+    dialog.add_response("allow", "Allow");
+    dialog.set_response_appearance("allow", adw::ResponseAppearance::Suggested);
+    // The safe answer survives Escape, exactly as it does for a user install
+    // — ADR-003's default deny has to hold even when the dialog is dismissed
+    // rather than answered.
+    dialog.set_default_response(Some("skip"));
+    dialog.set_close_response("skip");
+
+    let dir = dir.clone();
+    let cap_rows: Vec<(Capability, adw::SwitchRow)> = cap_rows.to_vec();
+    let expander = expander.clone();
+    let enable_row = enable_row.clone();
+    let plugin = plugin.clone();
+    dialog.connect_response(None, move |dialog, response| {
+        if response == "allow" {
+            // Each row's own `connect_active_notify` already does exactly
+            // what accepting this prompt means -- write the grant, clear any
+            // stale denial, refresh the summary line -- so flipping the
+            // switch is the grant, not a shortcut around it. This is the
+            // same mechanism the install flow uses, reached through the row
+            // that already exists here instead of a second copy of the
+            // grants::set loop that flow needs because it has no rows yet.
+            for (_, row) in &cap_rows {
+                row.set_active(true);
+            }
+            refresh_plugin_subtitle(&expander, &plugin, Some(&dir), enable_row.is_active());
+        }
+        if let Err(e) = consent::mark_asked(&seen_path, &id) {
+            eprintln!("shell: could not record that {id} has been asked about: {e}");
+        }
+        dialog.close();
+    });
+    dialog.present(Some(parent));
+}
+
+/// The body of a built-in's first-appearance prompt: the same itemised
+/// effects `consent_body` lists for a user install, closed with a line that
+/// is actually true of a built-in.
+///
+/// **Why this is not `consent_body`.** `Prompt::footer` says "It starts
+/// switched off" whenever the plugin has code — right for something a user
+/// just chose to install, and wrong here: a built-in ships enabled by default
+/// unless it is one of `enablement::SHIPS_DISABLED`, and by the time this
+/// profile's Plugins page is first opened it may already have been running,
+/// silently denied, for as long as the profile has existed. Reusing that
+/// sentence verbatim would tell the user something false about a plugin that
+/// might be running at that exact moment — the failure AGENTS.md's rule about
+/// a comment that lies exists to rule out, applied here to a dialog instead.
+fn consent_body_for_builtin(prompt: &consent::Prompt) -> String {
+    let mut out = String::new();
+    for effect in &prompt.effects {
+        out.push_str("• ");
+        out.push_str(effect.description);
+        out.push('\n');
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(
+        "This comes with Cordial. Its own Enabled switch below governs whether it runs at all, \
+         separately from this — allowing something here does not turn it on, and refusing it \
+         does not turn it off. You can change any of these permissions at any time.",
+    );
+    out
 }
 
 /// "Install a plugin" — a `.tar.zst` picked from disk, unpacked the same
@@ -2453,5 +2620,49 @@ mod tests {
         assert!(body.contains("starts switched off"), "{body}");
         assert!(!body.contains("run code"), "{body}");
         assert!(prompt.heading().contains("will be able to"), "{}", prompt.heading());
+    }
+
+    #[test]
+    fn the_builtin_consent_body_does_not_claim_it_starts_switched_off() {
+        // The whole reason `consent_body_for_builtin` exists rather than
+        // reusing `consent_body` outright: a built-in ships enabled by
+        // default (`enablement::SHIPS_DISABLED` is the only exception) and
+        // may already have been running, denied, for as long as the profile
+        // has existed. "It starts switched off" would be false of exactly
+        // the plugin this dialog exists to explain.
+        let plugin = fixture(
+            r#"{"id":"discord-presence","name":"Discord Presence","entry":"main.ts",
+                "capabilities":["presence.set","log"]}"#,
+        );
+        let consent::Verdict::Ask(prompt) = consent::verdict(&plugin) else {
+            panic!("code must be asked about")
+        };
+        let body = consent_body_for_builtin(&prompt);
+        assert!(!body.contains("starts switched off"), "{body}");
+        assert!(body.contains(Capability::PresenceSet.consequence()), "{body}");
+        assert!(body.contains("Enabled switch"), "{body}");
+    }
+
+    #[test]
+    fn a_capability_row_names_the_denial_only_when_one_was_recorded() {
+        let plain = capability_row_subtitle(Capability::PresenceSet, false);
+        let refused = capability_row_subtitle(Capability::PresenceSet, true);
+        assert_eq!(plain, Capability::PresenceSet.consequence());
+        assert!(refused.starts_with(Capability::PresenceSet.consequence()));
+        assert!(refused.contains("refused"), "{refused}");
+        assert_ne!(plain, refused);
+    }
+
+    #[test]
+    fn a_built_in_that_has_never_been_asked_is_not_marked_seen() {
+        // `maybe_prompt_builtin_consent` itself needs a display to exercise
+        // end to end; this pins the guard it reads before ever building a
+        // dialog, the same way the rest of this file tests the logic around
+        // GTK widgets rather than the widgets themselves.
+        let dir = std::env::temp_dir().join("cordial-settings-builtin-consent-unseen");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!consent::has_been_asked(&consent::seen_path_in(&dir), "discord-presence"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

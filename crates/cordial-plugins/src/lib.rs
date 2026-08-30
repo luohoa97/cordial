@@ -15,6 +15,7 @@ pub mod broker;
 pub mod capability;
 pub mod consent;
 pub mod core_events;
+pub mod denials;
 pub mod enablement;
 pub mod events;
 pub mod grants;

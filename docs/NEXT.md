@@ -21,7 +21,7 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
-## Open: a refused capability is invisible, and the fix for it is dead code, 2026-08-30
+## A refused capability was invisible, and built-ins skipped consent: fixed, 2026-08-30
 
 A user reported Discord presence not broadcasting, then found the cause
 themselves: they had never granted the plugin its permissions. **The bug is not
@@ -78,6 +78,59 @@ The proposal that satisfies both: keep default-deny, extend the *existing*
 consent flow to built-ins so enabling one asks the same itemised question, and
 wire `denials()` into something a person can see. Neither needs new mechanism --
 both already exist and are simply not connected.
+
+**Fixed, 2026-08-30.** Both halves landed, default-deny untouched, and a third
+instance of the same class was found and fixed alongside them.
+
+- **Built-in consent.** A built-in's row now calls `consent::verdict` itself,
+  the first time this profile's Plugins page is built and only then --
+  recorded in a new `plugin-consent-seen.json` per profile
+  (`consent::seen_path_in`/`has_been_asked`/`mark_asked`), because a built-in
+  has no install click to hang a one-off prompt on the way a user install
+  does. It reuses the itemised effects list but not `Prompt::footer`'s "It
+  starts switched off" -- untrue of something that ships enabled and may
+  already have been running, denied, for as long as the profile has existed
+  -- so `settings.rs` gained `consent_body_for_builtin` rather than reusing
+  `consent_body` verbatim. Enablement (`SHIPS_DISABLED`) is untouched: this
+  prompt answers "may it do X", never "does it run at all".
+- **Denials, made visible.** `Broker::denials()` is still the record, but
+  nothing outside one plugin's own serving thread could ever read it -- a new
+  `cordial_plugins::denials` module persists a denial to
+  `plugin-denials.json` per profile the first time it happens, cleared the
+  moment the matching capability is granted (`grants::set`'s callers now also
+  call `denials::clear`, wired in `settings.rs`). A capability switch that has
+  a live denial on record says so in its own subtitle -- "Cordial has refused
+  this at least once because it was not granted" -- which is a stronger claim
+  than the existing "Not allowed" line, because it means the plugin actually
+  asked and was actually refused, not merely that nobody has granted it yet.
+- **`log.write` survives a terminal-less launch.** One `plugin.log` per
+  profile, appended to beside the existing `println!`. No rotation, no
+  levels -- deliberately not a logging subsystem, only the one gap that
+  mattered.
+- **A third instance of the same class, found while wiring the above and not
+  by design.** `start_all` read the grants file exactly once, before any
+  plugin thread existed, and never again -- so a capability turned on in
+  Settings had no effect on an already-running plugin until the next launch.
+  Measured on a live Flatpak instance: `cordial-shell` started at 14:19:12,
+  every capability `discord-presence` asked for was granted through Settings,
+  and `plugin-grants.json` was written at 14:20:51 -- ninety seconds into a
+  run whose broker still held the empty set it read before the file existed.
+  Fixed by `plugin_host::refresh_grant`, checked by `mtime` on every request a
+  plugin makes so an unchanged file costs one `stat(2)` and nothing more. It
+  updates two snapshots, not one: `Broker`'s, which gates the calls a plugin
+  makes, and `Listener::granted`, a second copy `flush_core_events` reads for
+  *delivering* a core event, which `refresh_grant` would have left stale on
+  its own -- a plugin whose `lifecycle.subscribe` started succeeding while it
+  stayed permanently deaf to the `client.launch`/`client.ready` events that
+  capability exists to unlock, the same bug one hop further downstream.
+
+**Not done, and worth naming.** The Listener half of the live-reload is
+exercised by review rather than by an automated test: constructing one needs
+a real `Writer`, which this crate can only get from a spawned Deno process,
+and adding one Deno-spawning test solely to observe a `BTreeSet` field copy
+was judged the heaviest possible test for the smallest possible claim. The
+`Broker` half, which shares the same `modified != last_seen` gate and the
+same `grants::load` call, is tested directly.
 
 ## Open: two build-shape traps that cost a session each, 2026-08-30
 
