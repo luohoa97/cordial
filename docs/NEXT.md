@@ -1033,6 +1033,58 @@ could never have matched; corrected, and marked `INFERRED` because with a null
 that was noticed, and only a control with the change reverted -- which behaved
 identically -- kept it from being blamed on the change under test.
 
+## 0-new. A freeze specimen that arrives AFTER the home page, 2026-08-30
+
+A user's Flatpak run, reported from Discord, froze in a shape the sections
+below do not describe, and two details in it are new. No backtrace: the process
+was gone by the time the log reached us, which is the one thing to fix about
+how these arrive -- `cordial_backtrace` on a live frozen client settles more in
+thirty seconds than a log does in a day.
+
+It did not fail to start. It reached `HOME_PAGE_INTERACTIVE` at 11:58:37.035,
+signed in, drew **185 frames**, and only then stopped:
+
+    11:59:10.162 [android] the engine has presented nothing for 6s after 185
+    frames; rect=Some((0, 0, 3440, 1440)) placed=(0, 0) setpos=1 qcommit=1.
+    The pump is still running, so this is not the idle throttle.
+
+After that, nothing but the 15-second battery poll for five solid minutes. So
+the process is alive, the looper is pumping, and the engine has stopped
+presenting -- which is a different animal from the sections below, where the
+app shell never reaches Landing at all. Whether it is the same underlying bug
+arriving later or a second one is **not established**, and merging them would
+be the mistake this file exists to prevent.
+
+The two new details, both correlations and neither a cause:
+
+**It follows the patch downloads immediately.** The last thing the engine says
+before going quiet is
+
+    11:58:37.258 I/DataModelPatchConfigurer in-app polling: downloading patch
+      _InExperiencePatch assetId=80471914653504 assetVersion=12200
+    11:58:37.273 I/DataModelPatchConfigurer in-app polling: downloading patch
+      _UniversalAppPatch assetId=118593852151835 assetVersion=12252
+
+and presents stop roughly 27 seconds later. Nothing here has looked at
+`DataModelPatchConfigurer` before. It is worth knowing whether a client that
+never polls for patches freezes at the same rate, which is a control somebody
+can actually run.
+
+**Cordial could not name a refresh rate.** First line of the run:
+
+    refresh: 2 outputs differ and nothing here knows which the window is on;
+    not naming a current rate
+
+Two monitors at different rates, and an ultrawide 3440x1440 surface. Every
+freeze measurement recorded in this file was taken on a single-output host. The
+refresh path is honest about not knowing rather than guessing, so this is not
+itself a bug -- but "the engine was told nothing about the refresh rate" is an
+untested variable sitting right next to a presentation stall, and it is cheap
+to test by forcing a rate.
+
+Neither is a theory yet. They are two things that were true of this run and
+have never been true of a measured one.
+
 ## 0. The freeze has a reliable reproduction, 2026-08-24
 
 **It stalls at `StartupController stage = 2`, immediately after `sync cookies
