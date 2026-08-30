@@ -166,12 +166,31 @@ jobs:
           GNUPGHOME: ${{ steps.gpg.outputs.gpghome }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          pkgs=(dist/arch/*.pkg.tar.zst dist/arch/**/*.pkg.tar.zst)
+          # **`find`, not a glob, and the first run with a signing key is what
+          # showed why.** This was `dist/arch/*.pkg.tar.zst
+          # dist/arch/**/*.pkg.tar.zst`, which found nothing and failed the
+          # build on 2026-08-30 the first time it got far enough to look.
+          #
+          # Two things combine. `release.yml`'s `cordial-arch` upload lists two
+          # paths -- `dist/arch/*.pkg.tar.zst` and
+          # `packaging/aur/cordial/PKGBUILD` -- and `upload-artifact@v4` roots a
+          # multi-path artifact at the least common ancestor of them, which is
+          # the repository root. So downloading it into `dist/arch` puts the
+          # package at `dist/arch/dist/arch/*.pkg.tar.zst`, two directories
+          # down. And bash's `**` is only `*` unless `globstar` is set, so the
+          # second pattern reached exactly one level and missed it.
+          #
+          # yum.yml's equivalent works by luck rather than by being written
+          # better: its upload lists a single path, so its artifact is rooted at
+          # `dist/rpm` and one level is enough. Do not copy its glob here.
+          mapfile -t pkgs < <(find dist/arch -type f -name '*.pkg.tar.zst' | sort)
           if [ "${#pkgs[@]}" -eq 0 ]; then
             echo "::error::no .pkg.tar.zst found under dist/arch after downloading cordial-arch" >&2
+            find dist/arch -type f | head -20 >&2
             exit 1
           fi
+          printf 'found %s package(s):\n' "${#pkgs[@]}"
+          printf '  %s\n' "${pkgs[@]}"
           packaging/pacman/build-repo.sh --outdir dist/pacman-repo "${pkgs[@]}"
 
       - name: Upload the repository tree
