@@ -408,6 +408,66 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ steps.aptrepo.outputs.run_id }}
 
+      # yum.yml and pacman.yml own building these trees, mirroring apt.yml's
+      # own two steps above exactly -- same "latest successful run" lookup,
+      # same continue-on-error for the same reason: both workflows' jobs can
+      # conclude success while building nothing, because every step past
+      # "Import the signing key" is skipped rather than failed when the
+      # matching secret is absent, and a skipped step does not fail a job.
+      - name: Find the latest dnf repository build
+        id: rpmrepo
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          run_id=$(gh run list --workflow=yum.yml --status=success --limit=1 \
+                      --json databaseId --jq '.[0].databaseId')
+          if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+            echo "no successful yum.yml run yet (no signing key, or it has never run); publishing without /rpm/"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download the dnf repository
+        if: steps.rpmrepo.outputs.found == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: cordial-rpm-repo
+          path: rpm-repo
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.rpmrepo.outputs.run_id }}
+
+      - name: Find the latest pacman repository build
+        id: pacmanrepo
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          run_id=$(gh run list --workflow=pacman.yml --status=success --limit=1 \
+                      --json databaseId --jq '.[0].databaseId')
+          if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+            echo "no successful pacman.yml run yet (no signing key, or it has never run); publishing without /arch/"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download the pacman repository
+        if: steps.pacmanrepo.outputs.found == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: cordial-pacman-repo
+          path: pacman-repo
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.pacmanrepo.outputs.run_id }}
+
       - name: Assemble the Pages tree
         run: |
           set -euo pipefail
@@ -454,6 +514,33 @@ jobs:
           else
             echo "no apt repository artifact available; publishing without /apt/"
           fi
+
+          # The dnf repository, downloaded above from yum.yml's latest green
+          # run. Absent until a maintainer adds RPM_GPG_PRIVATE_KEY /
+          # RPM_GPG_KEY_ID -- see docs/design/rpm-repository.md -- at which
+          # point yum.yml starts producing one and this step starts finding
+          # it, with no change needed here. packaging/cordial.repo is a
+          # complete, static file rather than one this step appends a key
+          # line to the way it does for cordial.flatpakrepo below: its
+          # gpgkey= is a URL, not an embedded key blob, so the file is
+          # correct whether or not anything is at that URL yet -- it just
+          # 404s honestly until yum.yml has actually signed something.
+          if [ -d rpm-repo ] && [ -n "$(ls -A rpm-repo 2>/dev/null)" ]; then
+            mv rpm-repo pages/rpm
+          else
+            echo "no dnf repository artifact available; publishing without /rpm/"
+          fi
+          cp packaging/cordial.repo pages/cordial.repo
+
+          # The pacman repository, downloaded above from pacman.yml's latest
+          # green run. Same absent-until-secret shape as /rpm/ above -- see
+          # docs/design/pacman-repository.md.
+          if [ -d pacman-repo ] && [ -n "$(ls -A pacman-repo 2>/dev/null)" ]; then
+            mv pacman-repo pages/arch
+          else
+            echo "no pacman repository artifact available; publishing without /arch/"
+          fi
+
           # Belt and braces. deploy-pages serves the artifact verbatim and does
           # not run Jekyll, but Jekyll skips paths beginning with _ or . and an
           # OSTree repository is not worth betting on that staying true.

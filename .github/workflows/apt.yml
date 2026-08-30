@@ -58,6 +58,21 @@ on:
           Run ID of a "Native packages" run to build from. Leave blank to use
           the most recent successful push run.
         required: false
+  # A single "publish to every repository" workflow can call this directly
+  # rather than going through workflow_dispatch's API-only entry point --
+  # `uses: ./.github/workflows/apt.yml` from another job only works against
+  # `workflow_call`, the same way flatpak.yml's own `publish` job already
+  # calls attach-to-release.yml. Added alongside yum.yml and pacman.yml
+  # gaining the same trigger, so that publisher has one shape to call across
+  # all three rather than a special case for the workflow that predates it.
+  workflow_call:
+    inputs:
+      run_id:
+        description: >-
+          Run ID of a "Native packages" run to build from. Leave blank to use
+          the most recent successful push run.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -79,10 +94,12 @@ jobs:
   build:
     # Only a push build of release.yml is eligible to reach the signing
     # step; a pull_request-triggered run of it is not (see the comment on
-    # `workflow_run` above), and workflow_dispatch is always eligible
-    # because a human asked for it directly.
+    # `workflow_run` above). workflow_dispatch and workflow_call are always
+    # eligible because something asked for this directly -- a human in the
+    # first case, a future single publish-everything workflow in the second.
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'workflow_call' ||
       (github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest

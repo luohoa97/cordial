@@ -1,0 +1,208 @@
+# Build Cordial's own dnf/yum repository and hand it to flatpak.yml to publish.
+#
+# The dnf analogue of apt.yml, kept as a separate file for exactly the same
+# reason that one gives for not folding into flatpak.yml or release.yml: a
+# `rpm/$releasever/$basearch/` tree at a stable URL a user adds a .repo file
+# for, not an upload into Fedora's own repos. See
+# docs/design/rpm-repository.md for both readings written out, including why
+# the second one is not attempted here, and for the $releasever layout this
+# workflow's output is shaped around.
+#
+# Why this file does not build an .rpm: the "Native packages" workflow
+# (release.yml) already does, in its `rpm` job, inside
+# registry.fedoraproject.org/fedora:44 -- see packaging/rpm/build-rpm.sh's
+# own header for why that specific container. This workflow triggers off
+# that job finishing and downloads what it already built rather than
+# compiling Cordial a second time on every push.
+#
+# Why this file does not deploy to Pages itself: the same reason apt.yml
+# does not -- GitHub Pages, published through actions/deploy-pages, is one
+# deployment for the whole site with no per-path incremental publish, and
+# flatpak.yml already owns that deployment. This workflow stops at a plain
+# actions/upload-artifact, and flatpak.yml's own "Assemble the Pages tree"
+# step reaches across and pulls in the latest green run of this one -- see
+# the comment there for the one consequence that follows: the rpm tree in a
+# given Pages deploy can lag the flatpak repo by up to one push, because the
+# two workflows run independently rather than one waiting on the other
+# mid-run.
+#
+# Nothing here fetches, embeds or references any Roblox material -- see
+# AGENTS.md, "Permanently out of scope". This workflow's job is entirely
+# about .rpm files Cordial already built of its own source.
+
+name: RPM repository
+
+on:
+  # The ordinary path: release.yml's `rpm` job finishes building a fresh
+  # .rpm and this workflow picks it up. Reads the *default branch's* copy of
+  # this file regardless of which ref triggered release.yml -- see apt.yml's
+  # own comment on `workflow_run` for why that is what makes it safe to also
+  # fire for a pull-request run of release.yml without handing that PR's
+  # branch any access to RPM_GPG_PRIVATE_KEY it would not otherwise have.
+  workflow_run:
+    workflows: ["Native packages"]
+    types: [completed]
+  # A manual re-publish -- rebuilding the repository tree from the most
+  # recent successful push build without waiting for a new one.
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: >-
+          Run ID of a "Native packages" run to build from. Leave blank to use
+          the most recent successful push run.
+        required: false
+  # A single "publish to every repository" workflow can call this directly
+  # rather than going through workflow_dispatch's API-only entry point --
+  # `uses: ./.github/workflows/yum.yml` from another job only works against
+  # `workflow_call`, the same way flatpak.yml's own `publish` job already
+  # calls attach-to-release.yml. Kept as a distinct trigger from
+  # workflow_dispatch, with the same optional `run_id`, rather than folding
+  # the two together, because a reusable-workflow call and a human clicking
+  # "Run workflow" are different callers even when they want the same thing.
+  workflow_call:
+    inputs:
+      run_id:
+        description: >-
+          Run ID of a "Native packages" run to build from. Leave blank to use
+          the most recent successful push run.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  # download-artifact needs to read a *different* run's artifacts than the
+  # one this job is executing in.
+  actions: read
+
+# One at a time, and cancel a stale one outright: unlike flatpak.yml's
+# publish target, nothing here is a partially-written repository that a
+# cancelled run could leave corrupt. A second push superseding an in-flight
+# run just means the newer .rpm is the one that ends up built.
+concurrency:
+  group: yum-repo
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Only a push build of release.yml is eligible to reach the signing
+    # step; a pull_request-triggered run of it is not (see the comment on
+    # `workflow_run` above). workflow_dispatch and workflow_call are always
+    # eligible because something asked for this directly.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'workflow_call' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve which release.yml run to build from
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_RUN_ID:-}" ]; then
+            run_id="$INPUT_RUN_ID"
+          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+            run_id="${{ github.event.workflow_run.id }}"
+          else
+            # workflow_dispatch/workflow_call with no run_id given: the most
+            # recent successful push build, which is the same thing a fresh
+            # push would have picked.
+            run_id=$(gh run list --workflow=release.yml --branch=main \
+                        --status=success --event=push --limit=1 \
+                        --json databaseId --jq '.[0].databaseId')
+            if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+              echo "::error::no successful push run of release.yml found to build from" >&2
+              exit 1
+            fi
+          fi
+          head_sha=$(gh run view "$run_id" --json headSha --jq '.headSha')
+          echo "building from release.yml run $run_id ($head_sha)"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.head_sha }}
+          submodules: false
+
+      # Absent secret means this job stops here, cleanly. Like
+      # packaging/apt/build-repo.sh, packaging/rpm/build-repo.sh refuses
+      # outright to build an unsigned dnf repository -- see that script's
+      # own header for why an unsigned dnf repository is a worse thing to
+      # publish than apt.yml's unsigned case even is: dnf's gpgcheck=0 asks
+      # for no `[trusted=yes]`-shaped admission from whoever adds the .repo
+      # file, so there is nothing downstream of a missing key for this job
+      # to do that would not be silently unsafe.
+      - name: Import the signing key
+        id: gpg
+        env:
+          KEY: ${{ secrets.RPM_GPG_PRIVATE_KEY }}
+          KEYID: ${{ secrets.RPM_GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEY:-}" ]; then
+            echo "no RPM_GPG_PRIVATE_KEY secret; the dnf repository is not built or published"
+            echo "signing=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          home="$RUNNER_TEMP/gnupg"
+          mkdir -p "$home"
+          chmod 700 "$home"
+          printf '%s' "$KEY" | gpg --homedir "$home" --batch --import
+          if [ -z "${KEYID:-}" ]; then
+            echo "RPM_GPG_PRIVATE_KEY is set but RPM_GPG_KEY_ID is not" >&2
+            exit 1
+          fi
+          echo "signing=true" >> "$GITHUB_OUTPUT"
+          echo "gpghome=$home" >> "$GITHUB_OUTPUT"
+
+      - name: Download the .rpm release.yml already built
+        if: steps.gpg.outputs.signing == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: cordial-rpm
+          path: dist/rpm
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.source.outputs.run_id }}
+
+      # createrepo-c is Ubuntu's package name for the tool
+      # packaging/rpm/build-repo.sh calls createrepo_c -- confirmed against
+      # this runner's own apt metadata is not possible from this repository's
+      # development host (no apt there either; see that script's header), so
+      # this install step is the first real exercise of it, the same
+      # position apt.yml's "Install apt-ftparchive" step is in for the
+      # apt-ftparchive branch of packaging/apt/build-repo.sh.
+      - name: Install createrepo_c
+        if: steps.gpg.outputs.signing == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y createrepo-c
+
+      - name: Build the repository tree
+        if: steps.gpg.outputs.signing == 'true'
+        env:
+          RPM_GPG_KEY_ID: ${{ secrets.RPM_GPG_KEY_ID }}
+          GNUPGHOME: ${{ steps.gpg.outputs.gpghome }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          rpms=(dist/rpm/*.rpm dist/rpm/**/*.rpm)
+          if [ "${#rpms[@]}" -eq 0 ]; then
+            echo "::error::no .rpm found under dist/rpm after downloading cordial-rpm" >&2
+            exit 1
+          fi
+          packaging/rpm/build-repo.sh --outdir dist/rpm-repo "${rpms[@]}"
+
+      - name: Upload the repository tree
+        if: steps.gpg.outputs.signing == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cordial-rpm-repo
+          path: dist/rpm-repo
+          if-no-files-found: error
+          retention-days: 90

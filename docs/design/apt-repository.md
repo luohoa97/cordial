@@ -94,12 +94,31 @@ gpg --armor --export             "$FPR" > cordial-apt-signing-key.public.asc
 
 ### Where the private half lives
 
-**A GitHub Actions repository secret, and nowhere else.** Repository →
-Settings → Secrets and variables → Actions → New repository secret, twice:
+**A GitHub Actions repository secret, and nowhere else.** Either the web UI
+(Repository → Settings → Secrets and variables → Actions → New repository
+secret) or the `gh` CLI, which is the faster path from the same shell the key
+was just generated in and reads exactly the same bytes
+`.github/workflows/apt.yml`'s "Import the signing key" step later imports:
+
+```bash
+gh secret set APT_GPG_PRIVATE_KEY -R luohoa97/cordial < cordial-apt-signing-key.private.asc
+gh secret set APT_GPG_KEY_ID      -R luohoa97/cordial --body "$FPR"
+
+# Rebuild now, rather than waiting for the next push --
+# .github/workflows/apt.yml's own workflow_dispatch trigger exists for
+# exactly this moment.
+gh workflow run apt.yml -R luohoa97/cordial
+```
+
+Two secrets, named precisely because `apt.yml` reads them by these names and
+nothing else:
 
 - `APT_GPG_PRIVATE_KEY` -- the full contents of
   `cordial-apt-signing-key.private.asc`, `-----BEGIN...-----` lines
-  included.
+  included. **Armoured plain text, not base64** -- confirmed by reading
+  `apt.yml`'s own "Import the signing key" step, which does
+  `printf '%s' "$KEY" | gpg --batch --import` and never decodes anything
+  first, so the secret must already be the literal ASCII-armoured block.
 - `APT_GPG_KEY_ID` -- the bare 40-character fingerprint, `$FPR` above. The
   full fingerprint, not the short form -- the short form is what a
   collision attack targets, and every `--local-user`/`--export` call in
@@ -165,8 +184,8 @@ short version:
 
 ```bash
 sudo curl -fsSL https://luohoa97.github.io/cordial/apt/cordial-archive-keyring.gpg \
-    -o /usr/share/keyrings/cordial-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/cordial-archive-keyring.gpg] https://luohoa97.github.io/cordial/apt stable main" \
+    -o /etc/apt/keyrings/cordial-archive-keyring.gpg
+echo "deb [signed-by=/etc/apt/keyrings/cordial-archive-keyring.gpg] https://luohoa97.github.io/cordial/apt stable main" \
     | sudo tee /etc/apt/sources.list.d/cordial.list
 sudo apt update && sudo apt install cordial
 ```
@@ -183,7 +202,7 @@ its fingerprint goes, published out of band from the install commands above
 so a user has a second source to check against:
 
 ```bash
-gpg --show-keys --with-fingerprint /usr/share/keyrings/cordial-archive-keyring.gpg
+gpg --show-keys --with-fingerprint /etc/apt/keyrings/cordial-archive-keyring.gpg
 ```
 
 Until this section names a fingerprint, there is nothing at the published
@@ -195,7 +214,7 @@ the README.
 **A user who already has the keyring file keeps trusting the old key until
 they replace it, which is the correct failure mode.** `apt` checks the
 *current* `InRelease` signature against whatever is in
-`/usr/share/keyrings/cordial-archive-keyring.gpg` on their machine, on every
+`/etc/apt/keyrings/cordial-archive-keyring.gpg` on their machine, on every
 `apt update`. If the signing key is ever rotated -- planned renewal at
 expiry, or a compromise -- new `Release` files signed by the new key will
 not verify against a keyring file that still holds the old one, and `apt

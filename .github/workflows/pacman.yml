@@ -1,0 +1,184 @@
+# Build Cordial's own pacman repository and hand it to flatpak.yml to publish.
+#
+# The Arch analogue of apt.yml and yum.yml: a repo-add database at a stable
+# URL a user points pacman.conf at, not an AUR submission -- AUR sign-ups are
+# currently closed, which is exactly the gap this repository exists to cover
+# rather than wait out. See docs/design/pacman-repository.md for the fuller
+# picture, including Chaotic-AUR as a separate, third route that needs no
+# AUR account either.
+#
+# Why this file does not build a .pkg.tar.zst: the "Native packages" workflow
+# (release.yml) already does, in its `arch` job, inside archlinux:base-devel
+# -- makepkg against packaging/aur/cordial/PKGBUILD. This workflow triggers
+# off that job finishing and downloads what it already built rather than
+# compiling Cordial a second time on every push.
+#
+# Why this job itself also runs inside archlinux:base-devel, unlike apt.yml
+# and yum.yml which run on the bare ubuntu-latest runner: repo-add and
+# pacman-key are Arch-only tools with no Debian/Ubuntu package to apt-get,
+# the same reason release.yml's own `arch` job does not try to cross-build an
+# Arch package anywhere else. See packaging/pacman/build-repo.sh's own header
+# for why its repo-add invocation is INFERRED rather than verified before
+# this workflow's first real run.
+#
+# Why this file does not deploy to Pages itself: the same reason apt.yml and
+# yum.yml do not -- GitHub Pages, published through actions/deploy-pages, is
+# one deployment for the whole site with no per-path incremental publish, and
+# flatpak.yml already owns that deployment. This workflow stops at a plain
+# actions/upload-artifact, and flatpak.yml's own "Assemble the Pages tree"
+# step reaches across and pulls in the latest green run of this one -- with
+# the same one-push lag apt.yml's and yum.yml's own headers already explain.
+#
+# Nothing here fetches, embeds or references any Roblox material -- see
+# AGENTS.md, "Permanently out of scope". This workflow's job is entirely
+# about a .pkg.tar.zst Cordial already built of its own source.
+
+name: pacman repository
+
+on:
+  workflow_run:
+    workflows: ["Native packages"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: >-
+          Run ID of a "Native packages" run to build from. Leave blank to use
+          the most recent successful push run.
+        required: false
+  # See yum.yml's own comment on this trigger -- a future single
+  # "publish to every repository" workflow calls this the same way.
+  workflow_call:
+    inputs:
+      run_id:
+        description: >-
+          Run ID of a "Native packages" run to build from. Leave blank to use
+          the most recent successful push run.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: pacman-repo
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'workflow_call' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 20
+    steps:
+      # gh is not in archlinux:base-devel's package set, and this step needs
+      # it before anything else runs -- release.yml's own `arch` job never
+      # needed gh because it only ever built the ref it was checked out at.
+      - name: Install gh and gnupg
+        run: pacman -Syu --needed --noconfirm github-cli gnupg
+
+      - name: Resolve which release.yml run to build from
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_RUN_ID:-}" ]; then
+            run_id="$INPUT_RUN_ID"
+          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+            run_id="${{ github.event.workflow_run.id }}"
+          else
+            run_id=$(gh run list --workflow=release.yml --branch=main \
+                        --status=success --event=push --limit=1 \
+                        --json databaseId --jq '.[0].databaseId')
+            if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+              echo "::error::no successful push run of release.yml found to build from" >&2
+              exit 1
+            fi
+          fi
+          head_sha=$(gh run view "$run_id" --json headSha --jq '.headSha')
+          echo "building from release.yml run $run_id ($head_sha)"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.head_sha }}
+          submodules: false
+
+      # Absent secret means this job stops here, cleanly -- the same refusal
+      # packaging/apt/build-repo.sh and packaging/rpm/build-repo.sh make, for
+      # the same reason: an unsigned repository database still installs
+      # without a user typing anything that flags it as unsigned, so this
+      # script does not produce one by default. See
+      # docs/design/pacman-repository.md.
+      - name: Import the signing key
+        id: gpg
+        env:
+          KEY: ${{ secrets.ARCH_GPG_PRIVATE_KEY }}
+          KEYID: ${{ secrets.ARCH_GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEY:-}" ]; then
+            echo "no ARCH_GPG_PRIVATE_KEY secret; the pacman repository is not built or published"
+            echo "signing=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          home="$RUNNER_TEMP/gnupg"
+          mkdir -p "$home"
+          chmod 700 "$home"
+          printf '%s' "$KEY" | gpg --homedir "$home" --batch --import
+          if [ -z "${KEYID:-}" ]; then
+            echo "ARCH_GPG_PRIVATE_KEY is set but ARCH_GPG_KEY_ID is not" >&2
+            exit 1
+          fi
+          echo "signing=true" >> "$GITHUB_OUTPUT"
+          echo "gpghome=$home" >> "$GITHUB_OUTPUT"
+
+      - name: Download the .pkg.tar.zst release.yml already built
+        if: steps.gpg.outputs.signing == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: cordial-arch
+          path: dist/arch
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.source.outputs.run_id }}
+
+      - name: Install pacman-contrib
+        # repo-add ships in pacman-contrib, not in base-devel -- confirmed
+        # against Arch's own package database (pacman-contrib's own upstream
+        # description names repo-add as one of its scripts), not run on this
+        # repository's development host, which has no pacman on it at all.
+        if: steps.gpg.outputs.signing == 'true'
+        run: pacman -Syu --needed --noconfirm pacman-contrib
+
+      - name: Build the repository tree
+        if: steps.gpg.outputs.signing == 'true'
+        env:
+          ARCH_GPG_KEY_ID: ${{ secrets.ARCH_GPG_KEY_ID }}
+          GNUPGHOME: ${{ steps.gpg.outputs.gpghome }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          pkgs=(dist/arch/*.pkg.tar.zst dist/arch/**/*.pkg.tar.zst)
+          if [ "${#pkgs[@]}" -eq 0 ]; then
+            echo "::error::no .pkg.tar.zst found under dist/arch after downloading cordial-arch" >&2
+            exit 1
+          fi
+          packaging/pacman/build-repo.sh --outdir dist/pacman-repo "${pkgs[@]}"
+
+      - name: Upload the repository tree
+        if: steps.gpg.outputs.signing == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cordial-pacman-repo
+          path: dist/pacman-repo
+          if-no-files-found: error
+          retention-days: 90

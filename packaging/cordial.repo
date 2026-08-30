@@ -1,0 +1,49 @@
+# Cordial's own dnf/yum repository -- not a package in Fedora's own repos.
+# See docs/design/rpm-repository.md for why those are two different things
+# and where this one currently stands.
+#
+# Drop this file straight into /etc/yum.repos.d/, or let dnf fetch it:
+#
+#     sudo curl -fsSL https://luohoa97.github.io/cordial/cordial.repo \
+#         -o /etc/yum.repos.d/cordial.repo
+#     sudo dnf install cordial
+#
+# $releasever, not a fixed directory: release.yml builds one Fedora release
+# at a time (Fedora 44 as of this writing -- see packaging/rpm/build-rpm.sh's
+# own header for why: gtk4 4.22 and libadwaita 1.9, which Fedora 43 lacks),
+# and packaging/rpm/build-repo.sh publishes each release it is given into its
+# own rpm/<releasever>/<arch>/ directory rather than one directory that
+# quietly serves an fc44 binary to an fc43 or fc45 dnf. **If your dnf reports
+# a $releasever with nothing built for it yet, this baseurl 404s.** That is
+# the correct failure and a clean one to diagnose -- see
+# docs/design/rpm-repository.md for the fuller argument, and check
+# https://luohoa97.github.io/cordial/rpm/ for which releases actually have a
+# directory before assuming Cordial does not support your release at all.
+#
+# gpgcheck=0 is permanent, not a placeholder for a future 1. This repository
+# never re-signs the individual .rpm the way gpgcheck=1 on a package would
+# need it to (`rpm --addsign` rewrites the package's own header, which would
+# put a different file at this URL than the one release.yml built and
+# cosign already signed on the release page -- see
+# docs/design/rpm-repository.md for the full argument, the same one
+# docs/design/apt-repository.md makes for signing Release rather than the
+# .deb). What is signed instead is each release directory's own
+# repodata/repomd.xml, which repo_gpgcheck checks -- so that is the setting
+# that carries this repository's actual trust guarantee, not gpgcheck.
+#
+# No unsigned form of this file is published. packaging/rpm/build-repo.sh
+# refuses to build a repository tree with no RPM_GPG_KEY_ID at all -- unlike
+# apt, which needs a user to type [trusted=yes] to accept an unsigned
+# repository, dnf's gpgcheck=0 asks for no such admission from whoever adds
+# this file, so an unsigned tree here would be silently weaker rather than
+# visibly so. See docs/design/rpm-repository.md for that argument in full.
+# Until RPM_GPG_KEY_ID and RPM_GPG_PRIVATE_KEY exist, .github/workflows/yum.yml
+# publishes nothing and every URL below 404s -- the README says so plainly.
+
+[cordial]
+name=Cordial
+baseurl=https://luohoa97.github.io/cordial/rpm/$releasever/$basearch
+enabled=1
+gpgcheck=0
+repo_gpgcheck=1
+gpgkey=https://luohoa97.github.io/cordial/rpm/RPM-GPG-KEY-cordial

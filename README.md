@@ -416,9 +416,10 @@ Cordial's own repository, not a package in Debian or Ubuntu itself -- see
 those are two different things and where this one currently stands.
 
 ```bash
+sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://luohoa97.github.io/cordial/apt/cordial-archive-keyring.gpg \
-    -o /usr/share/keyrings/cordial-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/cordial-archive-keyring.gpg] https://luohoa97.github.io/cordial/apt stable main" \
+    -o /etc/apt/keyrings/cordial-archive-keyring.gpg
+echo "deb [signed-by=/etc/apt/keyrings/cordial-archive-keyring.gpg] https://luohoa97.github.io/cordial/apt stable main" \
     | sudo tee /etc/apt/sources.list.d/cordial.list
 sudo apt update
 sudo apt install cordial
@@ -438,7 +439,7 @@ downloaded against the fingerprint published in
 of band from this file:
 
 ```bash
-gpg --show-keys --with-fingerprint /usr/share/keyrings/cordial-archive-keyring.gpg
+gpg --show-keys --with-fingerprint /etc/apt/keyrings/cordial-archive-keyring.gpg
 ```
 
 **Nothing is signed yet.** No `APT_GPG_PRIVATE_KEY` secret exists in this
@@ -449,6 +450,104 @@ to build an unsigned repository rather than publish one that only works with
 maintainer generates and adds the key. This paragraph is here so that gap
 does not have to be discovered by `apt update` failing; it is removed the day
 signing switches on, in the same commit that adds the fingerprint above.
+
+Verified live on 2026-08-30: `https://luohoa97.github.io/cordial/apt/` and
+`.../apt/dists/stable/InRelease` both return 404 while the site root and
+`cordial.flatpakrepo` return 200 -- exactly what an absent
+`APT_GPG_PRIVATE_KEY` predicts, and nothing more, which is worth saying
+because a 404 on part of a published site otherwise looks like breakage
+rather than an accurately-documented gap.
+
+#### 2.4 dnf (Fedora, RHEL, and derivatives)
+
+Cordial's own repository, not a package in Fedora's own repos -- see
+[`docs/design/rpm-repository.md`](docs/design/rpm-repository.md) for why
+those are two different things and where this one currently stands.
+
+```bash
+sudo curl -fsSL https://luohoa97.github.io/cordial/cordial.repo \
+    -o /etc/yum.repos.d/cordial.repo
+sudo dnf install cordial
+```
+
+**Only Fedora 44 has a build today.** The repository is split by
+`$releasever` because a `.rpm` built against Fedora 44's `gtk4`/`libadwaita`
+is not guaranteed to install on a different release -- see
+[`docs/design/rpm-repository.md`](docs/design/rpm-repository.md#why-releasever-and-what-that-honestly-costs)
+for the full argument. **If your `dnf` reports a `$releasever` other than
+44, the command above 404s honestly** rather than installing a build meant
+for a different release; that is by design, not a bug to report, until
+`release.yml` builds a second release.
+
+**Verify the key before you trust it**, out of band from this file:
+
+```bash
+curl -fsSL https://luohoa97.github.io/cordial/rpm/RPM-GPG-KEY-cordial | gpg --show-keys
+```
+
+against the fingerprint published in
+[`docs/design/rpm-repository.md`](docs/design/rpm-repository.md#the-key).
+
+**Nothing is signed yet.** No `RPM_GPG_PRIVATE_KEY` secret exists in this
+repository's CI as of this writing, and
+[`packaging/rpm/build-repo.sh`](packaging/rpm/build-repo.sh) refuses outright
+to build an unsigned repository -- more strictly than the apt side, because a
+dnf `.repo` file with `gpgcheck=0` baked in gives a user nothing to
+consciously opt out of the way apt's `[trusted=yes]` does, see
+[`docs/design/rpm-repository.md`](docs/design/rpm-repository.md) for why that
+asymmetry means this repository is never published unsigned at all. The
+commands above will not install anything until a maintainer generates and
+adds the key.
+
+#### 2.5 pacman (Arch and derivatives)
+
+The AUR is the ordinary route for an Arch package, and
+[`packaging/aur/cordial/PKGBUILD`](packaging/aur/cordial/PKGBUILD) already
+builds there — but **AUR account sign-ups are currently closed**, which
+blocks submitting it no matter how ready the packaging is. Two routes exist
+that do not depend on that reopening:
+
+<!-- COORDINATOR: Chaotic-AUR paragraph goes here once the submission (pkgbase/source via
+     .ci/manual-add.sh) has actually landed and the resulting package name and
+     enable-the-repo instructions are settled. Do not write this from guesswork --
+     document it once it exists, per AGENTS.md. -->
+
+**Cordial's own repository.** The same shape as the dnf and apt repositories
+above, signed the same way -- see
+[`docs/design/pacman-repository.md`](docs/design/pacman-repository.md).
+
+```bash
+curl -fsSL https://luohoa97.github.io/cordial/arch/cordial-archive-keyring.asc \
+    | sudo pacman-key --add -
+sudo pacman-key --lsign-key <fingerprint>   # from docs/design/pacman-repository.md#the-key
+```
+
+Then add to `/etc/pacman.conf`:
+
+```ini
+[cordial]
+Server = https://luohoa97.github.io/cordial/arch/$arch
+SigLevel = DatabaseRequired PackageNever
+```
+
+```bash
+sudo pacman -Sy cordial
+```
+
+`SigLevel = DatabaseRequired PackageNever` says precisely what this
+repository actually signs -- the database, not each package -- rather than
+either accepting nothing (`SigLevel = Never`) or failing on a per-package
+signature this repository does not produce
+(`SigLevel = Required`). See
+[`docs/design/pacman-repository.md`](docs/design/pacman-repository.md#pacmanconfs-siglevel-stated-precisely-rather-than-left-to-a-default)
+for why.
+
+**Nothing is signed yet.** No `ARCH_GPG_PRIVATE_KEY` secret exists in this
+repository's CI as of this writing, and
+[`packaging/pacman/build-repo.sh`](packaging/pacman/build-repo.sh) refuses
+outright to build an unsigned repository, for the same reason the dnf side
+does. The commands above will not install anything until a maintainer
+generates and adds the key.
 
 #### Release downloads are signed, and here is how to check
 
@@ -901,6 +1000,8 @@ Start with [`docs/NEXT.md`](docs/NEXT.md). The rest is reference.
 | [`docs/multiarch.md`](docs/multiarch.md) | Multi-architecture decision |
 | [`docs/design/flatpak-remote-signing.md`](docs/design/flatpak-remote-signing.md) | The exact procedure for signing the Flatpak remote, for whoever holds the key |
 | [`docs/design/apt-repository.md`](docs/design/apt-repository.md) | The APT repository: the key, how it is published, and why official Debian is a different question |
+| [`docs/design/rpm-repository.md`](docs/design/rpm-repository.md) | The dnf repository: `$releasever` layout, the key, and why official Fedora is a different question |
+| [`docs/design/pacman-repository.md`](docs/design/pacman-repository.md) | The pacman repository: the key, Chaotic-AUR and the AUR as separate routes |
 | [`docs/analysis/desktop-integration-audit.md`](docs/analysis/desktop-integration-audit.md) | What is already native-feeling about the `.desktop` entry, icons and deep links, and what is not |
 
 ## What this is built on, and who it is owed to
