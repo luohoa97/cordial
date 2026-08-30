@@ -98,6 +98,45 @@ fn plausible(body: &str) -> bool {
     body.contains("\"applicationSettings\"")
 }
 
+/// Where the document handed to the engine came from, or why there is none.
+///
+/// This exists to answer the question GitHub issue #21 could not: reporter A's
+/// `nativeInitializeNativeFlags` resolved roughly ten of a hundred and
+/// thirty-nine flags against a healthy machine's eighty-one, and the log
+/// between `nativeSetCacheDirectory ok (early)` and `bootstrapTheApp
+/// installed` said nothing about whether that was an unreadable
+/// `--client-settings` path, a fetch that never connected, or a fetch that
+/// connected and was refused. It is a name for that gap, not a fix for the
+/// bug -- see `docs/analysis/flag-init.md` §50 and its correction for why a
+/// wait on any of this would hang instead of help: `bootstrapTheApp` itself
+/// runs on the engine's own schedule, not synchronously inside
+/// `initializeNativeCode` as an earlier draft of that fix assumed.
+pub enum Source {
+    /// `--client-settings <path>`, and it read.
+    Explicit,
+    /// The on-disk cache, still inside `MAX_AGE`.
+    FreshCache,
+    /// A live fetch from the CDN.
+    Fetched,
+    /// The fetch failed and a stale cache answered in its place.
+    StaleCache,
+    /// Nothing did. The engine gets an empty document and resolves almost
+    /// every flag to its own compiled default -- this is why.
+    Nothing(String),
+}
+
+impl std::fmt::Display for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Source::Explicit => write!(f, "--client-settings"),
+            Source::FreshCache => write!(f, "cache"),
+            Source::Fetched => write!(f, "fetched"),
+            Source::StaleCache => write!(f, "stale cache, fetch failed"),
+            Source::Nothing(why) => write!(f, "nothing: {why}"),
+        }
+    }
+}
+
 /// The client settings document, from cache when it is fresh and from Roblox
 /// otherwise.
 ///
@@ -105,27 +144,51 @@ fn plausible(body: &str) -> bool {
 /// it can be given, and a client that starts without flags is more useful than
 /// one that refuses to start because a CDN was unreachable.
 pub fn load(explicit: Option<&str>) -> Option<String> {
-    load_base(explicit).map(apply_overrides)
+    load_reporting(explicit).0
 }
 
-fn load_base(explicit: Option<&str>) -> Option<String> {
+/// As [`load`], but says where the document came from (or why there is none)
+/// rather than discarding that fact. The default (`bootstrapTheApp`) launch
+/// path prints it; see `load.rs`'s `BootstrapPlan`.
+pub fn load_reporting(explicit: Option<&str>) -> (Option<String>, Source) {
+    let (body, source) = load_base(explicit);
+    (body.map(apply_overrides), source)
+}
+
+fn load_base(explicit: Option<&str>) -> (Option<String>, Source) {
     if let Some(path) = explicit {
-        return std::fs::read_to_string(path).ok();
+        return match std::fs::read_to_string(path) {
+            Ok(body) => (Some(body), Source::Explicit),
+            // Used to be `.ok()`, silently. An unreadable path given with
+            // `--client-settings` is a typo or a stale symlink, not "use the
+            // network instead" -- and it looked exactly like a healthy launch
+            // with nothing on the other end of it. Printed here too, not only
+            // returned as a `Source`, because `load()` -- still used at every
+            // call site but the default one -- throws the `Source` away.
+            Err(e) => {
+                let why = format!("--client-settings {path}: {e}");
+                println!("  client settings: {why}");
+                (None, Source::Nothing(why))
+            }
+        };
     }
     let cache = cache_path();
     if let Some(body) = fresh(&cache) {
-        return Some(body);
+        return (Some(body), Source::FreshCache);
     }
     match fetch() {
-        Some(body) => {
+        Ok(body) => {
             if let Some(parent) = cache.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
             let _ = std::fs::write(&cache, &body);
-            Some(body)
+            (Some(body), Source::Fetched)
         }
         // A stale copy beats nothing when the network is down.
-        None => std::fs::read_to_string(&cache).ok(),
+        Err(why) => match std::fs::read_to_string(&cache) {
+            Ok(body) => (Some(body), Source::StaleCache),
+            Err(_) => (None, Source::Nothing(why)),
+        },
     }
 }
 
@@ -241,17 +304,31 @@ fn merge(
     Ok((out, applied))
 }
 
-fn fetch() -> Option<String> {
-    let body = ureq::get(URL)
-        .call()
-        .ok()?
-        .body_mut()
-        // The document is ~1.2 MB and ureq's default read limit is smaller, so
-        // an unset limit here is the difference between the real settings and a
-        // silent truncation that would parse as valid JSON.
-        .read_to_string()
-        .ok()?;
-    plausible(&body).then_some(body)
+/// Returns the reason rather than `None` on failure, because `load_base` now
+/// has somewhere to put it (`Source::Nothing`) and "why" is exactly what was
+/// missing from the report this exists to answer.
+///
+/// Used to be a bare `ureq::get(URL).call()` with no connect or read timeout
+/// configured at all -- everything `None` except the read-size limit below --
+/// so a CDN that accepted the TCP connection and then said nothing could hold
+/// a launch open indefinitely with no way to tell, from the log, that this was
+/// what had happened. `cordial_update::http::get_text` is the "house" client
+/// this project already uses for its own version/changelog/APK metadata
+/// fetches, built on the timeouts `cordial-update/src/http.rs` picked for
+/// exactly this shape of request -- ten seconds to connect, twenty total
+/// (`http::CONNECT`, `http::TIMEOUT`). Reused rather than re-derived, so the
+/// two numbers cannot drift apart, and it comes with `url_policy`'s
+/// host-locked redirect handling for free, which the bare call did not have.
+fn fetch() -> Result<String, String> {
+    // The document is ~1.2 MB; `get_text`'s own limit is 8 MB, which is a
+    // metadata-sized bound rather than the APK-sized one `crate::download`
+    // needs, but comfortably above anything this endpoint has ever answered.
+    let body = cordial_update::http::get_text(URL).map_err(|e| e.to_string())?;
+    if plausible(&body) {
+        Ok(body)
+    } else {
+        Err(format!("{URL} answered with something that is not a settings document"))
+    }
 }
 
 #[cfg(test)]
@@ -329,9 +406,22 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("settings.json");
         std::fs::write(&p, r#"{"applicationSettings":{}}"#).unwrap();
-        assert_eq!(
-            load_base(Some(p.to_str().unwrap())).as_deref(),
-            Some(r#"{"applicationSettings":{}}"#)
-        );
+        let (body, source) = load_base(Some(p.to_str().unwrap()));
+        assert_eq!(body.as_deref(), Some(r#"{"applicationSettings":{}}"#));
+        assert!(matches!(source, Source::Explicit));
+    }
+
+    /// GitHub issue #21, reporter A: an unreadable `--client-settings` path
+    /// used to come back as a bare `None`, identical to "the CDN was
+    /// unreachable and there was no cache either" -- the two failures a
+    /// launch log could not tell apart. `Source::Nothing` exists so it can.
+    #[test]
+    fn an_unreadable_explicit_path_says_why_rather_than_just_no() {
+        let (body, source) = load_base(Some("/nonexistent/cordial-cs-test-path.json"));
+        assert_eq!(body, None);
+        match source {
+            Source::Nothing(why) => assert!(why.contains("/nonexistent/cordial-cs-test-path.json")),
+            _ => panic!("expected Source::Nothing, got a different source"),
+        }
     }
 }

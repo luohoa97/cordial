@@ -19,8 +19,11 @@
 //! independent grounds — either one would be enough on its own.
 //!
 //! **Cordial's own client-settings fetch would not see it.**
-//! `cordial_runtime::client_settings::fetch` calls `ureq::get(URL).call()`
-//! directly, with no proxy configured; `ureq` does not consult
+//! `cordial_runtime::client_settings::fetch` goes through
+//! `cordial_update::http::get_text` (it used to call `ureq::get(URL).call()`
+//! directly; GitHub issue #21 is why it now has the timeouts that call lacked,
+//! not why the proxy question below changed), and neither that nor the bare
+//! call it replaced configures a proxy; `ureq` does not consult
 //! `http_proxy`/`HTTPS_PROXY` on its own, so setting them would do nothing for
 //! the one HTTP request Cordial itself is definitely responsible for, before
 //! the engine exists to blame.

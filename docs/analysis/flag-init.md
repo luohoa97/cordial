@@ -5861,3 +5861,199 @@ and also unconnected to a mechanism.
 `onFlagsFailed` hook: "this blocks neither startup nor the content store" is
 right about the hook itself and wrong as a blanket claim about the state it
 reports — corrected in place, same commit as this section.
+
+## §51. §50 conflated two bugs, there is no signal to gate on, and the fix is visibility plus real timeouts, not a wait
+
+2026-08-30, later the same day. §50 read both GitHub issue #21 (AppImage,
+CachyOS) and its independent Flatpak report as the same crash, reproduced by
+`CORDIAL_LATE_SETTINGS=1`, with a fix shaped as "make the post-settings call
+run before `nativeGameGlobalInit`". A first attempt at that fix was built,
+measured at 10/10 clean under the reproducer, and was about to be committed.
+It was wrong, caught before the commit by reading the actual issue transcript
+rather than reasoning from the crash string alone.
+
+### Reporter A and reporter B are two different bugs
+
+`gh issue view 21`, read directly:
+
+* Reporter A: `nativeInitClientSettings -> 1` (the document was **rejected**),
+  and the flag enumeration that follows resolves roughly ten of a hundred and
+  thirty-nine flags — the rest are `not found`, against eighty-one of a
+  hundred and thirty-nine on a healthy machine. The crash lands immediately
+  after `nativeSetBaseDataDirectories ok`, hundreds of milliseconds *before*
+  `nativeGameGlobalInit` and long before the app bridge.
+* Reporter B: a real, accepted document, `app bridge initialised` reached, and
+  the crash comes anyway, later, matching §50's original framing.
+
+Reporter A's flags did not fail to load because of a race. They failed to
+load because the document was refused, and the engine's assertion —
+`Can't initialize the TaskScheduler before flags have been loaded` — was
+telling the literal truth. A gate keyed on "wait until flags are loaded" is
+permanently shut for reporter A and would have turned their crash into a hang,
+which is worse: `cordial-shell/src/window.rs` routes any non-zero exit to a
+page headed "Roblox stopped unexpectedly", and a hang shows nothing at all.
+
+### There is no signal to wait on, and the abandoned fix would have raced anyway
+
+Two more things settle it, both checked directly rather than assumed:
+
+* `native/init_params.cpp`'s `onFlagsFailed` (line 1147) and `onFlagsLoaded`
+  (line 1165) are both a bare `fprintf(stderr, ...)` and nothing else. Neither
+  sets a flag, signals a channel, or does anything Rust code could poll or
+  wait on. `onFlagsFailed` fires twice on every healthy run regardless.
+* The abandoned fix's own justifying comment claimed `bootstrapTheApp` runs
+  "synchronously, from inside `initializeNativeCode`, before Cordial's own
+  thread has made a single app-bridge call". This is false, and two log files
+  already on this machine prove it without needing a new run:
+
+      ~/.cache/cordial-agent-bisect/logs/pilot-auto.log:
+        51:  native handle 0x7f913c584680
+        52:  bootstrapTheApp: delivering settings and flags
+
+      ~/.cache/cordial-agent-gamepad-impl/control.log:
+        51:  bootstrapTheApp: delivering settings and flags
+        52:  native handle 0x7f17a8584680
+
+  Both lines come from Cordial's own single calling thread's `println!`
+  sequence at that point in the program; two different orderings across two
+  real runs means `bootstrapTheApp` is **not** guaranteed to run before
+  Cordial's own thread proceeds — it runs on the engine's own schedule,
+  asynchronously, and can land either before or after. The BootstrapPlan is
+  also captured once into `static BOOTSTRAP: OnceLock<BootstrapPlan>`
+  (§bootstrap plan construction) and never rebuilt, so even a correctly-timed
+  wait would be waiting on a value that cannot change. Between an
+  unrebuildable value and no completion signal, "add a gate" was retracted
+  before it was committed.
+
+### What was built instead, and why each piece is that shape
+
+No wait was added anywhere. Three changes, all either purely additive
+(diagnostics) or reusing an existing, already-tested component (timeouts):
+
+1. **`client_settings::fetch` has real timeouts.** It was a bare
+   `ureq::get(URL).call()` — no connect timeout, no read timeout, nothing but
+   an unset default. It now goes through `cordial_update::http::get_text`,
+   the client this project already uses for its version/changelog/APK-metadata
+   fetches, built on `cordial-update/src/http.rs`'s `CONNECT` (10s) and
+   `TIMEOUT` (20s) constants — taken from that file, not re-derived, so the
+   two cannot drift apart. It also gets `url_policy`'s host-locked redirect
+   handling, which the bare call never had.
+2. **The default launch path now prints what the explicit fallback path
+   always has.** `nativeInitClientSettings`'s fallback call site has printed
+   `"  client settings: N bytes"` since before this session. `bootstrapTheApp`
+   — the path every ordinary launch actually takes — printed nothing. Reporter
+   A's log has a silent gap between `nativeSetCacheDirectory ok (early)` and
+   `bootstrapTheApp installed` with no way to tell whether an unreadable
+   `--client-settings` path, a fetch that never connected, or a fetch that
+   connected and was refused produced the empty document that followed.
+   `client_settings::Source` names which of those four happened
+   (`Explicit`/`FreshCache`/`Fetched`/`StaleCache`/`Nothing(reason)`), a new
+   `load_reporting` returns it alongside the document, `BootstrapPlan` carries
+   it as `settings_source`, and `run_bootstrap` prints
+   `"  client settings: N bytes (SOURCE)"` on every launch.
+3. **An unreadable `--client-settings` path now says so.** It was
+   `std::fs::read_to_string(path).ok()`, silently: indistinguishable in the log
+   from a healthy launch with a genuinely empty document. It now prints the
+   `io::Error` and returns `Source::Nothing(reason)`.
+
+None of this can crash a healthy launch or refuse one that would otherwise
+succeed: `load_reporting`'s failure paths still resolve to `None` →
+`unwrap_or_default()` → `""`, exactly as `load()` did before, so a client that
+cannot reach the CDN and has no cache still launches with an empty document
+rather than exiting — the comment on `client_settings::load` already said this
+was the intent, and nothing here changes it.
+
+### The decisive local reproduction, found by testing what reporter A actually reported rather than reusing the existing knob
+
+`CORDIAL_LATE_SETTINGS=1` reproduces *a* `TaskScheduler`-before-flags crash,
+but not reporter A's: it starves the engine of the handshake by moving it
+*after the app bridge*, which is a timing story, not a rejected-document
+story. The cheap, decisive test is `--client-settings` pointing at an empty
+file — a document that reads successfully (so it is not the unreadable-path
+case) but is empty (so the engine rejects it, matching reporter A's
+`nativeInitClientSettings -> 1`):
+
+    env -u CORDIAL_LATE_SETTINGS ./cordial-run ... --client-settings /path/to/empty.json
+
+    45:  bootstrapTheApp installed
+    54:  bootstrapTheApp: delivering settings and flags
+    55:  client settings: 0 bytes (--client-settings)
+    229:  nativeSetBaseDataDirectories ok
+    230:RBXCRASH: FatalRuntimeError (Can't initialize the TaskScheduler before flags have been loaded)
+
+Landing exactly where reporter A's did — immediately after
+`nativeSetBaseDataDirectories ok`, before `nativeGameGlobalInit` is ever
+reached. This is the reproduction `CORDIAL_LATE_SETTINGS=1` was standing in
+for and never actually was.
+
+### Measured, interleaved, same session, same host
+
+A "fix" build (the three changes above) and a "control" build (`git stash`
+of just `client_settings.rs` and `load.rs`, rebuilt in the same
+`CARGO_TARGET_DIR`, binary copied out before popping the stash back) run
+alternately against the same APK and library:
+
+| | default launch (healthy) | `--client-settings <empty file>` |
+|---|---|---|
+| control, 5–10 runs | 10/10 clean, `app ready` reached | 5/5 `RBXCRASH`, exit 133 |
+| fix, 5–10 runs | 10/10 clean, `app ready` reached, `client settings: N bytes (SOURCE)` printed every time | 5/5 `RBXCRASH`, exit 133, plus `client settings: 0 bytes (--client-settings)` printed every time |
+
+The empty-settings crash is identical on both builds, on purpose: it is a
+real, correct engine assertion given a genuinely empty document, and nothing
+here claims to fix it — only to make it legible instead of a silent gap
+followed by a signal. `CORDIAL_LATE_SETTINGS=1` was also re-checked
+unaffected (3/3 `RBXCRASH`, unchanged) since neither change touches that code
+path.
+
+`cargo build --release` and `cargo test --workspace` both pass on the fix
+tree — 332 passed in `cordial-runtime`'s own suite (two new tests:
+`an_explicit_path_bypasses_the_network` extended to check `Source::Explicit`,
+and `an_unreadable_explicit_path_says_why_rather_than_just_no`), 0 failed,
+across two full runs. An earlier run of the full workspace suite showed two
+unrelated `secrets::tests` failures (`the secret service did not answer within
+5 seconds`) that vanished on retry and passed 10/10 in isolation
+(`--test-threads=1`); `df`/`free`/`uptime` at the time showed this host at
+100% disk (recovered to single digits of GB free mid-session) and a load
+average above 48, so that failure is attributed to D-Bus contention under
+concurrent agent load on a shared machine, not to this change — `secrets.rs`
+has no diff in this session.
+
+### What this does not fix, and is not claimed to
+
+**Reporter B is still open.** Their document was accepted and they still
+crashed, later, past the app bridge. §50's `nativeGameGlobalInit` race theory
+was never disproved for reporter B specifically — only shown insufficient as
+an account of reporter A, and shown to rest on a false "synchronous" premise
+that undermines the specific gate that was proposed. Whether reporter B's
+crash is the same race landing later, a second and different bug, or
+something the timeout/visibility changes here happen to also help with
+(a slow-but-eventually-successful fetch racing the app bridge under the old
+unbounded timeout) is **not established** and would need reporter B's actual
+log, which this session did not have.
+
+**Why CachyOS specifically loses whichever race remains is still INFERRED,
+not established** — unchanged from §50.
+
+**Whether real timeouts would have changed reporter A's own outcome is not
+established either.** Their `bootstrapTheApp installed` came 23ms after
+`nativeSetCacheDirectory ok (early)`, which is too fast to be a real CDN round
+trip timing out — more consistent with a fast DNS/connect failure and no
+existing cache on a first launch than with a hang the new timeouts would
+interrupt. The timeouts are a defensible, cheap improvement against a
+*different* plausible failure (a connection that is accepted and then stalls,
+which the old code could wait on indefinitely) rather than a demonstrated fix
+for what actually happened to reporter A. What *is* demonstrated is that
+reporter A's specific symptom — document rejected, crash at
+`nativeSetBaseDataDirectories` — now says so in the log instead of leaving the
+gap that cost the previous session most of a day.
+
+### A methodological note, since this file already carries two of its kind
+
+The first attempt at this fix reached 10/10 clean under `CORDIAL_LATE_SETTINGS=1`
+and very nearly became a commit on that strength alone. The reproducer was
+real and the number was real; what was wrong was believing it was reporter
+A's bug. §22 and §23.5 both record an instrument that could not see the thing
+it was being asked about; this is a third shape of the same mistake —an
+instrument that could see *something*, correctly, and it was the wrong
+something. Reading the actual report before trusting a same-shaped local
+reproduction would have caught it a session earlier.

@@ -472,6 +472,11 @@ struct BootstrapPlan {
     cached_native: usize,
     cache_file: String,
     settings: String,
+    /// Where `settings` came from, or why it is empty. Printed by
+    /// `run_bootstrap`, because the explicit fallback call site already prints
+    /// a byte count and the default path did not print anything at all --
+    /// see `client_settings::Source` for why that gap mattered.
+    settings_source: String,
     flag_names: String,
 }
 
@@ -635,6 +640,19 @@ extern "C" fn run_bootstrap() {
         }
     }
 
+    // The explicit fallback call site (used when `bootstrapTheApp` is not
+    // installed) has always printed "client settings: N bytes" here; this path
+    // -- the one every ordinary launch actually takes -- printed nothing at
+    // all. GitHub issue #21's reporter A had an empty gap in the log between
+    // the early directory setters and the crash, with no way to tell whether
+    // the document that produced ten resolved flags out of a hundred and
+    // thirty-nine was a bad `--client-settings` path, a fetch that never
+    // connected, or a fetch that connected and was refused. This is that line.
+    println!(
+        "  client settings: {} bytes ({})",
+        plan.settings.len(),
+        plan.settings_source
+    );
     if plan.settings_native != 0 {
         match linker::game_activity::init_client_settings(
             plan.settings_native as *mut std::ffi::c_void,
@@ -2242,6 +2260,14 @@ fn main() -> ExitCode {
                         let late = std::env::var_os("CORDIAL_LATE_SETTINGS").is_some();
                         if std::env::var_os("CORDIAL_NO_BOOTSTRAP").is_none() && !late {
                             const FLAG_NAMES: &str = include_str!("../native-flag-names.txt");
+                            // Read once, ahead of the struct literal, because
+                            // both `settings` and `settings_source` below come
+                            // from this one call and a struct literal cannot
+                            // share a `let` between two of its own fields.
+                            let (settings_body, settings_source) =
+                                cordial_runtime::client_settings::load_reporting(
+                                    opt.client_settings.as_deref(),
+                                );
                             let plan = BootstrapPlan {
                                 settings_native: lib
                                     .symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativeInitClientSettings")
@@ -2259,10 +2285,8 @@ fn main() -> ExitCode {
                                     .symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativeInitClientSettingsCachedCompressed")
                                     .map_or(0, |p| p as usize),
                                 cache_file: format!("{cache}/cache/flag_cache.dat"),
-                                settings: cordial_runtime::client_settings::load(
-                                    opt.client_settings.as_deref(),
-                                )
-                                .unwrap_or_default(),
+                                settings: settings_body.unwrap_or_default(),
+                                settings_source: settings_source.to_string(),
                                 flag_names: FLAG_NAMES.to_string(),
                             };
                             let _ = BOOTSTRAP.set(plan);
