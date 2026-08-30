@@ -23,7 +23,7 @@
 # submittable package, not a simulation of one.
 
 pkgname=cordial
-pkgver=0.7.0
+pkgver=0.12.1
 pkgrel=1
 pkgdesc="Roblox's official Android build, run natively on Linux -- you supply the APK, none is shipped or downloadable"
 arch=('x86_64')
