@@ -5683,3 +5683,181 @@ at 128.1% CPU against focus-off with motion at 27.5%, both at 59.6 presents/s �
 can be re-run against TaskScheduler flag candidates with `DFIntTaskSchedulerTargetFps`
 alongside as the control that proves delivery in that same session. That is the
 first time the spin has been approachable by flag at all.
+
+## §50: two real users cannot launch at all, on two packaging formats, and §19's
+## crash is why — reproduced, not merely inferred, though the machine
+## difference is not
+
+2026-08-30. GitHub issue #21 (AppImage, CachyOS) and a second, independent
+report (Flatpak, also CachyOS) both hit exactly:
+
+    RBXCRASH: FatalRuntimeError (Can't initialize the TaskScheduler before flags have been loaded)
+    shell: the client signal: 5 (SIGTRAP) (core dumped)
+
+This is §19's crash, not a new one, and §19–§23 already explain the mechanism
+in full: `nativeGameGlobalInit` (`call_globals` in
+`crates/cordial-runtime/src/bin/load.rs`) makes the engine spawn its own "Main"
+thread, which "independently races through the same StartLuaAppDM machinery"
+Cordial's own explicit `nativeAppBridgeStartLuaAppDM` /
+`nativeAppBridgeV2StartAppWithParams` calls drive on the caller's thread — a
+race the comment above that function names but nobody had previously connected
+to a live user-facing crash. §23's fix (the late
+`nativePostClientSettingsLoadedInitialization3` retry, `CORDIAL_LATE_POST_MS`,
+default 250 ms) makes flags reliably load *for the default path this project
+tests* — but it runs only after `game_activity::start()` hands the surface to
+the engine, which is *after* the app-bridge block above. Both reporters' logs
+end between `app bridge initialised` (`nativeAppBridgeV2InitWithParams`
+returning) and the surface handoff — reporter B's full log
+(`nativeGameGlobalInit ok (late)` / `nativeUpdateAdapterInit ok (late)` /
+`app bridge initialised`, then nothing) never reaches the point where §23's fix
+would run at all. Reporter A's terminal capture looks like it crashes even
+earlier, right after `nativeSetBaseDataDirectories ok`, but that is almost
+certainly stdout buffering swallowing the same block whole between one flush
+and the crash — Rust's stdout is block-buffered off a tty, and a crash mid-run
+does not flush it — not a different, earlier failure. Reporter B's log is
+better evidence for this reason and should be preferred over A's terminal
+transcript for anything about *where* this happens.
+
+### Confirmed by running, not just by reading
+
+`CORDIAL_LATE_SETTINGS=1` (a `load.rs` knob predating this session, used in
+§19 to study a related ordering) reproduces the identical message and signal on
+this machine, deterministically, on demand:
+
+    XDG_DATA_HOME=~/.cache/cordial-agent-flags CORDIAL_LATE_SETTINGS=1 \
+      gdb -q -batch -ex "set pagination off" -ex run -ex "thread apply all bt 25" \
+      --args ./target/release/cordial-run --lib-dir ~/.cache/cordial/lib/x86_64 \
+      --apk <base.apk> --host-libc --game-activity --profile <p> --run 8
+
+gives, on the crashing ("Main", LWP == PID) thread:
+
+    RBXCRASH: FatalRuntimeError (Can't initialize the TaskScheduler before flags have been loaded)
+    Thread 1 "Main" received signal SIGTRAP, Trace/breakpoint trap.
+    0x00007fffcaf38ecd in ?? ()   -- libroblox.so base + 0x6af8ecd, no symbols
+
+27 threads total, all identified, nothing else remarkable — a `util_queue`
+thread pool from `libvulkan_intel.so`, the async-io reactor, glib/dconf/gdbus
+worker threads, and Cordial's own `looper_poll_once` pump on a *different*
+thread also named "Main" (the engine renames more than one thread "Main";
+AGENTS.md already knew this from `/proc/<pid>/comm`, this is the same fact from
+a live backtrace with three "Main"s in one process).
+
+### What was tried and did not reproduce it
+
+The default, zero-env-var path — the one both reporters actually ran — does
+not crash on this host. Nine attempts:
+
+* 6 plain launches, fresh profile each time (`XDG_DATA_HOME=~/.cache/cordial-agent-flags`,
+  `--profile agent-flags-def{1..6}`), all reached `app ready: Landing` clean.
+* 3 more under `stress-ng --cpu 4 --timeout 40s` running concurrently, same
+  result.
+
+So the race §19/§23 describe is real and reproducible by name, but *why it
+loses on CachyOS and not here* is not established — only guessed at. Candidates
+not yet tested: CachyOS's scheduler defaults (several CachyOS installs run a
+sched-ext scheduler such as `scx_lavd`/`scx_bore` instead of stock CFS/EEVDF,
+which would change thread wake-up latency in exactly the way that would matter
+here), a faster CPU shortening the window Cordial's main thread has to reach
+the late-post fix before the engine's spawned thread gets there first, and
+first-launch state (see below). None of these were run; they are what the next
+session should try, ideally on an actual CachyOS box or under a sched-ext
+scheduler on this one if `scx` is installable without a reboot.
+
+### The flag-richness difference between the two reports is real and unexplained
+
+Reporter A's initial `nativeInitializeNativeFlags` enumeration (139 flags) is
+almost all `not found`, with a handful of explicit `= false` values. Reporter
+B's is almost all real `= true`/`= false`. Both still crash. This document's
+own model says this list reflects whatever document `client_settings::load()`
+(`crates/cordial-runtime/src/client_settings.rs`) handed the engine via
+`nativeInitClientSettings` during `bootstrapTheApp` — a live fetch, a fresh
+`~/.cache/cordial/clientsettings.json`, a stale one, or nothing — and that this
+happens well before the app-bridge race above, on the same thread, before
+`nativeGameGlobalInit` is ever called. Nothing here shows that richness
+difference changes *when* the app-bridge sequence runs relative to the
+engine's own spawned thread, so it is recorded as a difference **without a
+demonstrated causal link to the crash**, not ruled in or out. Untested: forcing
+a `None` (`load_base` failure, no cache, no network) settings document on this
+host and re-running the app-bridge sequence to see whether that alone moves the
+race.
+
+### Sober's tracker has nothing
+
+`tools/sober-corpus/data/raw.jsonl` has zero issues matching "initialize the
+TaskScheduler" or "TaskScheduler before flags" in title, body or comments,
+despite the corpus's 2,000+ issues and heavy overlap with Cordial's other
+startup crashes. Consistent with §22/§45's finding that Sober's own startup
+ordering (settings → the missing block → `RbxStorage::init`, in that order,
+with the app-bridge calls arriving only afterward per §35.1) never puts the two
+races Cordial's does next to each other. Not proof Sober is immune — its issue
+tracker is not exhaustive and a crash-on-first-launch is exactly the kind of
+report a frustrated user files as a generic "won't start" — but it is a real
+negative result from the one corpus available.
+
+### mocktail's `ForceNativeFlagsLoadedForTaskScheduler`, read directly, per the standing instruction to check the gate before concluding anything
+
+`src/legacy/legacy_runtime.cc:13354`. The gate is
+`IsEnabled("MOCKTAIL_PATCH_NATIVE_FLAGS_LOADED")`, defaulted to `"1"` by
+`SetEnvDefault` at line 2818 — on by default, not opt-in. What it does when
+enabled: `mprotect`s and writes `1` to `g_libroblox_base +
+kRobloxNativeFlagsLoadedByteOffset`, where the offset (`0x75a8250`, line 713)
+is a **hardcoded constant with no build-ID check** tying it to whichever
+`libroblox.so` is actually loaded. It sits in a block of similarly-named
+constants (`kStage6AssetPathNativeSetVtableCallFallbackOffset`,
+`kV2StartAppNullBucketTableReadOffset`, and a dozen more) that are unambiguously
+reverse-engineered byte offsets for one specific build — the file is named
+`legacy_runtime.cc` for a reason. There is a readability check
+(`IsReadableMemoryRange`) before the write, so it fails closed rather than
+corrupting arbitrary memory on a build where the offset does not land on the
+real flag, but nothing here confirms whether that offset is still meaningful,
+still misses, or lands on something else entirely for the 2.734.0.917 build
+Cordial loads — this project did not run mocktail against that exact library
+to watch it. That untested half is exactly what CLAUDE.md's warning about this
+function describes: it is easy to over-read this as proof mocktail
+memory-patches its way past a check Cordial could too, and ADR-001/ADR-003
+forbid that regardless of whether the patch is live on our build.
+
+What the function is worth here is not the patch — Cordial cannot and will not
+do this — but the confirmation that a real, singular, hard byte-level
+"flags loaded" gate exists inside the engine at all, one that a working
+alternative implementation found necessary to force past rather than satisfy
+honestly. That corroborates §19's reading of the `RBXCRASH` string as a literal
+assertion rather than a red herring, which is the load-bearing fact for
+everything above.
+
+### Where this leaves it
+
+Not fixed. Established, by running:
+
+* The crash is §19's `Can't initialize the TaskScheduler before flags have been
+  loaded`, reproduced on demand via `CORDIAL_LATE_SETTINGS=1`, matching both
+  reporters' error string and signal exactly.
+* Both reporters' processes die in the app-bridge block
+  (`nativeGameGlobalInit`/`nativeAppBridgeStartLuaAppDM`/
+  `nativeAppBridgeV2StartAppWithParams`), which runs *before* §23's late-post
+  fix ever gets a chance to mark flags loaded — so that fix cannot be the
+  answer here even though it fixed the RbxStorage question it was built for.
+* The race is the one `call_globals`'s own comment already named: the engine's
+  self-spawned "Main" thread against Cordial's synchronous continuation. This
+  had not previously been connected to a crash anyone had actually seen in the
+  wild.
+* `docs/traces/waydroid-roblox-startup.log.gz` corroborates the shape of the
+  fix from the other side: real Android's `rbx.appshell` log says
+  `GetClientSettingsTask onPostExecute initialized TaskScheduler` **after**
+  `RbxStorage::init [INIT] user: flagLoaded` has already started — i.e. the
+  real host app does not call whatever brings the TaskScheduler up until its
+  own settings-fetch task has completed. Cordial's `nativeGameGlobalInit` call
+  has no equivalent gate; it fires on a fixed point in the bootstrap sequence
+  regardless of whether flags are confirmed loaded yet.
+
+**INFERRED, not established:** that this is what tips on CachyOS specifically,
+and why. Nine attempts to lose the same race on the default path on this
+Fedora host, including under CPU contention, all failed to reproduce it. A
+scheduler difference (CachyOS's sched-ext defaults) is the leading candidate
+and is untested. The flag-richness difference between the two reports is real
+and also unconnected to a mechanism.
+
+**The comment this section corrects** is `native/init_params.cpp`'s
+`onFlagsFailed` hook: "this blocks neither startup nor the content store" is
+right about the hook itself and wrong as a blanket claim about the state it
+reports — corrected in place, same commit as this section.
