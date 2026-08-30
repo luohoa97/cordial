@@ -23,9 +23,9 @@
 # is measured rather than suspected.** The action reads the release out of
 # `process.env.GITHUB_EVENT`. No such variable exists -- Actions sets
 # `GITHUB_EVENT_PATH`, a path to a file -- and the bundled `dist/index.js`
-# (sha256 0c1b00d8…, confirmed identical at the pinned commit) never mentions
+# (sha256 0c1b00d8..., confirmed identical at the pinned commit) never mentions
 # `GITHUB_EVENT_PATH` at all. Run against the pinned bundle with its documented
-# workflow and the payload it builds is:
+# workflow, the payload it builds is:
 #
 #     content     : "New Release: `v?.?` in `luohoa97/cordial`"
 #     description : "_No release notes provided._"
@@ -46,7 +46,8 @@
 # v0.12.0 6,593, v0.11.0 9,657, v0.9.0 5,064. Discord answers an over-length
 # embed with a 400 and posts nothing, and the action logs the status code
 # without failing the step, so the whole thing would have gone green while the
-# server stayed silent. The trim below happens before the action sees it.
+# server stayed silent. The trim happens in the script below, before the action
+# sees anything.
 #
 # No thumbnail or avatar is set. The only icons this project ships are SVG
 # (packaging/icons/hicolor/scalable/), Discord does not render SVG in an embed,
@@ -60,9 +61,9 @@ on:
   # **A hand-run path, because this project has already lost a release to a
   # workflow that did not fire.** release.yml carries the same escape hatch and
   # says why: a `paths` filter silently matched nothing on a tag and left
-  # v0.11.0 tagged twice with no build. An announcement that was missed, or that
-  # went out before the release notes were finished, should be re-sendable
-  # without inventing a tag.
+  # v0.11.0 tagged twice with no build. An announcement that was missed, or one
+  # sent before the notes were finished, should be re-sendable without
+  # inventing a tag.
   workflow_dispatch:
     inputs:
       tag:
@@ -83,7 +84,11 @@ jobs:
   announce:
     name: Post the release to Discord
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Long because the job spends nearly all of it asleep -- see "Wait for the
+    # packages" below. release.yml's four build jobs each allow 75 minutes and
+    # run in parallel with flatpak.yml, so the assets this waits for can be the
+    # better part of an hour and a half behind the release being published.
+    timeout-minutes: 110
     steps:
       - name: Refuse to run without a webhook, loudly
         # **Failing here rather than skipping is deliberate.** A skipped job is
@@ -96,8 +101,8 @@ jobs:
         run: |
           if [ -z "${WEBHOOK}" ]; then
             echo "::error::No DISCORD_WEBHOOK secret is set, so this release was not announced." >&2
-            echo "Create a webhook in the Discord channel (Edit Channel > Integrations >" >&2
-            echo "Webhooks > New Webhook, Copy Webhook URL) and add it to this repository as" >&2
+            echo "Create a webhook on the Discord channel (Edit Channel > Integrations >" >&2
+            echo "Webhooks > New Webhook > Copy Webhook URL) and add it to this repository as" >&2
             echo "the DISCORD_WEBHOOK secret. Then re-run this workflow from the Actions tab" >&2
             echo "with the tag as input; nothing needs re-releasing." >&2
             exit 1
@@ -115,24 +120,72 @@ jobs:
           sparse-checkout: .github/scripts
           sparse-checkout-cone-mode: false
 
-      - name: Assemble the release event, trimmed to Discord's limits
-        id: event
-        # The action wants a whole `release` event object. On a real release we
-        # already have one; on a hand-run we fetch the release by tag, which is
-        # also the check that the tag exists before anything is posted.
+      - name: Wait for the packages to finish attaching
+        # **A release is published before it has anything on it, and announcing
+        # at that moment sends people to an empty page.** attach-to-release.yml
+        # runs `gh release create` and only then `gh release upload`, so the
+        # `release: published` event fires with an assets array of length zero
+        # -- and the embed's whole Source Code field would be a ZIP and a TAR of
+        # the source. The same is true, for longer, when a human creates the
+        # release by hand and lets CI catch up.
+        #
+        # So poll until the count settles rather than guessing a delay. Settled
+        # means non-zero and unchanged across three consecutive reads a minute
+        # apart, which distinguishes "all four packages are on" from "the first
+        # job to finish has uploaded one". On the hand-run path the assets are
+        # years old and it settles on the third read.
+        #
+        # A timeout announces anyway, with a warning, because a release that
+        # went out with one package missing is still worth telling people about
+        # -- and silence would be indistinguishable from this workflow being
+        # broken.
+        id: wait
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          FROM_EVENT: ${{ toJSON(github.event.release) }}
-          DISPATCH_TAG: ${{ inputs.tag }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
-          set -euo pipefail
-          if [ -n "${DISPATCH_TAG}" ]; then
-            gh api "repos/${REPO}/releases/tags/${DISPATCH_TAG}" > release.json
-          else
-            printf '%s' "${FROM_EVENT}" > release.json
-          fi
-          python3 .github/scripts/discord-release-event.py release.json >> "$GITHUB_OUTPUT"
+          set -uo pipefail
+          deadline=$(( SECONDS + 90 * 60 ))
+          prev=-1
+          stable=0
+          while :; do
+            # Written aside and promoted only on success. Redirecting straight
+            # into release.json truncates it before gh runs, so one failed read
+            # at the deadline would throw away a perfectly good earlier one and
+            # leave nothing to announce. A transient API failure is not a
+            # reason to abandon the announcement; the loop reads again in a
+            # minute.
+            if gh api "repos/${REPO}/releases/tags/${TAG}" > release.next 2>/dev/null; then
+              mv release.next release.json
+              n=$(jq '[.assets[]? | select((.name | endswith(".cosign.bundle")) | not)] | length' release.json)
+            else
+              echo "could not read the release yet; retrying"
+              n=-1
+            fi
+            if [ "$n" -gt 0 ] && [ "$n" -eq "$prev" ]; then
+              stable=$(( stable + 1 ))
+            else
+              stable=0
+            fi
+            prev=$n
+            if [ "$stable" -ge 2 ]; then
+              echo "settled: $n package assets attached"
+              break
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::warning::gave up waiting after 90 minutes; announcing with $n package assets attached"
+              break
+            fi
+            sleep 60
+          done
+          test -s release.json
+
+      - name: Assemble the release event, trimmed to Discord's limits
+        id: event
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 .github/scripts/discord-release-event.py release.json >> "$GITHUB_OUTPUT"
 
       - name: Post it
         uses: tenedev/releasify-action@bfade1fe75a8a4e8faafbc31c257e44ebfbe8352 # v1.0.1
