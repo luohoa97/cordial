@@ -43,6 +43,16 @@ and `--in distrobox` builds, and every shipping package, link it. An agent
 testing the dialog gate on a host build would be measuring nothing and would
 have no way to tell.
 
+**A third instrument that does less than its name says: `cordial_text` cannot
+type punctuation.** `devctl`'s `text` verb drives `script_type`, whose
+`ascii_to_evdev` (`input.rs:2512`) maps `a-z`, `1-9`, `0` and space and returns
+`None` for everything else. Every other character is skipped in silence -- no
+warning, no error, and `pass_key_event` is never called for it. A test that
+sends `/` this way and then asserts on the suppression trace will find no trace,
+conclude the guard did not fire, and pass. Found on 2026-08-30 by the agent
+verifying the `/` fix, which caught it in its own harness before drawing a
+conclusion from it. Use a real virtual keyboard for anything outside that table.
+
 **And the development MCP cannot test that gate either, even on the right
 build.** `cordial_click`/`cordial_move` go through `devctl.rs` to
 `android::input::script_move`/`script_button`, which call `pass_mouse_move`/
