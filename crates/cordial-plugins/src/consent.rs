@@ -27,6 +27,8 @@
 
 use crate::capability::Capability;
 use crate::manifest::Plugin;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 /// Why a plugin needs asking about, or the fact that it does not.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +138,64 @@ pub fn starts_disabled(plugin: &Plugin) -> bool {
     plugin.has_code()
 }
 
+/// Which built-in plugins a profile has already been asked about, so the
+/// question is not asked again on every visit to the Plugins page.
+///
+/// **Why a built-in needs this and a user install does not.** Installing a
+/// plugin is itself a single, one-off event — the moment the archive is
+/// unpacked is the one and only moment to ask, and nothing has to be
+/// remembered afterwards because the question is never asked a second time
+/// from that code path. A built-in has no such moment: it arrives with
+/// Cordial itself and is simply *present* the first time a profile's Plugins
+/// page is built, possibly a profile created long before this file existed.
+/// "Have we asked" therefore has to be a fact recorded somewhere both able to
+/// outlive one Settings session and scoped the same way grants and enablement
+/// already are — per profile, so a built-in asked about in one profile is
+/// asked about again in another, the same isolation ADR-013 gives everything
+/// else here.
+///
+/// Recording *that* a plugin was asked, not *what was answered* — declining
+/// is a legitimate, complete answer and must not be treated as "still
+/// pending". What was granted lives in `grants`, exactly as it does for a
+/// user install; this file only ever says whether the question has been put.
+pub fn seen_path_in(profile_dir: &Path) -> PathBuf {
+    profile_dir.join("plugin-consent-seen.json")
+}
+
+fn load_seen(path: &Path) -> BTreeSet<String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return BTreeSet::new();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+/// Whether `id` has already been asked about in this profile.
+///
+/// A missing or malformed file reads as "nobody has been asked", the same
+/// fail-safe direction `enablement::load` takes for its own file — the
+/// consequence of getting this wrong is an extra prompt somebody dismisses
+/// once more, not a capability granted nobody agreed to, so erring toward
+/// asking again is the harmless side of the two ways this could fail.
+pub fn has_been_asked(path: &Path, id: &str) -> bool {
+    load_seen(path).contains(id)
+}
+
+/// Record that `id` has been asked about, whichever way it was answered.
+pub fn mark_asked(path: &Path, id: &str) -> std::io::Result<()> {
+    let mut seen = load_seen(path);
+    if !seen.insert(id.to_string()) {
+        return Ok(());
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let text = serde_json::to_string_pretty(&seen)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let tmp = path.with_extension("json.new");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +298,49 @@ mod tests {
         let data = parse(r#"{"id":"d","name":"Textures"}"#);
         assert!(starts_disabled(&code));
         assert!(!starts_disabled(&data), "there is nothing to start, so a switch would have no argument");
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cordial-consent-seen-test-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn nobody_has_been_asked_before_the_file_exists() {
+        let dir = scratch("fresh");
+        assert!(!has_been_asked(&seen_path_in(&dir), "discord-presence"));
+    }
+
+    #[test]
+    fn marking_a_plugin_asked_makes_it_stick() {
+        let dir = scratch("mark");
+        let path = seen_path_in(&dir);
+        mark_asked(&path, "discord-presence").unwrap();
+        assert!(has_been_asked(&path, "discord-presence"));
+        assert!(!has_been_asked(&path, "some-other-plugin"), "one plugin's record must not answer for another");
+    }
+
+    #[test]
+    fn marking_the_same_plugin_twice_is_harmless() {
+        let dir = scratch("idempotent");
+        let path = seen_path_in(&dir);
+        mark_asked(&path, "discord-presence").unwrap();
+        mark_asked(&path, "discord-presence").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("discord-presence").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn a_malformed_file_reads_as_nobody_asked_rather_than_erroring() {
+        // Erring the other way -- treating an unreadable file as "everybody
+        // has been asked" -- would suppress the one prompt this module
+        // exists to show, permanently and silently, for a file a stray edit
+        // or a half-written disk could produce.
+        let dir = scratch("malformed");
+        let path = seen_path_in(&dir);
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(!has_been_asked(&path, "discord-presence"));
     }
 }

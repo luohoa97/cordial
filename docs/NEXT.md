@@ -155,7 +155,7 @@ because it was not moved during load, fixed by moving it while loading. That
 weakens the shared-cause idea without refuting it, and it should not be carried
 forward as though it were a lead.
 
-## Open: a refused capability is invisible, and the fix for it is dead code, 2026-08-30
+## A refused capability was invisible, and built-ins skipped consent: fixed, 2026-08-30
 
 A user reported Discord presence not broadcasting, then found the cause
 themselves: they had never granted the plugin its permissions. **The bug is not

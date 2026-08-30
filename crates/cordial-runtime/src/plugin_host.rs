@@ -34,7 +34,7 @@ use cordial_plugins::presence::{DiscordPresence, PresencePayload};
 use cordial_plugins::protocol::{Push, Request, Response};
 use cordial_plugins::preferences;
 use cordial_plugins::settings::{self, Store};
-use cordial_plugins::{enablement, grants, manifest, notify, urlopen};
+use cordial_plugins::{denials, enablement, grants, manifest, notify, urlopen};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -123,7 +123,8 @@ pub fn start_all() -> usize {
     // here, so the grants are read from this profile and nowhere else.
     let profile = crate::profile::active();
     grants::migrate_legacy_into(&profile);
-    let approved = grants::load(&grants::path_in(&profile));
+    let grants_path = grants::path_in(&profile);
+    let approved = grants::load(&grants_path);
     let store = Store::new(&profile);
     // The process-global one rather than a local, because the client's own
     // `publish_core` calls arrive from `load.rs` after this function has long
@@ -221,9 +222,10 @@ pub fn start_all() -> usize {
                 let shared = shared.clone();
                 let plugin_dir = plugin.dir.clone();
                 let declared = plugin.manifest.preferences.clone();
+                let grants_path = grants_path.clone();
                 std::thread::Builder::new()
                     .name(format!("plugin:{id}"))
-                    .spawn(move || serve(proc, broker, store, shared, plugin_dir, declared))
+                    .spawn(move || serve(proc, broker, store, shared, plugin_dir, declared, grants_path))
                     .ok();
                 started += 1;
                 println!("  plugin {id}: started");
@@ -301,6 +303,7 @@ fn serve(
     shared: Shared,
     plugin_dir: PathBuf,
     declared: Vec<preferences::Declaration>,
+    grants_path: PathBuf,
 ) {
     let id = proc.id.clone();
     // One Discord connection per plugin thread, held for the plugin's whole
@@ -308,6 +311,20 @@ fn serve(
     // the same reason: a plugin that calls presence.set on every tick must
     // not hand-shake with Discord that often.
     let mut presence = DiscordPresence::new();
+    // `None` so the very first request always rereads and regrants, even
+    // though `broker` already holds what `start_all` read moments earlier —
+    // that one redundant read is cheaper than threading the mtime `start_all`
+    // saw through the spawn, and it means this function has exactly one path
+    // rather than a "first time" special case.
+    let mut grants_seen: Option<std::time::SystemTime> = None;
+    let denials_path = denials::path_in(store.profile_dir());
+    // What this thread has already written to `denials_path`, so a plugin
+    // retrying a call it does not have costs one disk write and not one per
+    // retry. Reset only by the plugin actually being granted the capability
+    // and calling again — `refresh_grant` below regrants but does not touch
+    // this set, so a capability that is granted and then revoked again is
+    // still recorded as denied rather than silently written twice.
+    let mut denied_already: BTreeSet<Capability> = BTreeSet::new();
     while let Some(req) = proc.next_request() {
         let req = match req {
             Ok(r) => r,
@@ -316,7 +333,23 @@ fn serve(
                 break;
             }
         };
-        let response = match authorise(&mut broker, &id, &req) {
+        // Reread before deciding, not after: a grant written between two
+        // requests must be in force for the request that arrives after it, or
+        // "I turned the switch on and it still didn't work" is a fresh bug
+        // wearing the clothes of the one that was just fixed. See
+        // `refresh_grant`'s own comment for what this replaced.
+        refresh_grant(&grants_path, &id, &mut broker, &shared, &mut grants_seen);
+        let auth = authorise(&mut broker, &id, &req);
+        if let Err(Response::Denied { capability, .. }) = &auth {
+            if let Some(cap) = Capability::parse(capability) {
+                if denied_already.insert(cap) {
+                    if let Err(e) = denials::record(&denials_path, &id, cap) {
+                        println!("  plugin {id}: could not record the {capability} denial: {e}");
+                    }
+                }
+            }
+        }
+        let response = match auth {
             Err(refusal) => refusal,
             Ok(()) => dispatch(&id, &req, &store, &mut presence, &shared, &plugin_dir, &declared),
         };
@@ -340,6 +373,60 @@ fn serve(
     shared.listeners.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
     crate::android::asset::unregister_plugin_root(&id);
     proc.kill();
+}
+
+/// Re-read `id`'s grant from `grants_path` if the file has changed since the
+/// last check, so a capability turned on in Settings reaches a plugin that is
+/// already running rather than only the next one `start_all` spawns.
+///
+/// **This is a real bug, not a hypothetical one.** `start_all` used to read
+/// the grants file exactly once, before any plugin thread existed, and
+/// `broker.grant` was never called again for the rest of the run. Measured on
+/// a live Flatpak instance: `cordial-shell` started at 14:19:12, the user
+/// granted `discord-presence` every capability it asked for through Settings,
+/// and `plugin-grants.json` was written at 14:20:51 — ninety seconds into a
+/// run whose broker still held the empty set it read before the file existed.
+/// The grant was correct, the profile was correct, and the plugin kept being
+/// refused anyway, which is indistinguishable from Settings simply not
+/// working.
+///
+/// Checked by `mtime` rather than reloaded unconditionally: this runs on
+/// every request a plugin makes, most of which will not have raced a grant at
+/// all, and a `stat(2)` is cheap enough to make on every one where reading and
+/// re-parsing the whole document is not. A metadata read that fails (the file
+/// does not exist yet, or has just been deleted) is treated as `None`, so
+/// appearing and disappearing both count as changes and both correctly cause
+/// a reload — the disappearing case regrants to nothing, which is the right
+/// answer for a grants file that was just wiped.
+///
+/// **Also updates `shared`'s `Listener`, and this half is not optional.**
+/// `broker` only gates the calls a plugin *makes* — `flush_core_events`
+/// checks `Listener::granted` instead, a second snapshot of the same grant
+/// taken once at the same moment `start_all` read the first one and never
+/// touched again. Fixing only `broker` would have made `lifecycle.subscribe`
+/// start succeeding the moment it was granted while leaving the plugin
+/// permanently deaf to the very core events that capability exists to unlock
+/// — `discord-presence` calls `presence.set` from inside its
+/// `client.launch`/`client.ready` handler, so a grant that reached one
+/// snapshot and not the other would still look identical to the bug this
+/// function exists to fix, just one hop further downstream.
+fn refresh_grant(
+    grants_path: &Path,
+    id: &str,
+    broker: &mut Broker,
+    shared: &Shared,
+    last_seen: &mut Option<std::time::SystemTime>,
+) {
+    let modified = std::fs::metadata(grants_path).and_then(|m| m.modified()).ok();
+    if modified == *last_seen {
+        return;
+    }
+    *last_seen = modified;
+    let granted = grants::load(grants_path).get(id).cloned().unwrap_or_default();
+    broker.grant(id, granted.clone());
+    if let Some(listener) = shared.listeners.lock().unwrap_or_else(|e| e.into_inner()).get_mut(id) {
+        listener.granted = granted;
+    }
 }
 
 /// Serve one authorised request. The broker has already decided this may
@@ -422,6 +509,7 @@ fn dispatch(
         "log.write" => {
             let msg = req.params.get("message").and_then(|v| v.as_str()).unwrap_or("");
             println!("  [{id}] {msg}");
+            append_plugin_log(store.profile_dir(), id, msg);
             Response::Ok { id: req.id, result: serde_json::Value::Null }
         }
         // ADR-007's other two brokered effects: the plugin sends a payload,
@@ -558,6 +646,33 @@ fn dispatch(
             message: format!("{other} is not implemented yet"),
         },
     }
+}
+
+/// Append one `log.write` line to a file in the plugin's own profile, beside
+/// the `println!` in the arm above.
+///
+/// **Not a logging subsystem, and deliberately not one.** There is no
+/// rotation, no level filtering, and no cap on how large `plugin.log` grows —
+/// adding any of that is the scope this function exists to avoid taking on.
+/// It exists to close one specific gap AGENTS.md keeps finding here: a
+/// packaged or Flatpak launch has no terminal for `println!` to reach, so a
+/// plugin whose only way to report what it did was stdout had, in practice,
+/// no way to report anything at all. A single append-only file a user can
+/// open is the whole fix; anything more belongs to a later change that has
+/// actually been asked for.
+///
+/// Best effort. A plugin must not stop running because its log file could not
+/// be opened — that would make logging load-bearing for the thing it is
+/// meant to be a diagnostic for — so a failure here is silent and the
+/// `println!` above remains this file's real belt-and-braces.
+fn append_plugin_log(profile_dir: &Path, id: &str, message: &str) {
+    use std::io::Write;
+    let Ok(mut file) =
+        std::fs::OpenOptions::new().create(true).append(true).open(profile_dir.join("plugin.log"))
+    else {
+        return;
+    };
+    let _ = writeln!(file, "[{id}] {message}");
 }
 
 /// A subdirectory of `base`, refusing anything that would name somewhere
@@ -1517,5 +1632,101 @@ mod tests {
         let dir = scratch_profile("absent");
         assert!(!std::path::Path::new(&enablement::path_in(&dir)).exists());
         assert!(enabled_in_profile(&dir, "a-plugin-nobody-has-an-opinion-about"));
+    }
+
+    #[test]
+    fn a_grant_written_after_the_broker_was_built_still_reaches_it() {
+        // The bug: `start_all` used to read the grants file exactly once and
+        // never again, so a capability switched on in Settings while a
+        // plugin was already running had no effect until the next launch.
+        // This pins `refresh_grant`, the fix, against exactly that sequence:
+        // build a broker with nothing granted, write a grant afterwards, and
+        // check the broker sees it without being told to.
+        let dir = scratch_profile("live-grant");
+        let path = grants::path_in(&dir);
+        let mut broker = Broker::new();
+        let shared = Shared::new();
+        let mut last_seen = None;
+        refresh_grant(&path, "discord-presence", &mut broker, &shared, &mut last_seen);
+        assert!(!broker.allows("discord-presence", Capability::PresenceSet));
+
+        // Sleep past filesystem mtime resolution before writing, or a grant
+        // fast enough to land in the same tick as the first read could keep
+        // the same `mtime` and be missed by the very check this test exists
+        // to prove works.
+        std::thread::sleep(std::time::Duration::from_millis(1050));
+        grants::set(&path, "discord-presence", Capability::PresenceSet, true).unwrap();
+
+        refresh_grant(&path, "discord-presence", &mut broker, &shared, &mut last_seen);
+        assert!(
+            broker.allows("discord-presence", Capability::PresenceSet),
+            "a grant written after the broker existed must still reach it"
+        );
+    }
+
+    // `refresh_grant` also updates `shared`'s `Listener` for this plugin, so
+    // that a live grant reaches `flush_core_events`'s gate and not only
+    // `broker`'s -- see the function's own doc comment for why the second
+    // snapshot matters as much as the first. That half is exercised by
+    // review rather than by a test here: constructing a `Listener` needs a
+    // real `Writer`, which this crate can only obtain from a spawned Deno
+    // process (`PluginProc::spawn`), and every test in this file that pays
+    // that cost already does so to test something Deno-shaped -- adding one
+    // solely to observe a `BTreeSet` field copy would be the heaviest
+    // possible test for the smallest possible claim. The two tests below
+    // cover the `broker` half, which shares the same `modified != last_seen`
+    // gate and the same `grants::load` call as the `Listener` half.
+    #[test]
+    fn refresh_grant_does_nothing_when_the_file_has_not_changed() {
+        // The other half of the same fix: this runs on every request a
+        // plugin makes, so it must not re-read and re-grant when nothing
+        // changed — that would be a stat and a parse on every call for no
+        // reason, and `Broker::grant` replaces rather than accumulates, so a
+        // spurious regrant would at least be harmless but is still work this
+        // function exists to avoid doing needlessly.
+        let dir = scratch_profile("live-grant-unchanged");
+        let path = grants::path_in(&dir);
+        grants::set(&path, "p", Capability::Log, true).unwrap();
+        let mut broker = Broker::new();
+        let shared = Shared::new();
+        let mut last_seen = None;
+        refresh_grant(&path, "p", &mut broker, &shared, &mut last_seen);
+        assert!(broker.allows("p", Capability::Log));
+        let seen_after_first = last_seen;
+
+        refresh_grant(&path, "p", &mut broker, &shared, &mut last_seen);
+        assert_eq!(last_seen, seen_after_first, "no write happened, so the recorded mtime must not move");
+    }
+
+    #[test]
+    fn a_denial_is_recorded_once_even_if_the_call_is_retried() {
+        // `denials::record` is idempotent on disk, but this pins the other
+        // half: the serving loop's own `denied_already` set must stop it
+        // from opening and rewriting the file for a plugin that keeps
+        // asking for something it does not have, which is exactly what a
+        // plugin retrying a refused call would do.
+        let dir = scratch_profile("denial-once");
+        let path = denials::path_in(&dir);
+        let mut denied_already: BTreeSet<Capability> = BTreeSet::new();
+
+        for _ in 0..3 {
+            if denied_already.insert(Capability::PresenceSet) {
+                denials::record(&path, "discord-presence", Capability::PresenceSet).unwrap();
+            }
+        }
+        assert_eq!(denials::load(&path)["discord-presence"].len(), 1);
+    }
+
+    #[test]
+    fn a_log_line_is_appended_for_a_terminal_that_is_not_there_to_read_it() {
+        // `println!` is invisible on a packaged or Flatpak launch with no
+        // terminal attached — this pins the file that exists so a plugin's
+        // own report of what it did survives that launch too.
+        let dir = scratch_profile("plugin-log");
+        append_plugin_log(&dir, "discord-presence", "presence.set on launch came back: ok");
+        append_plugin_log(&dir, "discord-presence", "presence.set on ready came back: ok");
+        let text = std::fs::read_to_string(dir.join("plugin.log")).unwrap();
+        assert_eq!(text.lines().count(), 2);
+        assert!(text.contains("[discord-presence] presence.set on launch came back: ok"));
     }
 }
