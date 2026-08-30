@@ -31,6 +31,11 @@
 //     type <string>          each character, in order
 //     key [mod+]<keysym>     e.g. `key BackSpace`, `key ctrl+a`, `key shift+Left`
 //                            mods: ctrl, shift, alt, super -- combine with '+'
+//     down [mod+]<keysym>    press only, held until `up`. One pending key at a
+//                            time; a second `down` before `up` overwrites it.
+//     up                     release whatever `down` pressed. The gap between
+//                            them is the caller's, not this process's --
+//                            unlike `key`, which hardcodes 12ms.
 //     quit
 //
 // Build (in the container, which is where sway and wlrctl live):
@@ -90,6 +95,16 @@ static void send_mods(uint32_t mask) {
     zwp_virtual_keyboard_v1_modifiers(kbd, mask, 0, 0, 0);
 }
 
+// A single pending press, for `down`/`up`, which exist to put a controllable
+// gap between a key's down and its up -- `press()` below hardcodes 12ms and
+// that is not the thing under test. Added to verify commit 22127ba (pairing a
+// forwarded press's release regardless of a focus change landing in between):
+// the caller sleeps between `down` and `up` in the harness rather than in this
+// process, so the gap is whatever the harness asks for, not a compiled-in one.
+static uint32_t pending_kc;
+static uint32_t pending_mask;
+static int has_pending;
+
 static int press(xkb_keysym_t sym, uint32_t extra_mods) {
     uint32_t kc; int shift = 0;
     if (!lookup(sym, &kc, &shift)) return 0;
@@ -106,6 +121,32 @@ static int press(xkb_keysym_t sym, uint32_t extra_mods) {
     // synchronous with the protocol; without a gap the compositor coalesces
     // and the widget sees fewer characters than were sent.
     usleep(30000);
+    return 1;
+}
+
+static int key_down(xkb_keysym_t sym, uint32_t extra_mods) {
+    uint32_t kc; int shift = 0;
+    if (!lookup(sym, &kc, &shift)) return 0;
+    uint32_t mask = extra_mods | (shift ? (1u << mod_shift) : 0);
+    if (mask) send_mods(mask);
+    clock_ms += 12;
+    zwp_virtual_keyboard_v1_key(kbd, clock_ms, kc, WL_KEYBOARD_KEY_STATE_PRESSED);
+    wl_display_flush(dpy);
+    wl_display_roundtrip(dpy);
+    pending_kc = kc;
+    pending_mask = mask;
+    has_pending = 1;
+    return 1;
+}
+
+static int key_up(void) {
+    if (!has_pending) return 0;
+    clock_ms += 12;
+    zwp_virtual_keyboard_v1_key(kbd, clock_ms, pending_kc, WL_KEYBOARD_KEY_STATE_RELEASED);
+    if (pending_mask) send_mods(0);
+    wl_display_flush(dpy);
+    wl_display_roundtrip(dpy);
+    has_pending = 0;
     return 1;
 }
 
@@ -180,6 +221,24 @@ int main(void) {
             xkb_keysym_t sym = xkb_keysym_from_name(spec, XKB_KEYSYM_NO_FLAGS);
             if (sym == XKB_KEY_NoSymbol) { fprintf(stderr, "unknown keysym %s\n", spec); ok = 0; }
             else if (!press(sym, mods)) { fprintf(stderr, "no key for %s\n", spec); ok = 0; }
+        } else if (!strncmp(line, "down ", 5)) {
+            char *spec = line + 5;
+            uint32_t mods = 0;
+            char *plus;
+            while ((plus = strchr(spec, '+')) != NULL) {
+                *plus = 0;
+                if (!strcmp(spec, "ctrl")) mods |= 1u << mod_ctrl;
+                else if (!strcmp(spec, "shift")) mods |= 1u << mod_shift;
+                else if (!strcmp(spec, "alt")) mods |= 1u << mod_alt;
+                else if (!strcmp(spec, "super")) mods |= 1u << mod_super;
+                else { fprintf(stderr, "unknown modifier %s\n", spec); ok = 0; }
+                spec = plus + 1;
+            }
+            xkb_keysym_t sym = xkb_keysym_from_name(spec, XKB_KEYSYM_NO_FLAGS);
+            if (sym == XKB_KEY_NoSymbol) { fprintf(stderr, "unknown keysym %s\n", spec); ok = 0; }
+            else if (!key_down(sym, mods)) { fprintf(stderr, "no key for %s\n", spec); ok = 0; }
+        } else if (!strncmp(line, "up", 2)) {
+            if (!key_up()) { fprintf(stderr, "no pending key to release\n"); ok = 0; }
         } else if (!strncmp(line, "quit", 4)) {
             break;
         }
