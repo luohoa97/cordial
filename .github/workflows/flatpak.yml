@@ -79,26 +79,41 @@ permissions:
   contents: read
   actions: read
 
-# One at a time. Two runs exporting into the same Pages deployment would race,
-# and cancelling a half-finished OSTree export is worse than queueing.
+# **The `flatpak-pages` concurrency group used to live here, at workflow level,
+# and that was the bug that shipped two releases with no Flatpak attached.**
+# It is now on the `deploy` job alone. What follows is why, because the comment
+# it replaces argued the opposite and argued it from a real observation.
 #
-# Two consequences of this that look like faults and are not, both seen on
-# 2026-08-05 and worth recognising before someone debugs them:
+# The original reasoning: two runs exporting into the same Pages deployment
+# would race, and cancelling a half-finished OSTree export is worse than
+# queueing. That is still true of the deployment. It was never true of the
+# build, and covering the whole workflow to protect the deploy is what did the
+# damage.
 #
-#   * A run **queued** behind another is superseded when a newer push arrives,
-#     and shows as `cancelled`. Nothing is lost — the newer run builds the newer
-#     tree, which contains the older commit — but a Actions page full of
-#     "cancelled" reads like breakage. Five pushes in half an hour produced
-#     three of them.
-#   * A tag pushed alongside `main` lands in this same group and is usually the
-#     one dropped, so `v0.5.1` has no build of its own. Same content, built by
-#     `main`; only the attribution differs.
+# The old comment noted, on 2026-08-05, that "a tag pushed alongside `main`
+# lands in this same group and is usually the one dropped, so `v0.5.1` has no
+# build of its own", and dismissed it: "Same content, built by `main`; only the
+# attribution differs." **That dismissal is wrong, and it is wrong because of a
+# change made in this same file.** The bundle is attached to the GitHub release
+# by the `publish` job, which is tag-only -- a `main` run never attaches
+# anything. So a dropped tag run does not merely lose attribution, it loses the
+# release asset, silently, with every job reporting success.
 #
-# The pairing that makes this safe is `timeout-minutes` on the build job. Without
-# it a single stuck run holds the queue for GitHub's default six hours.
-concurrency:
-  group: flatpak-pages
-  cancel-in-progress: false
+# Measured, not reasoned: v0.12.0 published with zero assets. v0.12.1's tag run
+# 33289851652 (sha 26d151c) sat pending in this group and was cancelled when a
+# push to `main` created a newer run; 33289817321 went the same way earlier the
+# same day. `cancel-in-progress: false` does not prevent this -- GitHub keeps
+# exactly one *pending* run per group and displaces it when a newer one joins,
+# so "do not cancel" only protects a run that already started.
+#
+# Why the build is safe unserialised: each run exports into `--repo=repo`, a
+# fresh directory in its own workspace, and never fetches the published tree.
+# Two builds share no state. The `publish` job attaches to the release named by
+# its own tag, so two of those cannot collide either. The deployment is the only
+# shared resource in the file, and it is now the only thing queued on.
+#
+# `timeout-minutes: 45` on the build job stays, but it is no longer load-bearing
+# for the queue: a stuck build cannot hold a group it is not in.
 
 # The published URL lives in packaging/cordial.flatpakrepo and is deliberately
 # not derived from github.repository here: the Url a user's flatpak remembers
@@ -643,6 +658,15 @@ jobs:
     # this stayed hidden.
     if: >-
       vars.PUBLISH_PAGES == 'true' && github.ref == 'refs/heads/main'
+    # The one genuinely shared resource in this workflow: two deployments to the
+    # same Pages site race, and a half-written site is worse than a queued one.
+    # Scoped to this job rather than the workflow -- see the long note above the
+    # `permissions:` block for the two releases that cost. Queued rather than
+    # cancelled in progress; if a newer deploy displaces an older *pending* one
+    # that is correct here, because the newer tree is the one anyone wants.
+    concurrency:
+      group: flatpak-pages
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     environment:
       name: github-pages
