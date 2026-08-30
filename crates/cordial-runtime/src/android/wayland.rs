@@ -2763,7 +2763,7 @@ impl WaylandWindow {
             // stays unclickable, and a silent failure here is indistinguishable
             // from the bug it is meant to fix.
             eprintln!(
-                "[android] wayland: could not create an empty wl_region; a web-view dialog                  may not accept clicks"
+                "[android] wayland: could not create an empty wl_region; a web-view dialog may not accept clicks"
             );
             return;
         }

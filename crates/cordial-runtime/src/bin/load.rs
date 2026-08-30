@@ -240,7 +240,8 @@ fn parse() -> Result<Options, String> {
             // would put a window on the screen of somebody who asked for none.
             "--headless" => {
                 return Err(
-                    "--headless should have been consumed before argument parsing;                      this is a bug in the re-exec, not in your command line"
+                    "--headless should have been consumed before argument parsing; this \
+                     is a bug in the re-exec, not in your command line"
                         .into(),
                 )
             }
@@ -1902,7 +1903,10 @@ fn main() -> ExitCode {
                 Err(e) => {
                     println!("JNI_OnLoad failed: {e}");
                     println!(
-                        "\n  Roblox expects the Android bring-up sequence, not a bare JNI_OnLoad:\n                           a JavaVM, then GameActivity.initializeNativeCode called from Java with a\n                           real Activity. See docs/framework-api-inventory.md §3.3."
+                        "\n  Roblox expects the Android bring-up sequence, not a bare \
+                         JNI_OnLoad:\n  a JavaVM, then \
+                         GameActivity.initializeNativeCode called from Java with a real \
+                         Activity. See docs/framework-api-inventory.md §3.3."
                     );
                 }
             }

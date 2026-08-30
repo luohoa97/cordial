@@ -1032,12 +1032,23 @@ fn build_general_page(
     // parameters and one question, and a cross product of them would be six
     // rows for combinations nobody has measured. Each label here names what it
     // actually sets.
+    // **Short enough that the row can show which one is selected.** These read
+    // "Windows PC, more CPU cores" and the row rendered "Windows PC, more..."
+    // -- the ellipsis landing exactly on the word that distinguishes the three
+    // Windows PC entries from each other, so the control could not be read at
+    // a glance and the two core-count variants were indistinguishable.
+    // Reported alongside the same fault on Frame pacing.
+    //
+    // The device and the core count are two facts, so they are separated by a
+    // dash rather than run together into a sentence: the eye can find "more
+    // cores" at the end of a short label in a way it cannot find "more CPU
+    // cores" at the end of a long one.
     let optimisation_model = gtk::StringList::new(&[
-        "Windows PC (default)",
+        "Windows PC",
         "Roblox app",
         "Android tablet",
-        "Windows PC, more CPU cores",
-        "Windows PC, fewer CPU cores",
+        "Windows PC - more cores",
+        "Windows PC - fewer cores",
     ]);
     let optimisation = adw::ComboRow::builder()
         .title("Graphics optimisation")
@@ -1049,17 +1060,22 @@ fn build_general_page(
         // a field the engine reads; the step from there to a frame rate is an
         // inference, and a settings page is the last place it should be stated
         // as fact.
+        // Trimmed to three lines from five, for the same reason as the labels:
+        // a subtitle long enough to squeeze the value out of the row is not
+        // helping anybody read the row. The parts kept are the two that change
+        // what somebody picks -- that Android tablet has been reported to
+        // break things, and that none of this has been measured to change the
+        // frame rate. The rest, including which identity roblox.com serves
+        // what to, is in `GraphicsOptimization`'s own doc beside the code.
         .subtitle(
-            "What Cordial tells Roblox it is, and how many of your cores the engine's worker \
-             pools may use. Roblox app is the only one that claims no particular device; \
-             Android tablet is the only one that claims a mobile screen, and has been \
-             reported to break some features. None of them has been measured to change the \
-             frame rate, so treat them as experiments and see whether they help you.",
+            "What Cordial tells Roblox it is, and how many cores the engine may use. Android \
+             tablet claims a mobile screen and has been reported to break some features. None \
+             of these has been measured to change the frame rate.",
         )
         .model(&optimisation_model)
         .selected(config.borrow().graphics_optimization_mode.index())
         .build();
-    optimisation.set_subtitle_lines(5);
+    optimisation.set_subtitle_lines(3);
     {
         let config = config.clone();
         let config_path = config_path.clone();
