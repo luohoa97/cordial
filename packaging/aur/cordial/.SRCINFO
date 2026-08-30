@@ -1,5 +1,5 @@
 pkgbase = cordial
-	pkgdesc = Roblox's official Android build, run natively on Linux -- you supply the APK, none is shipped or downloadable
+	pkgdesc = Roblox's official Android build, run natively on Linux -- Cordial ships no Roblox code and fetches a signature-verified one
 	pkgver = 0.12.1
 	pkgrel = 1
 	url = https://github.com/luohoa97/cordial

@@ -108,12 +108,13 @@
   </p>
 
   <p class="n">
-    <strong>You supply the Roblox build.</strong> Cordial ships none and
-    cannot download one: Roblox publishes no Android binary to fetch — its own
-    update endpoint answers <code>supportsAndroidBinaries: false</code> — and
-    the APK is distributed through Google Play. In practice Cordial reads the
-    copy Sober has already downloaded, or an APK you point it at yourself.
-    Removing that step is open work, not a solved problem.
+    <strong>Cordial fetches the Roblox build for you.</strong> It ships no
+    Roblox code and never will, but first run has one button — <strong>Download
+    Roblox</strong> — and that is the whole of it. If Sober has already
+    downloaded the same build, Cordial uses that copy where it lies rather than
+    fetching it again; otherwise it downloads from a public APK mirror and
+    verifies that Roblox's own signing certificate signed those exact bytes
+    before installing. You can still point it at an APK yourself.
   </p>
 
   <p class="under"><a href="compare.html">How Cordial compares to Sober, mocktail and Waydroid</a> &mdash; including where they are better.</p>

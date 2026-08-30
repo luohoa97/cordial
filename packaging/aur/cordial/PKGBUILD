@@ -4,8 +4,17 @@
 # x86-64 build; Cordial fetches it on first run from a third-party mirror and
 # installs it only if Roblox's own signing certificate signed it, or reads a
 # copy Sober unpacked, or one the user points it at. It has been able to fetch
-# since v0.9.0, and this comment said it could not until 2026-08-28 -- as did
-# the pkgdesc and the .install note, both now corrected. See README section 1.
+# since v0.9.0, and this comment said it could not until 2026-08-28. The
+# .install note was corrected then.
+#
+# **The pkgdesc was not, and the sentence that used to be here claimed it had
+# been.** It went on saying "none is shipped or downloadable" for two more days,
+# and `git log -S` puts that string's entire life between 08847fb and 7eb1091
+# with nothing in between -- so the claim of a fix was written in the same
+# breath as the fix was skipped, and then protected it from being noticed. That
+# string is what the AUR and Chaotic-AUR display as the package description, so
+# it was on course to be the first sentence about Cordial an Arch user read.
+# A comment asserting a correction is not a correction. See README section 1.
 #
 # The release counterpart to packaging/aur/cordial-git/PKGBUILD, which builds
 # whatever commit is at the tip of main. This one tracks tagged releases
@@ -25,7 +34,7 @@
 pkgname=cordial
 pkgver=0.12.1
 pkgrel=1
-pkgdesc="Roblox's official Android build, run natively on Linux -- you supply the APK, none is shipped or downloadable"
+pkgdesc="Roblox's official Android build, run natively on Linux -- Cordial ships no Roblox code and fetches a signature-verified one"
 arch=('x86_64')
 url="https://github.com/luohoa97/cordial"
 license=('GPL-3.0-or-later')
