@@ -1117,6 +1117,31 @@ public:
 /// verdict. Naming a second symptom as the consequence of a first, when both
 /// were merely present together, is how this became load-bearing for two
 /// investigations that went nowhere.
+///
+/// **"Blocks neither startup" is wrong for a real subset of machines, found
+/// 2026-08-30 via GitHub issue #21 plus a second, independent Flatpak report.**
+/// Both hit `RBXCRASH: FatalRuntimeError (Can't initialize the TaskScheduler
+/// before flags have been loaded)`, SIGTRAP, on first launch, on CachyOS. The
+/// unresolved-flags state this hook is reporting is not itself what crashes —
+/// `onFlagsFailed` returning is a no-op — but it is exactly the state that a
+/// *separate* engine assertion checks moments later, on the "Main" thread the
+/// engine spawns for itself inside `nativeGameGlobalInit`
+/// (`crates/cordial-runtime/src/bin/load.rs`, `call_globals`), which races
+/// Cordial's own synchronous `nativeAppBridgeStartLuaAppDM` /
+/// `nativeAppBridgeV2StartAppWithParams` calls through the same StartLuaAppDM
+/// machinery. Both reporters' logs die between "app bridge initialised" and
+/// the surface handoff — before `CORDIAL_LATE_POST_MS`'s late
+/// `nativePostClientSettingsLoadedInitialization3` retry (the thing that
+/// actually produces `areFlagsLoaded:true`, flag-init.md §23) ever gets to run.
+/// Reproduced on this machine too, with the same message and signal, using the
+/// existing `CORDIAL_LATE_SETTINGS=1` knob to bias that same race — confirmed
+/// live under gdb, crash on the process's original main thread inside
+/// libroblox.so, no symbols. What could not be reproduced here is the race
+/// losing on the *default*, no-env-var path: nine attempts on this host
+/// (Fedora 44), including under `stress-ng --cpu 4`, all launched cleanly.
+/// Why CachyOS loses this race and this machine does not is **INFERRED, not
+/// established** — a scheduler or thread-creation-latency difference is the
+/// leading candidate, untested.
 class NativeHelper : public Object {
 public:
     static void onFlagsFailed(ENV*, Object*) {
