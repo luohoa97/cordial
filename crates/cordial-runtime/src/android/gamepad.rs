@@ -453,7 +453,90 @@ fn type_for(family: Family) -> i32 {
     }
 }
 
+/// The first `BTN_JOYSTICK`, and the last `BTN_THUMBR`.
+///
+/// `linux/input-event-codes.h`. A mouse's buttons live below this at
+/// `BTN_MOUSE` 0x110, which is the whole point of the range.
+const BTN_JOYSTICK: usize = 0x120;
+const BTN_THUMBR: usize = 0x13f;
+
+/// Whether a `capabilities/key` bitmask claims any joystick or gamepad button.
+///
+/// sysfs prints the mask as space-separated hex words, **most significant
+/// first**, each holding 64 bits, so the last word is bits 0..63. Split out
+/// from the file read so the parse can be tested against real masks without a
+/// device to read them from.
+fn declares_a_gamepad_button(mask: &str) -> bool {
+    let words: Vec<&str> = mask.split_whitespace().collect();
+    (BTN_JOYSTICK..=BTN_THUMBR).any(|bit| {
+        words
+            .len()
+            .checked_sub(1 + bit / 64)
+            .and_then(|i| u64::from_str_radix(words[i], 16).ok())
+            .is_some_and(|word| word >> (bit % 64) & 1 == 1)
+    })
+}
+
+/// Whether `/dev/input/jsN` is a controller, or something else joydev bound to.
+///
+/// **`/dev/input/js0` existing does not mean a controller is plugged in, and
+/// assuming it did shipped a phantom pad to everybody.** joydev binds to any
+/// device advertising `ABS_X`/`ABS_Y`, which a great many things that are not
+/// controllers do. Measured on the machine this was written on, with nothing
+/// plugged in: `/dev/input/js0` is `keyd virtual pointer` -- a keyboard
+/// remapper's virtual mouse -- and udev agrees it is not a joystick, tagging it
+/// `ID_INPUT_MOUSE=1` with no `ID_INPUT_JOYSTICK`. Reported as "even when you
+/// dont have a controller plugged in, why is cordial actively telling roblox it
+/// does have a controller plugged in", and it is exactly that: gamepad support
+/// went on by default, the poll opened js0, joydev's init burst announced it,
+/// and Roblox was told a pad had arrived.
+///
+/// The test is the one udev's own `input_id` builtin uses -- a joystick or
+/// gamepad button somewhere in `BTN_JOYSTICK..=BTN_THUMBR` -- rather than a
+/// list of names to reject. A name list would have to grow for every virtual
+/// input device anyone ever installs, and would still let the next one through;
+/// this asks the kernel what the device says it can do. keyd's pointer declares
+/// `BTN_LEFT..BTN_TASK` and no gamepad button, so it fails, and an unrecognised
+/// third-party pad that really is one still passes -- which matters, because
+/// `classify` deliberately returns `Unrecognised` for pads like the 8BitDo
+/// rather than pretending to know them.
+///
+/// A device whose capabilities cannot be read at all is **accepted**. The file
+/// is missing on nothing this has seen, and refusing on an unreadable file
+/// would turn "I could not check" into "you have no controller", which is the
+/// stub-that-lies shape pointed the other way.
+fn is_a_controller(id: i32) -> bool {
+    let path = format!("/sys/class/input/js{id}/device/capabilities/key");
+    match std::fs::read_to_string(&path) {
+        Ok(mask) => {
+            let yes = declares_a_gamepad_button(&mask);
+            if !yes {
+                // Once per device and only under the trace, but named: the
+                // person asking "why does Roblox think I have a controller"
+                // needs the answer to be findable, and so does the person
+                // asking why their unusual pad is ignored.
+                if input::trace_gamepad() {
+                    let name = device_name(id);
+                    eprintln!(
+                        "[cordial] gamepad: /dev/input/js{id} ({}) declares no joystick or \
+                         gamepad button, so it is not a controller; ignoring it",
+                        name.as_deref().unwrap_or("no name in /sys")
+                    );
+                }
+            }
+            yes
+        }
+        Err(_) => true,
+    }
+}
+
 fn open_pad(id: i32) -> Option<std::fs::File> {
+    // Asked before the open, not after: opening a joydev node makes the driver
+    // queue an init burst, and the whole cost of getting this wrong is that
+    // burst being read as a pad arriving.
+    if !is_a_controller(id) {
+        return None;
+    }
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
         .read(true)
@@ -645,6 +728,59 @@ fn poll_probe() {
 #[cfg(test)]
 mod tests {
     use super::{enabled_for};
+
+    /// **A mouse that joydev bound to is not a controller.**
+    ///
+    /// The masks below are real, read from `/sys/class/input/*/capabilities/key`
+    /// on the machine this was written on. `keyd virtual pointer` is the one
+    /// that became `/dev/input/js0` with nothing plugged in and had Roblox told
+    /// a pad had arrived; it declares `BTN_LEFT..BTN_TASK` (bits 0x110..0x117)
+    /// and nothing in the gamepad range.
+    #[test]
+    fn a_virtual_mouse_that_became_a_js_node_is_not_a_controller() {
+        use super::declares_a_gamepad_button;
+        // keyd virtual pointer: 0xff0000 in the 0x100..0x13f word.
+        assert!(!declares_a_gamepad_button("ff0000 0 0 0 0"));
+        // An ordinary keyboard: KEY_A and friends, nothing above 0xff.
+        assert!(!declares_a_gamepad_button("10000 0 0 0 0 0 0 ffffffffffffffff fffffffffffffffe"));
+        // Nothing at all.
+        assert!(!declares_a_gamepad_button("0 0 0 0 0"));
+        assert!(!declares_a_gamepad_button(""));
+    }
+
+    /// A real pad passes, wherever in the range its buttons sit.
+    ///
+    /// BTN_SOUTH (0x130) is what a modern gamepad declares and BTN_TRIGGER
+    /// (0x120) is what an old joystick does. Both must pass, or the filter
+    /// that fixed the phantom pad becomes the reason a real one is ignored --
+    /// which is the more expensive failure of the two, because it looks like
+    /// gamepad support simply not working.
+    #[test]
+    fn a_real_pad_passes_from_either_end_of_the_range() {
+        use super::declares_a_gamepad_button;
+        // bit 0x130 == 304 == word 4 from the end, bit 48.
+        assert!(declares_a_gamepad_button("1000000000000 0 0 0 0"));
+        // bit 0x120 == 288 == word 4 from the end, bit 32.
+        assert!(declares_a_gamepad_button("100000000 0 0 0 0"));
+        // bit 0x13f == 319, the top of the range.
+        assert!(declares_a_gamepad_button("8000000000000000 0 0 0 0"));
+        // A pad that also declares mouse buttons is still a pad: BTN_SOUTH at
+        // bit 48 alongside BTN_LEFT..BTN_TASK at 16..23, in the same word.
+        assert!(declares_a_gamepad_button("1000000ff0000 0 0 0 0"));
+    }
+
+    /// A short or malformed mask must not panic or index out of bounds.
+    ///
+    /// This parses a kernel file with arithmetic on word offsets, and the
+    /// failure mode of getting that wrong is a panic inside the input pump --
+    /// which takes the whole client down over a device nobody was using.
+    #[test]
+    fn a_mask_that_makes_no_sense_is_simply_not_a_gamepad() {
+        use super::declares_a_gamepad_button;
+        for mask in ["0", "zzz", "0 0", "   ", "ffffffffffffffffff"] {
+            assert!(!declares_a_gamepad_button(mask), "{mask:?} must not read as a pad");
+        }
+    }
 
     /// **Gamepad support is on unless it is switched off, from 0.13.0.**
     /// Pinned because the flip is a shipping decision rather than a detail: it

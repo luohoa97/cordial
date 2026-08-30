@@ -1081,12 +1081,14 @@ fn build_general_page(
     // `CORDIAL_PRESENT_MODE` is the only state in which a plugin's
     // `CordialPresentMode` counts, and removing the row's only route to that
     // state would silently retire a capability ADR-020 documents.
-    let present_model = gtk::StringList::new(&[
-        "Match your display (FIFO)",
-        "Uncapped, no tearing (Mailbox)",
-        "Uncapped, may tear (Immediate)",
-        "Automatic",
-    ]);
+    // **Short enough to read in the row, which the first draft was not.**
+    // An `AdwComboRow` puts the selected value in whatever space the title and
+    // subtitle leave and ellipsises it: "Uncapped, no tearing (Mailbox)" came
+    // out as "Uncapped, no tearing (..." with the one word that distinguishes
+    // it cut off. Reported with a screenshot. These are the names the request
+    // used, they fit, and what each means is one line below instead of five
+    // squeezed into the row.
+    let present_model = gtk::StringList::new(&["FIFO", "Mailbox", "Immediate", "Automatic"]);
     let present = adw::ComboRow::builder()
         .title("Frame pacing")
         // What a user can act on, in the order they need it: what the default
@@ -1097,12 +1099,12 @@ fn build_general_page(
         // advertise leaves the engine's own choice standing -- are in
         // `shell_config::PresentMode` and in the runtime beside the code.
         .subtitle(
-            "Matching your display draws one frame per refresh, which is every frame you can              actually see. The uncapped settings draw more and throw the extra ones away, so              they cost battery and fan for no visible frames unless you are chasing input              latency. If your driver does not offer the one you pick, Roblox's own choice is              left alone.",
+            "FIFO matches your display and wastes no power. Mailbox and Immediate draw more frames for lower latency, and cost battery.",
         )
         .model(&present_model)
         .selected(config.borrow().present_mode.index())
         .build();
-    present.set_subtitle_lines(5);
+    present.set_subtitle_lines(2);
     {
         let config = config.clone();
         let config_path = config_path.clone();
