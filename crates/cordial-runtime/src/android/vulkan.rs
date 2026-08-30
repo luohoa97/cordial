@@ -834,7 +834,7 @@ pub const PRESENT_MODE_ENV: &str = "CORDIAL_PRESENT_MODE";
 /// this project keeps finding.
 fn parse_present_mode(text: &str) -> Option<PresentModeChoice> {
     match text.trim().to_ascii_lowercase().as_str() {
-        "" | "auto" => Some(PresentModeChoice::Prefer(&[VK_PRESENT_MODE_FIFO_KHR])),
+        "" | "auto" => Some(PresentModeChoice::Prefer(&[VK_PRESENT_MODE_MAILBOX_KHR])),
         "off" | "engine" => Some(PresentModeChoice::Untouched),
         "mailbox" => Some(PresentModeChoice::Prefer(&[VK_PRESENT_MODE_MAILBOX_KHR])),
         "immediate" => Some(PresentModeChoice::Prefer(&[VK_PRESENT_MODE_IMMEDIATE_KHR])),
@@ -871,7 +871,7 @@ fn resolve_present_mode(
     from_env: Option<String>,
     from_flags: Option<(String, String)>,
 ) -> (PresentModeChoice, String) {
-    let auto = PresentModeChoice::Prefer(&[VK_PRESENT_MODE_FIFO_KHR]);
+    let auto = PresentModeChoice::Prefer(&[VK_PRESENT_MODE_MAILBOX_KHR]);
 
     if let Some(text) = from_env.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         match parse_present_mode(text) {
@@ -915,19 +915,26 @@ fn present_mode_from_flags() -> Option<(String, String)> {
 
 /// The present mode this process will ask for, decided once.
 ///
-/// **`auto` is FIFO, and it used to be MAILBOX.** The old default was argued
-/// from picture quality alone -- MAILBOX uncaps without tearing, so it looked
-/// like the free option -- and that argument left out what uncapping costs.
-/// MAILBOX draws every frame the GPU can produce and throws away the ones the
-/// display never scans out, so on a 60 Hz panel a scene the GPU could render at
-/// 300 fps burns five times the power to show the same sixty frames. On a
-/// handheld that is battery, and on a laptop it is the fan. FIFO is also the
-/// one mode the specification guarantees exists, so it is the only default that
-/// never silently falls back to something else.
+/// **`auto` is MAILBOX. It was briefly FIFO, and that was measured wrong.**
 ///
-/// Anyone who wants the frames can still name `mailbox` -- or `uncapped`, and
-/// take whichever of the two the driver has -- and then it is a choice rather
-/// than a default that quietly spent their battery to raise a number.
+/// The case for FIFO is real and still stands on its own terms: MAILBOX draws
+/// every frame the GPU can produce and throws away the ones the display never
+/// scans out, so on a 60 Hz panel a scene the GPU could render at 300 fps burns
+/// several times the power to show the same sixty frames. On a handheld that is
+/// battery and on a laptop it is the fan. FIFO is also the only mode the
+/// specification guarantees.
+///
+/// What that argument left out is latency, and a user found it within the hour:
+/// "the mouse feels floaty and weird in roblox", then, with the control run,
+/// "switching back to Mailbox fixes the floaty fealing". FIFO queues presents
+/// against the display clock, so the cursor and the camera lag the hand by up
+/// to the queue depth. MAILBOX has no queue to wait behind -- it replaces the
+/// pending image -- which is the whole of the difference in feel.
+///
+/// **The power argument was reasoned and the latency one was measured**, which
+/// is the order this project settles disagreements in. Power is still real, and
+/// `fifo` is one row away in Settings, named as the setting that matches the
+/// display; the difference is that nobody now pays for it without choosing it.
 ///
 /// Decided once and not re-read: the mode is a field of
 /// `VkSwapchainCreateInfoKHR`, so changing it means a new swapchain, and the
@@ -1604,7 +1611,7 @@ mod tests {
     /// What nothing-set resolves to. Named rather than spelled out at each
     /// use, because the whole point of these tests is that the fallback is one
     /// decision made in one place.
-    const DEFAULT: PresentModeChoice = PresentModeChoice::Prefer(&[VK_PRESENT_MODE_FIFO_KHR]);
+    const DEFAULT: PresentModeChoice = PresentModeChoice::Prefer(&[VK_PRESENT_MODE_MAILBOX_KHR]);
 
     fn resolved(env: Option<&str>, flag: Option<(&str, &str)>) -> PresentModeChoice {
         resolve_present_mode(
@@ -1614,40 +1621,45 @@ mod tests {
         .0
     }
 
-    /// **The default is FIFO, and this test used to assert MAILBOX.**
+    /// **The default is MAILBOX, and it is latency that decides it.**
     ///
-    /// It was called "the behaviour Cordial has always had", which was true of
-    /// the code and misleading about the machine: before any of this file's
-    /// present-mode handling existed the engine picked FIFO for itself, so the
-    /// MAILBOX default was a change Cordial introduced, not one it preserved.
+    /// This assertion has now been written three ways and the history is the
+    /// useful part. It first said MAILBOX and called it "the behaviour Cordial
+    /// has always had", which was true of the code and false of the machine --
+    /// before this file had any present-mode handling the engine picked FIFO
+    /// for itself, so MAILBOX was a change Cordial introduced. It was then
+    /// flipped to FIFO on a power argument, reasoned and not measured. A user
+    /// measured it inside the hour: "the mouse feels floaty and weird", and
+    /// then the control, "switching back to Mailbox fixes the floaty fealing".
     ///
-    /// FIFO is the default now because uncapping costs power. MAILBOX renders
-    /// every frame the GPU can manage and discards the ones the display never
-    /// scans out, which on a handheld is battery and on a laptop is the fan --
-    /// and it is the one mode the specification guarantees, so it can never
-    /// fall back to something else without saying so.
+    /// So MAILBOX, because FIFO queues presents against the display clock and
+    /// the cursor lags the hand by the queue depth. The power cost of MAILBOX
+    /// is real and unmeasured here; `fifo` is one row away in Settings for
+    /// anybody who would rather pay latency than battery.
     #[test]
-    fn nothing_set_is_fifo_because_uncapping_costs_power() {
+    fn nothing_set_is_mailbox_because_fifo_measured_floaty() {
         assert_eq!(resolved(None, None), DEFAULT);
         assert_eq!(resolved(Some(""), None), DEFAULT);
         assert_eq!(
             resolved(None, None),
-            PresentModeChoice::Prefer(&[VK_PRESENT_MODE_FIFO_KHR]),
+            PresentModeChoice::Prefer(&[VK_PRESENT_MODE_MAILBOX_KHR]),
             "spelled out once, so a change to DEFAULT cannot make this test agree with itself"
         );
     }
 
-    /// Asking for MAILBOX must still work, or the setting is decoration.
+    /// Every mode the settings row offers must be reachable by name, or the
+    /// row is decoration. `fifo` especially: it is no longer the default, so
+    /// nothing else in this file would notice if it stopped resolving.
     #[test]
-    fn the_uncapped_modes_are_still_reachable_by_name() {
-        assert_eq!(
-            resolved(Some("mailbox"), None),
-            PresentModeChoice::Prefer(&[VK_PRESENT_MODE_MAILBOX_KHR])
-        );
-        assert_eq!(
-            resolved(Some("immediate"), None),
-            PresentModeChoice::Prefer(&[VK_PRESENT_MODE_IMMEDIATE_KHR])
-        );
+    fn every_mode_the_settings_row_offers_is_reachable_by_name() {
+        // `Prefer` holds a `&'static [i32]`, so the expected values are
+        // statics rather than a temporary built in the loop.
+        const FIFO: &[i32] = &[VK_PRESENT_MODE_FIFO_KHR];
+        const MAILBOX: &[i32] = &[VK_PRESENT_MODE_MAILBOX_KHR];
+        const IMMEDIATE: &[i32] = &[VK_PRESENT_MODE_IMMEDIATE_KHR];
+        for (name, want) in [("fifo", FIFO), ("mailbox", MAILBOX), ("immediate", IMMEDIATE)] {
+            assert_eq!(resolved(Some(name), None), PresentModeChoice::Prefer(want), "{name}");
+        }
     }
 
     #[test]

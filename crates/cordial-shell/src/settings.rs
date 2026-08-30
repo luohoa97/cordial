@@ -1088,7 +1088,13 @@ fn build_general_page(
     // it cut off. Reported with a screenshot. These are the names the request
     // used, they fit, and what each means is one line below instead of five
     // squeezed into the row.
-    let present_model = gtk::StringList::new(&["FIFO", "Mailbox", "Immediate", "Automatic"]);
+    //
+    // Mailbox first, because it is the default and the recommended value, and
+    // the Renderer row above puts its own default first for that reason. FIFO
+    // was briefly the default and briefly first; it is neither now, and the
+    // subtitle names the cost rather than leaving somebody to find it the way
+    // the first reporter did.
+    let present_model = gtk::StringList::new(&["Mailbox", "FIFO", "Immediate", "Automatic"]);
     let present = adw::ComboRow::builder()
         .title("Frame pacing")
         // What a user can act on, in the order they need it: what the default
@@ -1099,7 +1105,8 @@ fn build_general_page(
         // advertise leaves the engine's own choice standing -- are in
         // `shell_config::PresentMode` and in the runtime beside the code.
         .subtitle(
-            "FIFO matches your display and wastes no power. Mailbox and Immediate draw more frames for lower latency, and cost battery.",
+            "Mailbox is responsive and costs battery. FIFO matches your display and saves power, \
+             at the cost of a floatier mouse.",
         )
         .model(&present_model)
         .selected(config.borrow().present_mode.index())

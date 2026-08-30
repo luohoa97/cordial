@@ -140,9 +140,9 @@ env:
                                      path Roblox uses when dlopen(libvulkan)
                                      fails
   CORDIAL_PRESENT_MODE=<m>           swapchain present mode: auto (the default;
-                                     FIFO, which draws one frame per display
-                                     refresh and wastes no power on frames
-                                     nobody sees),
+                                     MAILBOX when the driver advertises it --
+                                     responsive, and it costs power; 'fifo'
+                                     saves the power and feels floatier),
                                      off (forward the engine's own choice, which
                                      is FIFO — this is the control for a frame
                                      rate measurement), or one of mailbox,

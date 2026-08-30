@@ -366,17 +366,25 @@ impl PointerAcceleration {
 
 /// Which Vulkan present mode the client asks the driver for.
 ///
-/// **This is a power setting before it is a frame-rate setting, and the row in
-/// Settings is worded that way.** FIFO queues one image per display refresh, so
-/// the GPU renders exactly the frames that get shown; MAILBOX renders every
-/// frame it can and discards the ones the display never scans out, which on a
-/// 60 Hz panel with headroom to spare is several times the power for the same
-/// sixty visible frames. On a handheld that is battery and on a laptop it is
-/// the fan. IMMEDIATE does not synchronise at all, which is the lowest latency
-/// and the one that tears.
+/// **It is a latency setting and a power setting at the same time, and those
+/// pull opposite ways.** FIFO queues one image per display refresh, so the GPU
+/// renders exactly the frames that get shown and wastes nothing -- and the
+/// cursor and camera lag the hand by however deep that queue is. MAILBOX has no
+/// queue to wait behind, it replaces the pending image, so it is the
+/// responsive one and it burns power drawing frames the display never scans
+/// out. IMMEDIATE does not synchronise at all: the lowest latency there is, and
+/// the one that tears.
 ///
-/// FIFO is the default, and it is also the only mode `VkSurfaceKHR` guarantees
-/// -- the other two may simply not be advertised, in which case
+/// **MAILBOX is the default because the latency was measured and the power was
+/// not.** This shipped as FIFO for about an hour on the power argument, and the
+/// report came straight back -- "the mouse feels floaty and weird in roblox",
+/// then the control run, "switching back to Mailbox fixes the floaty fealing".
+/// The power cost of MAILBOX is real and nobody here has a watt meter; the
+/// latency cost of FIFO is something a person felt within minutes. FIFO is one
+/// row away for anyone who would rather pay it.
+///
+/// FIFO is also the only mode `VkSurfaceKHR` guarantees -- the other two may
+/// simply not be advertised, in which case
 /// `cordial_runtime::android::vulkan` leaves the engine's own choice alone
 /// rather than substituting something nobody asked for.
 ///
@@ -391,9 +399,11 @@ impl PointerAcceleration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PresentMode {
-    /// One image per refresh. The default: no tearing, no wasted frames.
+    /// One image per refresh: no tearing, no wasted frames, and the latency of
+    /// a queue. The power-saving choice, and not the default -- see above.
     Fifo,
-    /// Uncapped without tearing, where the driver advertises it. Costs power.
+    /// No queue, no tearing, where the driver advertises it. The default:
+    /// responsive, and it costs power.
     Mailbox,
     /// Uncapped, unsynchronised, tears. The lowest latency there is.
     Immediate,
@@ -403,17 +413,18 @@ pub enum PresentMode {
 
 impl Default for PresentMode {
     fn default() -> Self {
-        PresentMode::Fifo
+        PresentMode::Mailbox
     }
 }
 
 impl PresentMode {
     /// Order matches the `AdwComboRow` model in `settings.rs`, as
     /// [`ThrottleWhen::index`] does.
+    /// Mailbox is 0 because it is the default and the row lists it first.
     pub fn index(self) -> u32 {
         match self {
-            PresentMode::Fifo => 0,
-            PresentMode::Mailbox => 1,
+            PresentMode::Mailbox => 0,
+            PresentMode::Fifo => 1,
             PresentMode::Immediate => 2,
             PresentMode::Automatic => 3,
         }
@@ -421,8 +432,8 @@ impl PresentMode {
 
     pub fn from_index(index: u32) -> Self {
         match index {
-            0 => PresentMode::Fifo,
-            1 => PresentMode::Mailbox,
+            0 => PresentMode::Mailbox,
+            1 => PresentMode::Fifo,
             2 => PresentMode::Immediate,
             _ => PresentMode::Automatic,
         }
@@ -754,10 +765,9 @@ pub struct ShellConfig {
     /// which carries the reasoning and the reason FIFO is the default.
     ///
     /// `#[serde(default)]`, so a `shell.json` written by an older Cordial --
-    /// which had no such key and got MAILBOX from the runtime -- reads as FIFO
-    /// on the next launch rather than failing to parse. That is a behaviour
-    /// change on upgrade and an intended one: the old default spent power
-    /// nobody chose to spend.
+    /// which had no such key at all -- loads rather than failing to parse, and
+    /// reads as MAILBOX, which is what those builds were already doing. Nobody
+    /// upgrading gets a different feel than they had.
     #[serde(default)]
     pub present_mode: PresentMode,
     pub mangohud: bool,
@@ -1139,18 +1149,19 @@ mod tests {
         }
     }
 
-    /// **A fresh install pins the frame rate to the display, and that is a
-    /// power decision rather than a taste one.**
+    /// **A fresh install is responsive, and pays power for it.**
     ///
-    /// Pinned because it is easy to reverse by accident: MAILBOX reads as the
-    /// strictly better mode if you only look at the frame counter, and it was
-    /// the default here until somebody asked why the fans were running. The
-    /// cost is invisible in every measurement this project takes -- presents
-    /// per second goes up, and the watts that bought it are not on the chart.
+    /// Pinned with the reason attached because this default has now moved
+    /// twice. FIFO is the better argument on paper -- it wastes no frames and
+    /// it is the only mode the specification guarantees -- and it shipped for
+    /// about an hour before a user reported the mouse felt floaty and then
+    /// confirmed, with the control, that Mailbox fixed it. Anybody moving it
+    /// back to FIFO should have a power measurement in hand, because the
+    /// latency side of this trade now has one and the power side does not.
     #[test]
-    fn a_fresh_install_matches_the_display_rather_than_racing_it() {
-        assert_eq!(ShellConfig::default().present_mode, PresentMode::Fifo);
-        assert_eq!(PresentMode::default().as_env(), Some("fifo"));
+    fn a_fresh_install_is_responsive_rather_than_frugal() {
+        assert_eq!(ShellConfig::default().present_mode, PresentMode::Mailbox);
+        assert_eq!(PresentMode::default().as_env(), Some("mailbox"));
     }
 
     /// Automatic must send nothing, or ADR-020's plugin path is unreachable.
@@ -1189,9 +1200,9 @@ mod tests {
     /// A `shell.json` from a Cordial that predates this key must still load,
     /// and must read as FIFO rather than refusing to parse.
     #[test]
-    fn an_older_config_without_the_key_reads_as_fifo() {
+    fn an_older_config_without_the_key_keeps_the_feel_it_had() {
         let older = r#"{"gamemode":true,"graphics":"automatic","mangohud":false}"#;
         let parsed: ShellConfig = serde_json::from_str(older).expect("an older shell.json must load");
-        assert_eq!(parsed.present_mode, PresentMode::Fifo);
+        assert_eq!(parsed.present_mode, PresentMode::Mailbox);
     }
 }
