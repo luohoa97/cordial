@@ -1,11 +1,21 @@
 {
   "id": "discord-presence",
   "name": "Discord Presence",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "entry": "main.ts",
   "capabilities": [
     "lifecycle.read",
     "presence.set",
+    "settings.read",
     "log"
+  ],
+  "preferences": [
+    {
+      "key": "client_id",
+      "title": "Discord application ID",
+      "description": "Leave blank to appear as Cordial. To use your own name and icon instead, paste that application's ID from discord.com/developers/applications. Digits only, and it is not a secret.",
+      "type": "text",
+      "default": ""
+    }
   ]
 }

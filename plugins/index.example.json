@@ -5,7 +5,10 @@
       "id": "flag-inspector",
       "name": "Flag Inspector",
       "version": "1.0.0",
-      "capabilities": ["flags.read", "log"],
+      "capabilities": [
+        "flags.read",
+        "log"
+      ],
       "dependencies": {},
       "url": "https://example.invalid/cordial/flag-inspector-1.0.0.tar.zst",
       "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -13,18 +16,31 @@
     {
       "id": "discord-presence",
       "name": "Discord Presence",
-      "version": "1.0.0",
-      "capabilities": ["lifecycle.read", "presence.set", "log"],
+      "version": "1.1.0",
+      "capabilities": [
+        "lifecycle.read",
+        "presence.set",
+        "settings.read",
+        "log"
+      ],
       "dependencies": {},
-      "url": "https://example.invalid/cordial/discord-presence-1.0.0.tar.zst",
+      "url": "https://example.invalid/cordial/discord-presence-1.1.0.tar.zst",
       "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
     },
     {
       "id": "flag-profiles",
       "name": "Flag Profiles",
       "version": "0.3.1",
-      "capabilities": ["flags.read", "flags.write", "events.declare", "events.publish", "log"],
-      "dependencies": { "flag-inspector": "^1.0.0" },
+      "capabilities": [
+        "flags.read",
+        "flags.write",
+        "events.declare",
+        "events.publish",
+        "log"
+      ],
+      "dependencies": {
+        "flag-inspector": "^1.0.0"
+      },
       "url": "https://example.invalid/cordial/flag-profiles-0.3.1.tar.zst",
       "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
     }

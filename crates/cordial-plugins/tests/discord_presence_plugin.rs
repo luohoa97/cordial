@@ -136,7 +136,14 @@ fn discord_presence_follows_lifecycle_events_all_the_way_to_the_wire() {
     let (op, handshake) = rx.recv().unwrap();
     assert_eq!(op, 0);
     assert_eq!(handshake["v"], 1);
-    assert_eq!(handshake["client_id"], "1234567890123456");
+    // Pinned to the real registered application rather than left loose. The
+    // plugin takes this from its `client_id` preference when the user has set
+    // one, and this session grants `settings.read` with no store behind it, so
+    // `preferences` arrives null and the shipped default is what reaches the
+    // wire. That is the path almost every user is on, and a typo in the
+    // constant would otherwise only show up as Discord quietly displaying
+    // nothing.
+    assert_eq!(handshake["client_id"], "1543200871767212062");
 
     let (op, set_activity) = rx.recv().unwrap();
     assert_eq!(op, 1);

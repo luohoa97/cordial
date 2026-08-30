@@ -261,3 +261,51 @@ fn a_declared_choice_defaults_to_one_of_its_own_options() {
         }
     }
 }
+
+/// The Discord application id the shipped presence plugin falls back to.
+///
+/// Three things have to agree and nothing else makes them: the constant in
+/// `main.ts`, the assertion in `discord_presence_plugin.rs`, and the id Cordial
+/// is actually registered under. A wrong digit is invisible in testing --
+/// Discord's IPC accepts an id it cannot look up and simply shows the user
+/// nothing -- so it is pinned here rather than trusted to review.
+#[test]
+fn the_presence_plugin_falls_back_to_cordials_real_application_id() {
+    let (_, main, _) = shipped()
+        .into_iter()
+        .find(|(id, _, _)| id == "discord-presence")
+        .expect("the shipped discord-presence plugin should be there");
+    assert!(
+        main.contains(r#"const DEFAULT_CLIENT_ID = "1543200871767212062";"#),
+        "plugins/discord-presence/main.ts no longer declares Cordial's registered \
+         application id as its fallback"
+    );
+    assert!(
+        !main.contains("1234567890123456"),
+        "the placeholder application id is back in plugins/discord-presence/main.ts"
+    );
+}
+
+/// A plugin that reads a preference must ask for the capability that allows it.
+///
+/// `preferences.get` sits under `settings.read` rather than having one of its
+/// own, and the answers also arrive unasked in the handshake -- which is the
+/// trap. A plugin can read `payload.preferences` without ever calling anything,
+/// so forgetting the capability does not fail loudly at a call site. It just
+/// makes the field permanently null and the user's answer permanently ignored.
+#[test]
+fn a_plugin_declaring_preferences_also_requests_settings_read() {
+    for (id, source, manifest) in shipped() {
+        let text = std::fs::read_to_string(&manifest).expect("readable");
+        let m: cordial_plugins::manifest::Manifest =
+            serde_json::from_str(&text).expect("covered by the test above");
+        if m.preferences.is_empty() || !source.contains("preferences") {
+            continue;
+        }
+        assert!(
+            m.capabilities.iter().any(|c| c == "settings.read"),
+            "plugins/{id}: reads preferences but does not request settings.read, \
+             so the answers arrive as null and the user's choice is silently ignored"
+        );
+    }
+}

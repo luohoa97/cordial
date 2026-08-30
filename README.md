@@ -734,7 +734,7 @@ Plugins; they are listed there whether or not you have ever installed anything.
 | | What it does | On by default |
 |---|---|---|
 | **FPS Flex** | Takes the frame-rate cap off. Roblox's Android build asks for FIFO, which pins drawing to your display's refresh — right on a phone, wrong on a desktop with a faster panel. | **No** |
-| **Discord Presence** | Shows what you are playing on your Discord profile. | No |
+| **Discord Presence** | Shows on your Discord profile that you are in Cordial. It cannot name the game yet — no core event carries which place is running, so it says "Using Cordial". The application it appears as is configurable in the plugin's settings. | No |
 | **Flag Inspector** | Logs which FastFlags are in effect and where each came from. A diagnostic, not a feature. | No |
 
 FPS Flex ships switched off on purpose rather than out of caution: uncapping
@@ -828,7 +828,7 @@ so the plugin gets what you write in
 `~/.local/share/cordial/profiles/<profile>/plugin-grants.json` and nothing else:
 
 ```json
-{ "discord-presence": ["lifecycle.read", "presence.set", "log"] }
+{ "discord-presence": ["lifecycle.read", "presence.set", "settings.read", "log"] }
 ```
 
 A plugin with no grants is reported at launch and not started, and a capability

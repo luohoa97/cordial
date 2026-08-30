@@ -1911,7 +1911,7 @@ comes back as `"capability":"settings.read"`. The split between `denied` and
 
 The examples below use the `call` helper that all three shipped example plugins
 define — [`plugins/flag-inspector/main.ts`](../plugins/flag-inspector/main.ts) is the
-shortest one to read, at 75 lines against `discord-presence`'s 110 and
+shortest one to read, at 75 lines against `discord-presence`'s 150 and
 `fps-flex`'s 177. It writes one line to stdout and resolves when a reply with
 the same `id` arrives on stdin.
 
