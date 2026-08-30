@@ -1,0 +1,143 @@
+# Keep the standalone Arch packaging repository in step with a release.
+#
+# **Why a second repository exists at all.** Both the AUR and Chaotic-AUR want a
+# git repository whose *root* is the package directory -- `PKGBUILD` and
+# `.SRCINFO` at the top level. Cordial keeps its packaging under
+# `packaging/aur/cordial/`, so neither can consume this repository directly.
+# `luohoa97/cordial-pkgbuild` is that root-level mirror, and it is generated:
+# its README says so and says not to send pull requests there.
+#
+# **Why this must be automated rather than left to a maintainer.**
+# `packaging/aur/PUBLISHING.md` documents bumping `pkgver` and regenerating
+# `.SRCINFO` by hand at each release. That ritual was not performed for five
+# consecutive releases: on 2026-08-30 the committed PKGBUILD still said
+# `pkgver=0.7.0` against a tree at 0.12.1, and because `source=` pins
+# `#tag=v$pkgver`, anything building it would have fetched v0.7.0 and reported
+# success. `.SRCINFO` had drifted in both directions -- the release package's
+# said 0.7.0 against a 0.12.1 PKGBUILD, and cordial-git's said
+# `0.7.0.r0.gbdad524` against a PKGBUILD saying `0.6.0.r108.g9d9c980`.
+#
+# It went unnoticed because the only consumer was `release.yml`, which overrides
+# `pkgver` from the tag via `CORDIAL_PKGBUILD_TAG` rather than trusting the file.
+# The override kept CI green while the file rotted. **Chaotic-AUR has no such
+# override**: it shallow-clones the repository it is given and builds what is
+# there, so a stale `pkgver` ships a stale client to everyone who installs from
+# it.
+#
+# Hence the gate below. A tag whose PKGBUILD disagrees with it now fails loudly
+# at release time, which is the one moment somebody is present to fix it.
+name: Publish Arch packaging
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish packaging for, e.g. v0.12.1'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Keyed by ref, not global: two tags are two different packages to publish and
+  # have no shared resource. Deliberately unlike flatpak.yml's group, which was
+  # workflow-wide until 2026-08-30 and starved release builds by doing so.
+  group: publish-arch-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync the packaging repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: archlinux:base-devel
+    steps:
+      - name: Install what makepkg and the push need
+        run: pacman -Sy --noconfirm --needed git openssh
+
+      - uses: actions/checkout@v4
+
+      - name: Work out which tag this is
+        id: tag
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::'$tag' is not a v-prefixed tag"; exit 1 ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      # **The gate this workflow exists for.** Loud at release time beats silent
+      # for five releases. Mirrors release.yml's "Refuse a tag that disagrees
+      # with Cargo.toml" step, for the same reason and in the same spirit.
+      - name: Refuse a tag whose PKGBUILD disagrees with it
+        run: |
+          set -euo pipefail
+          want="${{ steps.tag.outputs.version }}"
+          got=$(sed -n 's/^pkgver=//p' packaging/aur/cordial/PKGBUILD | head -1)
+          if [ "$got" != "$want" ]; then
+            echo "::error::packaging/aur/cordial/PKGBUILD says pkgver=$got but the tag is v$want."
+            echo "::error::Its source= pins #tag=v\$pkgver, so Chaotic-AUR would build v$got."
+            echo "::error::Bump it and regenerate .SRCINFO -- see packaging/aur/PUBLISHING.md."
+            exit 1
+          fi
+          echo "pkgver=$got matches the tag"
+
+      # makepkg refuses to run as root, and this container is root.
+      - name: Refuse a .SRCINFO that has drifted from its PKGBUILD
+        run: |
+          set -euo pipefail
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          for p in cordial cordial-git; do
+            d="$GITHUB_WORKSPACE/packaging/aur/$p"
+            if ! runuser -u builder -- sh -c "cd '$d' && makepkg --printsrcinfo" > /tmp/$p.srcinfo; then
+              echo "::error::makepkg could not parse $p/PKGBUILD"; exit 1
+            fi
+            if ! diff -u "$d/.SRCINFO" /tmp/$p.srcinfo; then
+              echo "::error::$p/.SRCINFO has drifted from its PKGBUILD."
+              echo "::error::The AUR serves metadata from .SRCINFO and builds from PKGBUILD, so this breaks silently."
+              echo "::error::Regenerate with: cd packaging/aur/$p && makepkg --printsrcinfo > .SRCINFO"
+              exit 1
+            fi
+            echo "$p: .SRCINFO is in step"
+          done
+
+      # Absent until a maintainer adds it, at which point this starts working
+      # with no change here -- the same shape apt.yml uses for its signing key,
+      # and for the same reason: a workflow that half-publishes is worse than one
+      # that says plainly it cannot.
+      - name: Push to the packaging repository
+        env:
+          TOKEN: ${{ secrets.PACKAGING_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TOKEN:-}" ]; then
+            echo "::notice::no PACKAGING_REPO_TOKEN secret; the packaging repository is not updated."
+            echo "::notice::Chaotic-AUR builds whatever that repository last held, so it will stay on the previous release."
+            exit 0
+          fi
+          tag="${{ steps.tag.outputs.tag }}"
+          git config --global user.name  "cordial-ci"
+          git config --global user.email "ci@users.noreply.github.com"
+          git clone --depth=1 \
+            "https://x-access-token:${TOKEN}@github.com/luohoa97/cordial-pkgbuild.git" /tmp/pkgrepo
+          cp packaging/aur/cordial/PKGBUILD \
+             packaging/aur/cordial/.SRCINFO \
+             packaging/aur/cordial/cordial.install /tmp/pkgrepo/
+          cd /tmp/pkgrepo
+          if git diff --quiet; then
+            echo "packaging is already current for $tag; nothing to push"
+            exit 0
+          fi
+          git add -A
+          git commit \
+            -m "Cordial ${tag#v} packaging" \
+            -m "Generated from packaging/aur/cordial/ in luohoa97/cordial at $tag. .SRCINFO verified in step with its PKGBUILD by makepkg --printsrcinfo."
+          git push origin HEAD:main
+          echo "pushed packaging for $tag"
