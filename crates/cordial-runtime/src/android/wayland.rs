@@ -2997,6 +2997,23 @@ fn dialog_in_front(w: &WaylandWindow) -> bool {
     w.open_web_view_dialogs.load(Ordering::SeqCst) > 0
 }
 
+/// Whether *anything* of Cordial's own is drawn over the engine — a web-view
+/// dialog or the text editor.
+///
+/// Broader than [`dialog_in_front`] and deliberately a separate question. That
+/// one governs whether pointer *input* reaches the engine, and the editor is
+/// excluded from it on purpose: it is a widget on one TextBox, not a modal, and
+/// swallowing every click in the game while somebody types would be worse than
+/// the bug it fixed. This one governs whether the *cursor is drawn*, where the
+/// answer for both is the same — if the thing under the pointer is a GTK
+/// widget, the user needs to see where they are pointing.
+///
+/// `sync_pointer_lock` computed this inline and `pointer_enter` did not consult
+/// it at all, which is how the cursor came to be hidden over a dialog.
+fn cordial_ui_in_front(w: &WaylandWindow) -> bool {
+    dialog_in_front(w) || w.text_overlay_visible.load(Ordering::SeqCst)
+}
+
 unsafe extern "C" fn pointer_enter(
     _data: *mut c_void,
     pointer: *mut c_void,
@@ -3016,7 +3033,21 @@ unsafe extern "C" fn pointer_enter(
     // left the canvas is not a movement the user made.
     super::input::reset_mouse_delta();
     super::input::forget_pending_unlocked_delta();
-    w.hide_pointer(pointer, serial);
+    // **Hiding the cursor is only right while the engine is what the pointer is
+    // over.** Roblox draws its own cursor into the canvas, so the host one is a
+    // second cursor half a frame behind the first -- but a web-view dialog or
+    // the text editor is a GTK widget, drawing no cursor of its own, and over
+    // one of those a null cursor is simply an invisible pointer.
+    //
+    // Reported as "it just breaks the cursor" when a web view opens, after the
+    // stacking and the input-routing halves had both been fixed. This is the
+    // third thing `webview_dialog_opened` has to account for and the only one
+    // that was never wired to it: `set_cursor` is called from this line and
+    // nowhere else in the runtime, always with a null surface, and nothing has
+    // ever put a cursor back.
+    if !cordial_ui_in_front(&w) {
+        w.hide_pointer(pointer, serial);
+    }
     // Subsurface coordinates are relative to the subsurface, so these are
     // already canvas-local — no offset for the header bar has to be
     // subtracted anywhere, which is the main practical reason to let the
@@ -3718,9 +3749,7 @@ impl WaylandWindow {
         // experience that opens one. The check is one session: open a group
         // that asks for verification while in first person and see whether the
         // cursor reaches the dialog.
-        let cordial_is_in_front =
-            dialog_in_front(self) || self.text_overlay_visible.load(Ordering::SeqCst);
-        let asked = asked && !cordial_is_in_front;
+        let asked = asked && !cordial_ui_in_front(self);
 
         // The Escape latch lifts only when nothing is asking any more, so
         // pressing Escape in first person gives the cursor back for as long as

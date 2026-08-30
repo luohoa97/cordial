@@ -1058,10 +1058,40 @@ fn install_webview_presenter() {
                     // one dismissal path, so the stacking fix and the report
                     // to the engine cannot drift apart and one outlive the
                     // other.
+                    use gtk4::prelude::WidgetExt;
                     use libadwaita::prelude::AdwDialogExt;
                     window.webview_dialog_opened();
+                    // **Ask GTK for a cursor, because waiting for one may wait
+                    // forever.** `pointer_enter` stops hiding the cursor once a
+                    // dialog is up, but that only helps if another `enter`
+                    // arrives -- and an `AdwDialog` has no surface of its own,
+                    // it draws inside this toplevel's, so a dialog opening
+                    // under a stationary pointer need not move pointer focus at
+                    // all. The last `set_cursor` anyone sent was Cordial's null
+                    // one, and it stands until something sends another.
+                    //
+                    // Setting it on the widget is what sends another: GDK
+                    // re-issues `wl_pointer.set_cursor` on *its* pointer with
+                    // its own current serial, which is the one thing this
+                    // process can do that reliably overrides the null. Cordial
+                    // cannot do it directly -- it would have to build a cursor
+                    // surface out of the theme, which is a great deal of code
+                    // to reimplement something GDK is already holding.
+                    //
+                    // Cleared rather than re-hidden on close: raising the canvas
+                    // back changes what is topmost under the pointer, and the
+                    // `enter` that follows is where hiding belongs. Worst case
+                    // between the two is a host cursor drawn over Roblox's own
+                    // for a moment, which is visible and self-correcting --
+                    // unlike no cursor at all, which is the bug being fixed.
+                    // `current()` hands back a borrow of the one live host
+                    // window, so this is a copy of the reference and the
+                    // closure below outlives nothing.
+                    let host = window;
+                    window.window().set_cursor_from_name(Some("default"));
                     dialog.connect_closed(move |_| {
-                        window.webview_dialog_closed();
+                        host.window().set_cursor(None);
+                        host.webview_dialog_closed();
                         cordial_runtime::webview::report_window_closed();
                     });
                 }
