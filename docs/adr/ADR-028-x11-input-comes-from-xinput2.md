@@ -88,6 +88,39 @@ deduce; on XI2 it is a field.
   valid between `XGetEventData` and `XFreeEventData`, and nothing in the type
   system says so.
 
+## What the user sees when XI2 is missing
+
+**The "Use system mouse acceleration settings" row is disabled, pinned to
+"Cursor and camera", and says why.** Not merely greyed out: pinned to the value
+that is actually in force.
+
+That row offers "Only the cursor" and "Cursor and camera", and what it really
+decides is whether the desktop's pointer profile reaches the *camera*. On
+Wayland both are answerable, because `zwp_relative_pointer_v1` delivers the
+accelerated and unaccelerated delta side by side and the setting picks one. On
+X11 with XI2 the same is true of `raw_values` and `valuators`. Without XI2
+there is only the accelerated number, so "Only the cursor" cannot be honoured
+and the camera follows the desktop profile whatever the row says.
+
+Greying the row while it still displayed "Only the cursor" would therefore
+state something false about the running system. Disabling it *and* moving it to
+"Cursor and camera" states the truth, and the subtitle carries the reason —
+that this X session offers no XInput2, so Cordial cannot separate the
+acceleration the server already applied.
+
+This is the same judgement `settings.rs` already made one step away, and its
+comment is worth honouring rather than re-deriving: there is no "never" option
+because while the cursor is unlocked the compositor hands over an
+already-accelerated absolute position, and an entry that silently does nothing
+is "the interface shape of a stub that returns success". A row offering a
+choice the backend cannot make is that same shape.
+
+**Open, and to be settled by running it rather than reasoning about it:**
+whether this row is *already* misstating things on X11 today, before any of
+this lands. That depends on what the current grab-only capture feeds the camera
+path, which has not been checked. If it is, that is a present-tense bug to fix
+when the greying goes in, and the fix is the same code.
+
 ## Sequencing
 
 **After [PR #22](https://github.com/luohoa97/cordial/pull/22) lands, not
