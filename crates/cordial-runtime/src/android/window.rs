@@ -1625,14 +1625,28 @@ impl HostWindow {
     ///
     /// **What this does not close.** `native/init_params.cpp`'s own
     /// `DisplayMetrics`/`Configuration`/`InitParams` objects are a separate
-    /// path — `DisplayMetrics` in particular is driven by a `g_width`/
-    /// `g_height` pair set only through `set_display_size`, which has no
-    /// caller anywhere in this tree, so it is stuck at its compiled 1280x720
-    /// regardless of this call. That file is out of scope for this change
-    /// (see AGENTS.md's file list for who owns it); this closes only the
-    /// `AConfiguration` half of the contradiction, not the `DisplayMetrics`
-    /// or `User-Agent` half. `INFERRED` that either half affects the camera —
-    /// nothing here was run against the engine to check.
+    /// path, and `DisplayMetrics` still reports a compiled 1280x720 at
+    /// density 1.0 whatever the window is doing.
+    ///
+    /// **This used to say `set_display_size` "has no caller anywhere in this
+    /// tree", and that was wrong.** It has one: `bin/load.rs:2353` calls
+    /// `linker::game_activity::set_display_size`, through
+    /// `cordial_set_display_size` into `init_params.cpp`. The path is real and
+    /// it runs. Corrected on 2026-08-30 after the false claim was repeated into
+    /// a bug report as though it were established.
+    ///
+    /// The right reason is timing rather than absence, and it is worse: that
+    /// call fires only once `initializeNativeCode` has returned, and the engine
+    /// reads `DisplayMetrics` exactly once, from inside it, before the host
+    /// window exists at all. Measured over a 46-second run in `docs/NEXT.md`:
+    /// one construction, `1280x720 density=1.000 densityDpi=160`, and never
+    /// again — not on resize, not on anything. So the call is a no-op for
+    /// density not because it is missing but because it is too late, and adding
+    /// callers will not help.
+    ///
+    /// This closes only the `AConfiguration` half of the contradiction, not the
+    /// `DisplayMetrics` or `User-Agent` half. `INFERRED` that either half
+    /// affects the camera — nothing here was run against the engine to check.
     fn dispatch_configure(&self, handle: i64, width: i32, height: i32) {
         if width <= 0 || height <= 0 {
             return;
