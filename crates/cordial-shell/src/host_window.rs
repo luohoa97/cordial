@@ -285,6 +285,11 @@ pub struct TextOverlay<'a> {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    /// Device pixels, the same units as `x`/`y`/`width`/`height` -- but unlike
+    /// those, this is not necessarily the engine's own number verbatim. The
+    /// runtime multiplies it by the resolved font's `fromRbxFontRatio` before
+    /// it reaches here, when a per-box font was resolved; see
+    /// `android::editor_font`'s note on that field for why.
     pub font_size: f32,
     pub text_color: u32,
     pub password: bool,
@@ -666,9 +671,13 @@ impl HostWindow {
         // device units and skips that conversion entirely. The engine's
         // `fontSize` is in the same space as the `x`, `y`, `width` and `height`
         // beside it in the same struct, and those are placed straight into the
-        // widget tree without a conversion -- so the size must not get one
-        // either, or the text is the only part of the spec drawn in different
-        // units from the box it goes in.
+        // widget tree without a conversion -- so the size must not get a *DPI*
+        // conversion either, or the text is the only part of the spec drawn in
+        // different units from the box it goes in. It may already carry a
+        // *font-specific* correction by the time it gets here -- see this
+        // field's own doc comment -- and that is a different adjustment for a
+        // different reason: it is reconciling Roblox's own two text stacks
+        // with each other, not converting between Pango's and the engine's.
         let attrs = gtk::pango::AttrList::new();
         attrs.insert(gtk::pango::AttrSize::new_size_absolute(
             (overlay.font_size.max(1.0) * gtk::pango::SCALE as f32).round() as i32,

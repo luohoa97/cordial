@@ -2240,23 +2240,40 @@ impl WaylandWindow {
             // experiment. Split across two lines or two sources it would need
             // correlating by hand, which is how the last five candidates
             // survived a capture each.
-            let (slot, id, family) = match (super::editor_font::font_slot(), face.as_ref()) {
+            let (slot, id, family, ratio) = match (super::editor_font::font_slot(), face.as_ref()) {
                 (Some(slot), Some((id, face))) => {
-                    (slot.to_string(), id.to_string(), face.family.clone())
+                    (slot.to_string(), id.to_string(), face.family.clone(), face.from_rbx_font_ratio)
                 }
                 (Some(slot), None) => {
-                    (slot.to_string(), "n/a".to_owned(), "(process default)".to_owned())
+                    (slot.to_string(), "n/a".to_owned(), "(process default)".to_owned(), 1.0)
                 }
-                (None, _) => ("off".to_owned(), "n/a".to_owned(), "(process default)".to_owned()),
+                (None, _) => ("off".to_owned(), "n/a".to_owned(), "(process default)".to_owned(), 1.0),
             };
             eprintln!(
                 "[cordial] text editor placed from {} x={} y={} w={} h={} \
-                 i6={} i7={} i9={} i10={} i11={} fontSlot={slot} fontId={id} family={family:?}",
+                 i6={} i7={} i9={} i10={} i11={} fontSlot={slot} fontId={id} family={family:?} \
+                 fontSize={} fromRbxFontRatio={ratio} drawnFontSize={}",
                 placed.source(),
                 info.x, info.y, info.width, info.height,
-                info.i6, info.i7, info.i9, info.i10, info.i11
+                info.i6, info.i7, info.i9, info.i10, info.i11,
+                info.font_size, info.font_size * ratio,
             );
         }
+
+        // **The size is corrected here, once, rather than left for
+        // `host_window.rs` to guess at.** The engine's `fontSize` is
+        // denominated in whichever font *it* would have drawn the box in, and
+        // `fromRbxFontRatio` is that font's own manifest row saying how its
+        // metrics relate to Android's -- so the correction belongs beside the
+        // font lookup that resolved a face at all, not beside the Pango
+        // attribute that only knows a number arrived. Left at 1.0 when no
+        // per-box face was resolved, which is every id this build has no row
+        // for and the synthesised fallback bar -- multiplying by an unknown
+        // ratio would be a second guess, not a correction.
+        let font_size = match face.as_ref() {
+            Some((_, f)) => info.font_size * f.from_rbx_font_ratio,
+            None => info.font_size,
+        };
 
         self.host.0.set_text_overlay(Some(cordial_shell::host_window::TextOverlay {
             text,
@@ -2265,7 +2282,7 @@ impl WaylandWindow {
             y: info.y,
             width: info.width,
             height: info.height,
-            font_size: info.font_size,
+            font_size,
             text_color: info.text_color as u32,
             font_family: face.as_ref().map(|(_, f)| f.family.as_str()),
             font_weight: face.as_ref().map_or(400, |(_, f)| f.weight),

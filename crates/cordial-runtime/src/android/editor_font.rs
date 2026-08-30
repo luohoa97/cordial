@@ -3,10 +3,13 @@
 //! The editor is a `gtk::Text` placed on top of a box the engine drew, so the
 //! moment it appears the string is re-rendered by a different text stack. Get
 //! the family wrong and the characters change shape and weight under the
-//! user's cursor even though the size is right -- reported as "the text shifts
-//! a lot when you select the text box, like gtk doesnt match the text size as
-//! good". Matching the size was never going to be enough; Pango was drawing
-//! the desktop's UI font against the engine's own.
+//! user's cursor -- reported as "the text shifts a lot when you select the
+//! text box, like gtk doesnt match the text size as good". Matching the
+//! family was never going to be enough either: the *size* the engine hands
+//! over is denominated in its own font's metrics, and drawing it verbatim in
+//! a different font is why text visibly jumps when a box gains or loses
+//! focus -- see [`parse_mappings`]'s note on `fromRbxFontRatio`, which used to
+//! say applying it was a mistake and was measured to be the mistake instead.
 //!
 //! That matters more here than it would elsewhere, because the editor is what
 //! the player actually sees. The engine stops drawing the box's own text while
@@ -127,7 +130,7 @@ const FONT_ASSET_DIR: &str = "content/fonts/";
 /// so ids 46, 47, 48 and 49 all name the same family and differ only in weight.
 /// Setting family alone would draw Roblox's Medium, Bold and ExtraBold boxes in
 /// Regular.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Face {
     /// The family string as fontconfig reads it out of the file.
     pub family: String,
@@ -137,14 +140,22 @@ pub struct Face {
     /// for weight 80, which is Thin.
     pub weight: i32,
     pub italic: bool,
+    /// The manifest's `fromRbxFontRatio` for this id, or `1.0` when nothing
+    /// closer to the truth is known -- see [`parse_mappings`] for what this
+    /// corrects and why it was not applied for a long time.
+    pub from_rbx_font_ratio: f32,
 }
 
 impl Face {
     /// The face to draw with when nothing better is known: Roblox's UI font at
     /// regular weight. Used before the table is built, when the archive cannot
     /// be read, and for every id that has no row.
+    ///
+    /// `from_rbx_font_ratio` is `1.0` here deliberately: this face names no id,
+    /// so there is no row to read a ratio from, and inventing one would be a
+    /// second guess stacked on the first rather than a correction.
     fn default_face() -> Face {
-        Face { family: FAMILY.to_owned(), weight: 400, italic: false }
+        Face { family: FAMILY.to_owned(), weight: 400, italic: false, from_rbx_font_ratio: 1.0 }
     }
 }
 
@@ -387,15 +398,22 @@ fn build_table() -> Table {
     // summary line below then reports more unusable files than there are.
     let mut faces: BTreeMap<String, Option<Face>> = BTreeMap::new();
     let mut by_id = BTreeMap::new();
-    for (id, file) in &entries {
+    for (id, file, ratio) in &entries {
         if !faces.contains_key(file) {
             let face = stage(&format!("{FONT_ASSET_DIR}{file}"))
                 .filter(|path| register(path))
                 .and_then(|path| query_face(&path));
             faces.insert(file.clone(), face);
         }
+        // The cache above is keyed on filename, because staging and
+        // registering it with fontconfig is the expensive, per-*file* step
+        // and two ids can share a file. The ratio is a per-*id* row, so it is
+        // stamped onto this id's own copy rather than folded into the cache,
+        // which would silently give a second id the first one's number.
         if let Some(Some(face)) = faces.get(file) {
-            by_id.insert(*id, face.clone());
+            let mut face = face.clone();
+            face.from_rbx_font_ratio = *ratio;
+            by_id.insert(*id, face);
         }
     }
     let failed = faces.values().filter(|f| f.is_none()).count();
@@ -426,16 +444,22 @@ fn build_table() -> Table {
 /// this crate does not carry `serde`'s derive feature and one manifest does not
 /// justify adding it.
 ///
-/// `fromRbxFontRatio` is deliberately ignored, and that is a decision rather
-/// than an oversight. Every row carries one, a fraction below or equal to one,
-/// and it plainly exists to reconcile Roblox's text sizing with
-/// Android's per font. But the size the editor draws at today is right -- the
-/// bug that motivated this module was shape and weight, never size -- so
-/// applying the ratio as a plain multiplier would shrink a correct editor by
-/// 21% and contradict a working observation. `INFERRED`: whatever the ratio
-/// multiplies, it is not the quantity `font_size` arrives in. Do not apply it
-/// without a measurement.
-fn parse_mappings(bytes: &[u8]) -> Result<Vec<(i32, String)>, String> {
+/// **`fromRbxFontRatio` is now applied, and it took a measurement to get
+/// there.** This used to say the ratio was deliberately ignored: every row
+/// carries one, a fraction below or equal to one, and it plainly exists to
+/// reconcile Roblox's text sizing with Android's per font, but "the size the
+/// editor draws at today is right" was a belief and not an observation --
+/// nobody had put the two renderings side by side. Focusing the Home search
+/// bar and measuring both, 2026-08-30: the engine's own unfocused "Search"
+/// draws an 11px-tall capital against the GTK editor's 15px-tall capital on
+/// "Size" in the same box, a ~1.36x jump. `font-mappings.json`'s row for that
+/// box's font (id 46, Builder Sans) gives `fromRbxFontRatio` as
+/// 0.7936507937 -- almost exactly 1/1.26, the reciprocal of the jump actually
+/// measured. That is the multiplier this file was refusing to apply, on the
+/// strength of an observation that turns out to have been looking at the
+/// wrong box. `host_window.rs` multiplies `font_size` by it before handing
+/// Pango an absolute size; see that file for why the size is absolute at all.
+fn parse_mappings(bytes: &[u8]) -> Result<Vec<(i32, String, f32)>, String> {
     let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     let array = value.as_array().ok_or("top level is not an array")?;
@@ -457,7 +481,16 @@ fn parse_mappings(bytes: &[u8]) -> Result<Vec<(i32, String)>, String> {
             continue;
         }
         let Ok(id) = i32::try_from(id) else { continue };
-        out.push((id, file.to_owned()));
+        // A row missing the ratio, or carrying one that is not a plain
+        // number, still names a usable font -- the ratio only refines the
+        // size, and 1.0 is "draw it the size the engine said" exactly as
+        // every id behaved before this field existed.
+        let ratio = entry
+            .get("fromRbxFontRatio")
+            .and_then(serde_json::Value::as_f64)
+            .map(|r| r as f32)
+            .unwrap_or(1.0);
+        out.push((id, file.to_owned(), ratio));
     }
     if out.is_empty() {
         return Err("no usable rows".into());
@@ -548,6 +581,12 @@ fn query_face(path: &std::path::Path) -> Option<Face> {
                 // FC_SLANT_ROMAN is 0; italic is 100 and oblique 110.
                 italic: slant != 0,
                 family,
+                // This is the per-*file* cache keyed on filename (`build_table`
+                // below), and the ratio is a per-*id* manifest row -- two ids
+                // can share a file. `1.0` here is overwritten with the real
+                // value for every id that names this file; it is never the
+                // number an id actually gets drawn with.
+                from_rbx_font_ratio: 1.0,
             })
         };
         destroy(pattern);
@@ -613,16 +652,27 @@ mod tests {
     ]"#;
 
     #[test]
-    fn mappings_parse_to_id_and_filename() {
+    fn mappings_parse_to_id_filename_and_ratio() {
         let rows = parse_mappings(SAMPLE.as_bytes()).expect("sample parses");
         assert_eq!(
             rows,
             vec![
-                (1, "One-Regular.ttf".to_owned()),
-                (46, "Two-Regular.otf".to_owned()),
-                (50, "One-Regular.ttf".to_owned()),
+                (1, "One-Regular.ttf".to_owned(), 0.895),
+                (46, "Two-Regular.otf".to_owned(), 0.5),
+                (50, "One-Regular.ttf".to_owned(), 0.895),
             ]
         );
+    }
+
+    /// A row with no `fromRbxFontRatio` at all -- most of the shipped table,
+    /// historically, before this field was read -- still names a usable font.
+    /// `1.0` is "draw it the size the engine said", which is every id's
+    /// behaviour before this field existed and must stay correct when the
+    /// manifest simply says nothing.
+    #[test]
+    fn a_missing_ratio_defaults_to_one() {
+        let json = r#"[{ "enum": 1, "font": "NoRatio-Regular.ttf" }]"#;
+        assert_eq!(parse_mappings(json.as_bytes()).unwrap(), vec![(1, "NoRatio-Regular.ttf".to_owned(), 1.0)]);
     }
 
     /// Two ids sharing one file is not a defect: this build maps 1 and 50 both
@@ -631,7 +681,7 @@ mod tests {
     #[test]
     fn one_file_may_serve_two_ids() {
         let rows = parse_mappings(SAMPLE.as_bytes()).unwrap();
-        let distinct: std::collections::BTreeSet<_> = rows.iter().map(|(_, f)| f).collect();
+        let distinct: std::collections::BTreeSet<_> = rows.iter().map(|(_, f, _)| f).collect();
         assert_eq!(rows.len(), 3);
         assert_eq!(distinct.len(), 2);
     }
@@ -648,7 +698,7 @@ mod tests {
             { "enum": 4, "font": "Good-Regular.ttf" }
         ]"#;
         let rows = parse_mappings(json.as_bytes()).unwrap();
-        assert_eq!(rows, vec![(4, "Good-Regular.ttf".to_owned())]);
+        assert_eq!(rows, vec![(4, "Good-Regular.ttf".to_owned(), 1.0)]);
     }
 
     /// A row missing either key is skipped rather than failing the file: one
@@ -661,7 +711,7 @@ mod tests {
             { "enum": "seven", "font": "Stringy.ttf" },
             { "enum": 9, "font": "Kept.ttf" }
         ]"#;
-        assert_eq!(parse_mappings(json.as_bytes()).unwrap(), vec![(9, "Kept.ttf".to_owned())]);
+        assert_eq!(parse_mappings(json.as_bytes()).unwrap(), vec![(9, "Kept.ttf".to_owned(), 1.0)]);
     }
 
     /// Malformed or empty input is an error, so the caller logs it and draws
