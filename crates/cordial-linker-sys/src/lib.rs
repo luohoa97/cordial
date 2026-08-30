@@ -2047,6 +2047,18 @@ pub mod game_activity {
     ///
     /// Do not assume a numbered slot means what the field list's reading order
     /// would suggest. That guess put `textColor` at slot 7 and it is at slot 8.
+    ///
+    /// **`x_alignment`/`y_alignment` (slots 6/7) are confirmed, not
+    /// `INFERRED`, as of 2026-08-30** -- corroborated rather than guessed, by
+    /// mocktail's `NativeTextBoxInfo` constructor
+    /// (`~/Projects/mocktail/src/jnivm/jnivm.cc:4016-4024`, Apache-2.0), which
+    /// declares the same six ints in the order `xAlignment, yAlignment,
+    /// textColor, font, textInputType, returnKeyType`. That order is a fact
+    /// about Roblox's platform API and is taken as one; the values this
+    /// struct actually carries were captured from Cordial's own boxes and are
+    /// not mocktail's. See the long comment on `CordialTextBoxInfo` in
+    /// `native/android_classes.cpp` for the rest of the reasoning, including
+    /// why `i9`/`i10`/`i11` are equally settled now but not renamed here.
     #[repr(C)]
     #[derive(Clone, Copy, Debug, Default, PartialEq)]
     pub struct RawTextBoxInfo {
@@ -2065,8 +2077,14 @@ pub mod game_activity {
         /// `INFERRED`; see [`RawTextBoxInfo::height`].
         pub font_size: f32,
         pub z5: i32,
-        pub i6: i32,
-        pub i7: i32,
+        /// Roblox's `Enum.TextXAlignment`: `Left` = 0, `Center` = 1,
+        /// `Right` = 2 -- Roblox's own published scripting-API ordinals.
+        /// Confirmed as slot 6 by mocktail's constructor field order; see this
+        /// struct's own doc comment.
+        pub x_alignment: i32,
+        /// Roblox's `Enum.TextYAlignment`: `Top` = 0, `Center` = 1,
+        /// `Bottom` = 2. Confirmed as slot 7 alongside `x_alignment`.
+        pub y_alignment: i32,
         /// Packed ARGB. Observed `0xffd5d5dd` on both login boxes, which is
         /// what identified this slot: nothing else in the class is a colour.
         pub text_color: i32,
@@ -2600,7 +2618,7 @@ pub mod game_activity {
                 Some(RawTextBoxInfo {
                     x: 1.5, y: 2.5, width: 3.5, height: 4.5, font_size: 5.5,
                     z5: 1,
-                    i6: 6, i7: 7, text_color: 8, i9: 9, i10: 10, i11: 11,
+                    x_alignment: 6, y_alignment: 7, text_color: 8, i9: 9, i10: 10, i11: 11,
                     z12: 0, z13: 1, z14: 1,
                 })
             );

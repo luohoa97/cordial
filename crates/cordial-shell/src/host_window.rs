@@ -312,6 +312,76 @@ pub struct TextOverlay<'a> {
     /// itself. Such an editor is not sitting on the box, so it has to carry its
     /// own chrome to be legible -- see the CSS class below.
     pub fallback: bool,
+    /// Roblox's `Enum.TextXAlignment`: `Left` = 0, `Center` = 1, `Right` = 2.
+    /// These are Roblox's own published scripting-API ordinals -- not
+    /// something read out of a binary -- and they line up with what
+    /// `native/android_classes.cpp`'s `CordialTextBoxInfo::x_alignment`
+    /// carries. See [`gtk_xalign`] for where they turn into a GTK property.
+    pub x_alignment: i32,
+    /// Roblox's `Enum.TextYAlignment`: `Top` = 0, `Center` = 1, `Bottom` = 2.
+    /// See [`vertical_placement`] -- `gtk::Text` has no equivalent property of
+    /// its own, so this is applied by resizing the widget rather than by
+    /// setting an attribute.
+    pub y_alignment: i32,
+}
+
+/// GTK's `Editable::set_alignment` fraction for Roblox's `xAlignment`: `0.0`
+/// is flush left, `1.0` flush right, `0.5` centred -- the same three points a
+/// `TextXAlignment` names, just spelled as a fraction instead of an enum.
+///
+/// **Confirmed, not inferred.** Every box this project has focused before
+/// today read `xAlignment=Left` here, and nothing anywhere applied it -- a
+/// TextBox actually styled `Center` or `Right` would draw the engine's own
+/// text centred or flush right and Cordial's editor flush left underneath it,
+/// which is one plausible reading of "the text box isn't centred". Which slot
+/// carries the value, and that it is `xAlignment` and not `font` (the two
+/// were genuinely ambiguous from Cordial's own two-box capture -- both read
+/// `0` on both boxes), is settled by mocktail's `NativeTextBoxInfo`
+/// constructor, `src/jnivm/jnivm.cc:4016-4024` (Apache-2.0): its varargs
+/// reader lists the six int arguments in declared order as `xAlignment,
+/// yAlignment, textColor, font, textInputType, returnKeyType`, which is a
+/// fact about Roblox's platform API rather than about mocktail's own
+/// implementation. The ordinals themselves are Roblox's published
+/// `Enum.TextXAlignment`, not read out of mocktail at all.
+fn gtk_xalign(x_alignment: i32) -> f32 {
+    match x_alignment {
+        2 => 1.0,
+        1 => 0.5,
+        // `0` (Left) and anything this build has never seen: Roblox's own
+        // default, and the one value this project has actually observed.
+        _ => 0.0,
+    }
+}
+
+/// Where to draw a box's one line of text vertically, given Roblox's
+/// `yAlignment`, as `(y, height)` to hand `gtk::Fixed::move_` and
+/// `set_size_request` in place of the box's own `y`/`height`.
+///
+/// **`gtk::Text` has no vertical-alignment property**, because it is a
+/// single-line widget and Pango simply centres whatever it is given within
+/// the height it is allocated -- which is exactly why `Center` needed no code
+/// at all: every box `cordial_textbox` has ever reported reads `yAlignment=1`
+/// (Centre), and the measured caret centre already lands within 0.5px of the
+/// box's own centre (`docs/NEXT.md`, 2026-08-30) by doing nothing. `Top` and
+/// `Bottom` are approximated by shrinking the widget to its own natural line
+/// height and anchoring that at the box's edge instead of letting it fill the
+/// box and centre itself.
+///
+/// `natural_h` comes from `gtk::Widget::measure`, taken after the font
+/// attributes are set, rather than from a guessed line-height multiple of the
+/// font size -- there was nothing to measure a fudge factor against, since no
+/// box this project has focused has ever used anything but `Center`. Treat
+/// the `Top`/`Bottom` branches as **`UNVERIFIED`** end to end for that reason;
+/// [`vertical_placement_tests`] covers the arithmetic, not a live box.
+fn vertical_placement(y_alignment: i32, box_y: i32, box_h: i32, natural_h: i32) -> (i32, i32) {
+    let h = natural_h.clamp(1, box_h.max(1));
+    match y_alignment {
+        0 => (box_y, h),
+        2 => (box_y + (box_h - h).max(0), h),
+        // `1` (Centre), and anything this build has never seen: unchanged
+        // from before this function existed.
+        _ => (box_y, box_h),
+    }
 }
 
 /// Pango's `Weight` from an OpenType weight number.
@@ -715,6 +785,13 @@ impl HostWindow {
         drop(process_wide);
         self.editor.set_attributes(Some(&attrs));
 
+        // Horizontal alignment. Cheap and idempotent, so it is set on every
+        // call rather than only when it changes -- the same editor widget is
+        // reused across boxes, and a `Right`-aligned box followed by a
+        // `Left`-aligned one has to put this back same as the family and the
+        // input purpose below do.
+        self.editor.set_alignment(gtk_xalign(overlay.x_alignment));
+
         // GTK's own masking rather than a string of bullets: the widget then
         // holds the real text, so the caret lands between real characters and
         // a paste or a selection means what it says. Substituting the bullets
@@ -762,6 +839,16 @@ impl HostWindow {
             self.editor.set_position(overlay.caret_chars);
             self.editor_seeding.set(false);
         }
+
+        // Vertical alignment. Measured after the attributes above are set,
+        // because the natural height this asks for is the *drawn* font's line
+        // height, not the engine's `fontSize` before the per-font ratio
+        // correction -- see `TextOverlay::font_size`'s own comment for why
+        // those differ. `Center` (`y_alignment == 1`, the only value this
+        // project has ever measured) leaves `y`/`h` exactly as they arrived,
+        // so this changes nothing for every box checked in docs/NEXT.md.
+        let (_, natural_h, _, _) = self.editor.measure(gtk::Orientation::Vertical, -1);
+        let (y, h) = vertical_placement(overlay.y_alignment, y, h, natural_h);
 
         self.editor.set_size_request(w, h);
         self.text_layer.move_(&self.editor, x as f64, y as f64);
@@ -1285,6 +1372,59 @@ mod tests {
     fn an_unknown_weight_falls_back_to_normal_not_thin() {
         assert_eq!(pango_weight(400), gtk::pango::Weight::Normal);
         assert_ne!(pango_weight(400), gtk::pango::Weight::Thin);
+    }
+
+    /// Roblox's three `TextXAlignment` ordinals, both ways: the value this
+    /// project has actually measured (`Left`, on every box so far) must not
+    /// move, and `Center`/`Right` must land on the fractions `Editable`
+    /// documents -- `0.5` and `1.0` -- rather than on whatever the match arm
+    /// order happens to produce.
+    #[test]
+    fn xalign_maps_every_ordinal_and_defaults_left() {
+        assert_eq!(gtk_xalign(0), 0.0, "Left, the only value ever measured");
+        assert_eq!(gtk_xalign(1), 0.5, "Center");
+        assert_eq!(gtk_xalign(2), 1.0, "Right");
+        // A build that renumbers the enum, or a slot this project has the
+        // wrong one for, must draw left rather than somewhere arbitrary.
+        assert_eq!(gtk_xalign(99), 0.0);
+    }
+
+    /// `vertical_placement`'s `Center` arm is the load-bearing one: it is the
+    /// only value ever measured, and it must return `y`/`h` byte-identical to
+    /// what was passed in, because that is what made the 2026-08-30 caret
+    /// measurement in docs/NEXT.md come out within 0.5px with no code here at
+    /// all. `Top` and `Bottom` are asserted against the arithmetic only --
+    /// UNVERIFIED against a real box, as the function's own doc says.
+    #[test]
+    fn vertical_placement_centre_is_untouched_top_and_bottom_anchor() {
+        assert_eq!(
+            vertical_placement(1, 10, 22, 13),
+            (10, 22),
+            "Centre must pass y/h through unchanged -- this is the measured case"
+        );
+        assert_eq!(
+            vertical_placement(0, 10, 22, 13),
+            (10, 13),
+            "Top anchors the natural height at the box's own top"
+        );
+        assert_eq!(
+            vertical_placement(2, 10, 22, 13),
+            (19, 13),
+            "Bottom anchors it at the box's own bottom: 10 + (22 - 13)"
+        );
+        // An unrecognised ordinal must be as inert as Centre, not stretch or
+        // shrink the widget to something nobody asked for.
+        assert_eq!(vertical_placement(99, 10, 22, 13), (10, 22));
+    }
+
+    /// A natural height taller than the box (a font too big for its own line
+    /// box, which is exactly what `fromRbxFontRatio` exists to prevent but
+    /// should not be trusted blindly) must clamp to the box rather than draw
+    /// outside it or invert the `Bottom` offset into a negative height.
+    #[test]
+    fn vertical_placement_clamps_a_natural_height_taller_than_the_box() {
+        assert_eq!(vertical_placement(0, 10, 22, 40), (10, 22));
+        assert_eq!(vertical_placement(2, 10, 22, 40), (10, 22));
     }
 
     #[test]

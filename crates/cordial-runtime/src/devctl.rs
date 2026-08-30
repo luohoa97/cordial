@@ -337,16 +337,17 @@ fn textbox_line() -> String {
     )
 }
 
-/// The focused box's five candidate font slots and the family they resolved to.
+/// The focused box's font-and-alignment ints and the family they resolved to.
 ///
-/// **This is the experiment, made into one call.** Which constructor slot of
-/// `NativeTextBoxInfo` carries the font id is not established -- the only
-/// capture this project holds is of two Login-screen boxes where four of the
-/// five ints never varied -- and settling it means a person focusing a TextBox
-/// in a game that restyled its font and reading which int moved. Before this,
-/// that meant launching under `CORDIAL_TRACE_TEXT=1` and grepping the client's
-/// stderr while playing; now it is `cordial_textbox` twice, once on a restyled
-/// box and once on a default one as the control.
+/// **`xAlign`/`yAlign` are confirmed (mocktail's `NativeTextBoxInfo`
+/// constructor field order, 2026-08-30 -- see `editor_font.rs`'s module
+/// comment), and so is `i9` as `font`.** `i10`/`i11` (`textInputType`,
+/// `returnKeyType`) are settled by the same evidence but kept numbered here
+/// because nothing downstream reads them yet. Before the alignment fields
+/// existed this line was the whole experiment for finding the font slot:
+/// `cordial_textbox` twice, once on a restyled box and once on a default one
+/// as the control, watching which int moved. That is still how a slot this
+/// file gets wrong in a future Roblox build would be caught.
 ///
 /// Nothing here is sensitive, so unlike the text there is no switch on it: an
 /// alignment, an input type and a font id say nothing about what was typed.
@@ -367,8 +368,8 @@ fn textbox_font_fields() -> String {
     let slot = crate::android::editor_font::font_slot()
         .map_or_else(|| "off".to_owned(), |s| s.to_string());
     format!(
-        " i6={} i7={} i9={} i10={} i11={} fontSlot={slot}{resolved}",
-        info.i6, info.i7, info.i9, info.i10, info.i11
+        " xAlign={} yAlign={} i9={} i10={} i11={} fontSlot={slot}{resolved}",
+        info.x_alignment, info.y_alignment, info.i9, info.i10, info.i11
     )
 }
 
