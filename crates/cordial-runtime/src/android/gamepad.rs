@@ -36,6 +36,20 @@
 //! -- it announces one synthetic pad and sends nothing, which is enough to draw
 //! the glyphs. Second best is re-capturing the logcat with a pad attached.
 //!
+//! **Run 2026-08-30, and `Landing`/`Login` are ruled out as the screen.** N
+//! swept over 0, 1, 2 and 99 all reach the pre-login `Landing` page identically
+//! -- same generic focus outline, no button-shape icon anywhere in the frame,
+//! `N=99` no more distinguishable or crash-prone than `N=0`. `Sign In`'s
+//! username/password form has no controller affordance either. That is the
+//! module's own control working as designed: four different N, zero different
+//! glyph sets, is a finding about the *screen* having no readout, not a claim
+//! that the ordinals are equal. Sober's issues #584 and #1810 both describe the
+//! wrong type surfacing *inside a game*, not in Sober's shell, which points the
+//! actual readout in-experience rather than pre-login on that runtime too. A
+//! repeat of this sweep needs a signed-in profile that reaches `Home` and joins
+//! a place -- see `docs/NEXT.md`'s entry of the same date before spending a
+//! session re-confirming Landing draws nothing.
+//!
 //! **No rumble.** `android/os/Vibrator` is declared in the dex and implemented
 //! nowhere in Cordial. Force feedback is out of scope here and is absent rather
 //! than stubbed, because a rumble call that silently does nothing is the stub

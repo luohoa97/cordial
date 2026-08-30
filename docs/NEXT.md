@@ -21,6 +21,65 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## Open: the gamepad-ordinal probe ran; the pre-login shell is not a readout of `gamepadType`, 2026-08-30
+
+`android/gamepad.rs`'s module comment proposes settling `RBX::GamepadType`'s
+ordinals by announcing `CORDIAL_GAMEPAD_PROBE=1 CORDIAL_GAMEPAD_TYPE=N` and
+reading the button glyphs the engine draws. That probe was run — no code
+changed, since it was already wired — and it does not settle the ordinals,
+because **the screens reachable pre-login draw no per-type glyphs at all.**
+
+**What was run.** `CORDIAL_GAMEPAD=1 CORDIAL_GAMEPAD_PROBE=1
+CORDIAL_GAMEPAD_TYPE=N` against the existing `target/release/cordial-run`
+(commit `382fe7f`, whose `gamepad.rs`/`input.rs`/`game_activity.cpp` are
+byte-identical to `origin/main` `b26bc31` — diffed before relying on it, since
+no build was done for this pass under a tight memory/disk budget: `free -h`
+showed 22Gi/22Gi swap in use and `/var/home` had 5.1G free). Own profile at
+`XDG_DATA_HOME=~/.cache/cordial-agent-gamepad`, screenshotted with
+`cordial-mcp`'s `screenshot`/`info`/`click` commands over its `devctl.sock`
+directly (no MCP client was wired up for this session, so the wire protocol in
+`tools/cordial-mcp.py`'s `Cordial.send` was reimplemented in nine lines rather
+than routed through the MCP stdio loop).
+
+**N swept: 0, 1, 2, 99.** All four reach `Landing` normally — same layout, same
+generic rounded-rect focus outline around whichever button last had it, no
+button-shape icon anywhere in the frame at 672x338 or at 1433x945. Zooming the
+one region that plausibly could have hidden a glyph (the focus outline itself)
+at 4x shows a plain border, nothing else. `N=99` — well outside any plausible
+size for a reflected enum — reached `Landing`, presented 737 frames at a normal
+60fps median and shut down cleanly on the run timer with `nothing went
+unanswered`, so an out-of-range ordinal is not rejected or visibly clamped at
+connect time, at least as far as this screen shows.
+
+**This is the result the module's own "control" is for.** Four different N,
+zero different glyph sets: the instrument (this screen) does not read out
+`gamepadType`, which is a different finding from "the ordinals are equal" and
+the module's phrasing risked being read as the latter if nobody checked.
+
+**Why it stops at Landing, and what would go further.** `Sign In` opens a
+username/password form with no controller affordance either. Reaching a screen
+that plausibly does render per-type glyphs needs a signed-in profile inside a
+place — Sober's own issue #584 ("Almost every single game thinks im on xbox")
+and #1810 (a DualShock 4 reporting the wrong face-button layout) both describe
+the *games*, not Sober's shell, getting the type wrong, which puts the glyph
+readout in-experience rather than pre-login on that runtime too. `main.rs`'s
+own `platform-identity.md` investigation hit the identical wall in July for an
+unrelated question: "Everything above stops at the landing page. A signed-out
+client never enters an experience." Getting past it needs either signed-in
+credentials — which nobody running this pass has, and which AGENTS.md's
+tooling policy forbids typing in on a user's behalf regardless — or the user's
+own `CordialTest` profile, which is exactly the one this pass was told not to
+touch (`~/.local/share/cordial/profiles/CordialTest`, its own `devctl.sock`
+already on disk from a previous session).
+
+**So the ordinal is still unknown, and the next attempt should not repeat this
+one.** Either re-capture `docs/traces/` with a real pad on real Android and a
+session that actually joins a place (the module's "second best"), or ask
+whoever owns a signed-in test profile to run the same sweep one level deeper —
+past `Sign In`, into `Home`, into a place — and screenshot there. Landing and
+Login are now ruled out as the observation point; do not spend another session
+re-confirming that.
+
 ## Open: "the text box isnt centred" does not reproduce anywhere this session could reach, 2026-08-30
 
 A user reported the editor "isnt perfectly centered" when a TextBox opens.
