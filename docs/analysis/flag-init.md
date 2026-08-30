@@ -6057,3 +6057,67 @@ it was being asked about; this is a third shape of the same mistake —an
 instrument that could see *something*, correctly, and it was the wrong
 something. Reading the actual report before trusting a same-shaped local
 reproduction would have caught it a session earlier.
+
+## §52. The stdout-buffering theory for reporter A's short transcript does not hold, tested two ways, and the real explanation is §51
+
+The task that produced §51 also asked whether reporter A's terminal transcript
+being shorter than reporter B's file log was Rust's stdout losing whatever had
+not been flushed when the engine's `SIGTRAP` landed — the same shape of
+instrument-was-wrong mistake this file has already recorded more than once, so
+it was tested rather than assumed.
+
+**It is not.** Two independent tests, both negative:
+
+1. A minimal reproducer — 200,000 `println!` lines, then a 1-second sleep, then
+   an external `SIGKILL` (uncatchable; no Rust unwind, no `Drop`, no
+   `atexit`-equivalent can run) — redirected to a plain file, not a tty. All
+   200,000 lines survived. `rustc 1.93.1`'s `io::Stdout` is a `LineWriter`
+   *unconditionally*, not only when connected to a terminal: it flushes on
+   every newline regardless of whether the destination is a tty or a plain
+   file, which is the opposite of C's `stdio`, the thing this hypothesis
+   implicitly modelled it on.
+2. The real crash, captured two ways in the same session — `CORDIAL_LATE_SETTINGS=1`
+   piped to a plain file, and the same command run under `script` (a pty) —
+   produced byte-for-byte identical content once PIDs, addresses and
+   timestamps are normalised. Nothing was lost in the plain-file capture that
+   the pty capture had.
+
+`native/liblog.cpp`'s `__android_log_write`/`__android_log_print` (the
+`D/JNIMain`-style lines) print via `fprintf(stderr, ...)`, and `stderr` is
+unbuffered by the C standard regardless of language, so that channel was never
+at risk either way.
+
+**What remains untested, and is not claimed either way:** `native/legacy_stdio.cpp`
+translates the engine's own `FILE*`-taking calls (`fprintf`, `vfprintf`,
+`fputs`, `fwrite`, `fflush`, ...) onto the host's *real* `stdout`/`stderr`
+`FILE*` objects when the engine passes one of bionic's legacy `__sF` slots —
+and unlike Rust's `Stdout`, glibc's C `stdio` genuinely does block-buffer a
+`FILE*` that is not a tty. If the engine ever calls `fprintf`/`fputs`/`fwrite`
+with a `stdout` `FILE*` to write something meaningful (as opposed to the
+`fflush`/`fclose` calls §18/§19 found it making), that content could be lost
+on an unclean exit the same way this whole hypothesis described. Nothing in
+this session confirms the engine does this — only that the *mechanism* it
+would need exists and is architecturally distinct from Rust's own buffering,
+which is why it is recorded here as open rather than folded into the negative
+result above.
+
+### Why the transcripts actually differ, without needing a buffering story
+
+§51 already explains it. Reporter A's flags never resolved (a rejected
+document) and their process dies at `nativeSetBaseDataDirectories`, hundreds
+of milliseconds into the launch. Reporter B's flags did resolve and their
+process dies past `app bridge initialised`, seconds in. Two different bugs
+land at two different points in the same startup sequence; a file log being
+longer than a terminal transcript needs no lost-buffer explanation once the
+crash points themselves are known to differ.
+
+### Consequence for this session's deliverables
+
+No flush-related code change is made. Adding explicit `.flush()` calls around
+the startup sequence, or duplicating output to a file, would be solving a
+problem this session could not demonstrate exists for the channel that
+matters (Rust's own `println!` narration, which is the great majority of
+Cordial's own diagnostic output) — and AGENTS.md is explicit that a claim
+without a measurement behind it does not get shipped as though it had one.
+The `legacy_stdio.cpp` question above is left as a named, untested gap rather
+than either fixed speculatively or dropped silently.
