@@ -21,6 +21,64 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## Open: a refused capability is invisible, and the fix for it is dead code, 2026-08-30
+
+A user reported Discord presence not broadcasting, then found the cause
+themselves: they had never granted the plugin its permissions. **The bug is not
+that they had to grant them. It is that nothing anywhere said they had not.**
+
+This is a confirmed recurrence of the class `docs/releases/v0.11.0.md` opens
+with -- "FPS Flex never worked, on any machine, ever ... It never checked either
+reply, so nothing said so". That release fixed FPS Flex's two specific
+miscalled requests. It did not make refusals visible, so the same silence has
+now swallowed a different plugin for a different reason.
+
+Four separate things have to be wrong at once for it to be this quiet, and all
+four are:
+
+1. **The refusal goes nowhere.** `plugin_host.rs::serve()` turns a missing grant
+   into `Response::Denied` and writes it back down the plugin's own pipe. No
+   print, no event, no record.
+2. **The plugin does check, and cannot say so.** `plugins/discord-presence/main.ts`
+   inspects the reply and calls `log()` with it -- but `log()` is itself
+   `call("log.write", ...)`, which needs `Capability::Log`, granted by the same
+   switches the user had not touched. The report of the denial is denied, and
+   the TS never inspects *that* reply. Double-silent.
+3. **Even granted, the log is a bare `println!`** (`plugin_host.rs`, the
+   `log.write` arm) -- invisible on a packaged or Flatpak launch with no
+   terminal attached, and not written to any file.
+4. **`Broker::denials()` exists to solve exactly this and is never called.**
+   Grepped the whole tree: the only call site is inside `#[cfg(test)]` in
+   `broker.rs` itself, in a test named
+   `an_ungranted_capability_is_refused_and_recorded`. `settings.rs` contains no
+   occurrence of "denied" or "denial" at all. Its own doc comment states the
+   case better than this section can: *"A plugin quietly failing because it
+   lacks a capability is otherwise indistinguishable from a plugin that is
+   broken, and that distinction is the difference between a two-minute fix and
+   an afternoon."* It was right, and it was written and then not wired up.
+
+**Built-in plugins never see the consent prompt either.** `consent::verdict` and
+`consent_body` produce the itemised sentence -- "Publish what you are playing to
+Discord, where your friends can see it" -- and have exactly one production call
+site, `settings.rs:1446`, in the *user-install* flow. The built-in rows around
+line 2020 add themselves with `Tier::BuiltIn` and never call it. So a built-in
+ships enabled, inert, with four unlabelled switches and nothing that ever told
+the user they exist.
+
+**Should the permission just ship granted?** The user thinks so. The argument
+against is strong enough to record rather than settle here: `PresenceSet` is an
+outbound broadcast to other people, continuously, which is not the same category
+as `SHIPS_DISABLED`'s stated concern (an effect that "changes how their machine
+behaves"). ADR-003's default-deny exists so nothing acts on the user's behalf
+before they have read what it does. Auto-granting would be a quieter version of
+what that policy was written to prevent, and would break the precedent that
+every capability goes through the same itemised prompt.
+
+The proposal that satisfies both: keep default-deny, extend the *existing*
+consent flow to built-ins so enabling one asks the same itemised question, and
+wire `denials()` into something a person can see. Neither needs new mechanism --
+both already exist and are simply not connected.
+
 ## Open: two build-shape traps that cost a session each, 2026-08-30
 
 **The Discord Presence plugin does not appear as a built-in under `just dev --in
