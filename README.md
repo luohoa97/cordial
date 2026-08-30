@@ -411,6 +411,20 @@ practical reason to prefer it.
 
 #### 2.3 APT (Debian/Ubuntu)
 
+**The `.deb` on the release page installs today and needs no repository.**
+Every release attaches one, with a `.cosign.bundle` beside it:
+
+```bash
+# From https://github.com/luohoa97/cordial/releases/latest
+sudo apt install ./cordial_*_amd64.deb
+```
+
+Verifying it first is worth the two commands -- see
+[Release downloads are signed](#release-downloads-are-signed-and-here-is-how-to-check).
+The repository below is the nicer route once it is up, and **it is not up yet**:
+it publishes nothing until a maintainer adds a signing key, so following these
+commands today gets you a 404 rather than Cordial.
+
 Cordial's own repository, not a package in Debian or Ubuntu itself -- see
 [`docs/design/apt-repository.md`](docs/design/apt-repository.md) for why
 those are two different things and where this one currently stands.
@@ -460,6 +474,23 @@ rather than an accurately-documented gap.
 
 #### 2.4 dnf (Fedora, RHEL, and derivatives)
 
+**The `.rpm` on the release page installs today and needs no repository.**
+Every release attaches one, with a `.cosign.bundle` beside it:
+
+```bash
+# From https://github.com/luohoa97/cordial/releases/latest
+sudo dnf install ./cordial-*.x86_64.rpm
+```
+
+Note the `.fcNN` in the filename: only one Fedora release is built at a time
+(Fedora 44 as of this writing), for the reasons in
+[`packaging/rpm/build-rpm.sh`](packaging/rpm/build-rpm.sh)'s header. Verifying
+first is worth the two commands -- see
+[Release downloads are signed](#release-downloads-are-signed-and-here-is-how-to-check).
+The repository below is the nicer route once it is up, and **it is not up yet**:
+it publishes nothing until a maintainer adds a signing key, so following these
+commands today gets you a 404 rather than Cordial.
+
 Cordial's own repository, not a package in Fedora's own repos -- see
 [`docs/design/rpm-repository.md`](docs/design/rpm-repository.md) for why
 those are two different things and where this one currently stands.
@@ -501,53 +532,49 @@ adds the key.
 
 #### 2.5 pacman (Arch and derivatives)
 
-The AUR is the ordinary route for an Arch package, and
-[`packaging/aur/cordial/PKGBUILD`](packaging/aur/cordial/PKGBUILD) already
-builds there — but **AUR account sign-ups are currently closed**, which
-blocks submitting it no matter how ready the packaging is. Two routes exist
-that do not depend on that reopening:
+**Install the package from the release page. That works today and needs no
+key.** Every release attaches a `.pkg.tar.zst` built by the same `makepkg` run
+an AUR user's own machine would do, with a `.cosign.bundle` beside it:
+
+```bash
+# From https://github.com/luohoa97/cordial/releases/latest
+sudo pacman -U cordial-*-x86_64.pkg.tar.zst
+```
+
+Verifying it first is two commands and is worth doing -- see
+[Release downloads are signed](#release-downloads-are-signed-and-here-is-how-to-check)
+below. That signature is keyless, so there is no Cordial key to add to your
+keyring and none to trust.
+
+**The AUR is the ordinary route and is blocked, not missing.**
+[`packaging/aur/cordial/PKGBUILD`](packaging/aur/cordial/PKGBUILD) and its
+`cordial-git` counterpart are complete and pass `namcap`, but **AUR account
+sign-ups are currently closed**, so neither can be submitted. That is the only
+thing standing between you and `paru -S cordial`.
 
 <!-- COORDINATOR: Chaotic-AUR paragraph goes here once the submission (pkgbase/source via
      .ci/manual-add.sh) has actually landed and the resulting package name and
      enable-the-repo instructions are settled. Do not write this from guesswork --
      document it once it exists, per AGENTS.md. -->
 
-**Cordial's own repository.** The same shape as the dnf and apt repositories
-above, signed the same way -- see
-[`docs/design/pacman-repository.md`](docs/design/pacman-repository.md).
-
-```bash
-curl -fsSL https://luohoa97.github.io/cordial/arch/cordial-archive-keyring.asc \
-    | sudo pacman-key --add -
-sudo pacman-key --lsign-key <fingerprint>   # from docs/design/pacman-repository.md#the-key
-```
-
-Then add to `/etc/pacman.conf`:
-
-```ini
-[cordial]
-Server = https://luohoa97.github.io/cordial/arch/$arch
-SigLevel = DatabaseRequired PackageNever
-```
-
-```bash
-sudo pacman -Sy cordial
-```
-
-`SigLevel = DatabaseRequired PackageNever` says precisely what this
-repository actually signs -- the database, not each package -- rather than
-either accepting nothing (`SigLevel = Never`) or failing on a per-package
-signature this repository does not produce
-(`SigLevel = Required`). See
-[`docs/design/pacman-repository.md`](docs/design/pacman-repository.md#pacmanconfs-siglevel-stated-precisely-rather-than-left-to-a-default)
-for why.
-
-**Nothing is signed yet.** No `ARCH_GPG_PRIVATE_KEY` secret exists in this
-repository's CI as of this writing, and
+**Cordial's own pacman repository is built and publishes nothing.** The
+workflow, the `repo-add` script and the `pacman.conf` stanza all exist, and
 [`packaging/pacman/build-repo.sh`](packaging/pacman/build-repo.sh) refuses
-outright to build an unsigned repository, for the same reason the dnf side
-does. The commands above will not install anything until a maintainer
-generates and adds the key.
+outright to build an unsigned repository -- so until a maintainer generates a
+signing key and adds `ARCH_GPG_PRIVATE_KEY` to CI, `https://luohoa97.github.io/cordial/arch/`
+is a 404 and there is nothing to add to `pacman.conf`.
+
+**No instructions are printed here for it yet, and that is deliberate.** This
+section used to give the `pacman-key --add` and `--lsign-key <fingerprint>`
+commands with the fingerprint left as a placeholder pointing at
+[`docs/design/pacman-repository.md`](docs/design/pacman-repository.md) -- a
+maintainer document whose first section is how to *generate* a signing key.
+A reader following that link reasonably concluded they had to make a key to
+install a game client. Commands that cannot work, and a fingerprint a user is
+sent to a design document to find, are worse than saying plainly that the
+repository is not up. When the key exists the fingerprint will be printed here,
+inline, and these will be real instructions.
+
 
 #### Release downloads are signed, and here is how to check
 
