@@ -33,8 +33,31 @@
 //! of Cordial's swapchain. The N that draws PlayStation glyphs *is* PlayStation,
 //! and a different N drawing different glyphs is the control. `CORDIAL_GAMEPAD_TYPE=N`
 //! is that sweep, and `CORDIAL_GAMEPAD_PROBE=1` runs it with no hardware at all
-//! -- it announces one synthetic pad and sends nothing, which is enough to draw
-//! the glyphs. Second best is re-capturing the logcat with a pad attached.
+//! -- it announces one synthetic pad and sends nothing.
+//!
+//! **"Which is enough to draw the glyphs" used to follow that sentence, and it
+//! is wrong.** Reported by the project owner from ordinary use on 2026-08-30:
+//! Roblox switches its displayed glyph set only when an input is actually
+//! *used*, not when a device is announced. A pad that connects and then sends
+//! nothing changes nothing on screen, so the probe as built cannot produce the
+//! reading this module was designed around. Labelled as a user report rather
+//! than a measurement here, because it was not taken with an instrument -- but
+//! it explains a run that would otherwise look like a mystery, and it should be
+//! believed before it is re-tested.
+//!
+//! It was re-tested first, and agrees. A sweep of N = 0, 1, 2 and 99 on
+//! 2026-08-30 found the pre-login Landing and Sign In screens identical for
+//! every N, with no button glyph anywhere in the frame -- and 99, far outside
+//! any plausible enum, no more distinguishable than 0. Two independent reasons
+//! for that null result now stand: no input was sent, and the shell is not
+//! where glyphs are drawn in the first place. Sober #584 and #1810 both place
+//! the wrong-type symptom inside an experience rather than in the shell.
+//!
+//! **So the experiment needs two changes before it can work**, and neither is
+//! large: the probe must *send* an input after announcing -- a button press and
+//! release, or an axis deflection, is enough to make the engine switch -- and
+//! the observation must be made inside a joined experience rather than at the
+//! shell. Second best is re-capturing the logcat with a pad attached.
 //!
 //! **Run 2026-08-30, and `Landing`/`Login` are ruled out as the screen.** N
 //! swept over 0, 1, 2 and 99 all reach the pre-login `Landing` page identically
