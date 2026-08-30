@@ -21,6 +21,80 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## Open: "the text box isnt centred" does not reproduce anywhere this session could reach, 2026-08-30
+
+A user reported the editor "isnt perfectly centered" when a TextBox opens.
+`7ab484f`, two days old at the time of the report, changed the drawn font size
+and was the obvious first suspect: a glyph scaled about the wrong origin, or a
+box height still sized for the pre-fix text, would read exactly like this.
+
+**It does not.** Measured against a running client (`--profile agent-centring`,
+fresh and signed out, under sway with `tools/build-wl-holders.sh` devices held
+open, `CORDIAL_DEV_CONTROL=1 CORDIAL_TRACE_TEXT=1`), across every TextBox
+reachable without signing in -- the Sign In username and password fields, the
+Account Recovery username/email and phone fields, and the Get One-Time Code
+email field, five distinct specs across two font sizes (16 and 17) and both a
+plain and a masked field:
+
+- **Rectangle.** `cordial_textbox`'s `x y w h` matched the engine's own
+  `text editor placed from engine ...` trace line exactly, to the float, on
+  every one of eight samples. `x=470 y=295.00003 w=340 h=22` on the username
+  field, `x=470 y=361.00003 w=304 h=22` on the password field, `x=29 y=87.5
+  w=1222 h=38` and `x=29 y=151.5 w=1222 h=38` on the two Account Recovery
+  boxes. `host_window.rs::set_text_overlay` rounds these straight into
+  `text_layer.move_`/`set_size_request` with nothing computed in between, so
+  this is what the code guarantees rather than a surprise -- but it had not
+  been measured against the engine's own numbers before, and it is the first
+  candidate this bug's phrasing suggests ("the box isn't where it should be").
+  It is not: horizontal, vertical and size are all exact.
+- **Text position within the rectangle**, measured the only way that can see
+  it -- a `grim` screenshot of the composited window (never `cordial_screenshot`,
+  which reads the engine's own swapchain and cannot see the GTK layer at all),
+  cropped to the box and read pixel-by-pixel for ink rows and columns. On the
+  username field the engine's own unfocused rendering of "testuser" centres at
+  content-y=306.5 (logical box centre 306); the GTK editor's caret, focused, on
+  the identical string in the identical box, centres at window-y=352.5, which
+  is 306.5 plus this build's own ~46px header height to the pixel. Horizontally
+  the first glyph of the engine's unfocused placeholder ("U" of
+  "Username/Email/Phone") starts at the same x the GTK editor starts "testuser"
+  at, again to the pixel. The masked password field's caret centred about 1.5px
+  low of the box's logical centre and its caret was visibly shorter than the
+  plain field's for the identical font and size -- both true, both under 2px,
+  neither read as "not centred" against a screenshot.
+- **`i6`/`i7`, the INFERRED xAlignment/yAlignment slots, never varied.** Every
+  one of the eight samples reported `i6=0 i7=1`, the same "Left"/"Centre" pair
+  `native/android_classes.cpp`'s own comment already named from the two
+  Login-screen boxes. Nothing in `host_window.rs` reads either slot -- there is
+  no `set_alignment`, `xalign` or `set_justify` call anywhere in the file -- so
+  a box with a genuinely different alignment would draw left-aligned regardless
+  of what it asked for. That is a real gap and it is exactly the shape of bug
+  the report describes, but nothing reachable without joining an experience
+  exercises it, so it is written down here rather than guessed at and fixed.
+  Wiring it up blind would also contradict `editor_font.rs`'s own note that
+  slot 6 fits `Enum.Font.Legacy=0` exactly as well as `xAlignment=Left=0` --
+  compiling in a guess between two untested readings is the mistake this file
+  already warns against for the font slot, and the same caution applies here.
+
+**Not reached, and why.** The most likely place for a non-default alignment is
+the chat box (`/`) or a restyled TextBox inside an experience, neither of which
+exists at the signed-out Landing page. Reaching either needs a signed-in
+profile. `CordialTest` -- the profile AGENTS.md designates for exactly this --
+was held by a live client the entire session (`pidof cordial-run` returned it
+throughout, `ps` showed it launched from `cordial-shell`, i.e. a human's own
+session rather than a leftover agent specimen), and no other profile on this
+machine is this agent's to sign into. So this is where the investigation stops:
+refuted on every surface reached, unconfirmed on the one surface most likely to
+show it.
+
+**No code changed.** Every hypothesis this brief suggested up front was tested
+and did not hold, and inventing a fix for a defect that does not reproduce is
+the exact failure mode AGENTS.md opens with -- "no FastFlag reaches the
+engine", "~1 fps", "stays up twelve seconds" were all fixes that measured
+nothing. If the report recurs, the next session should start from a joined
+experience and the chat box, with `i6`/`i7` read alongside `cordial_textbox` on
+a box that is *not* Left/Centre, which is the one measurement this session
+could not take.
+
 ## Open: a refused capability is invisible, and the fix for it is dead code, 2026-08-30
 
 A user reported Discord presence not broadcasting, then found the cause
