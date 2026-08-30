@@ -668,8 +668,8 @@ const char* platform_name() {
 /// `com.roblox.engine.jni.NativeGLJavaInterface`
 ///
 /// The engine's main line back into Java: device parameters, keyboard, screen
-/// orientation, purchase prompts, overlays, and the leave/exit notifications that
-/// become `onLeave` in the plugin event schema.
+/// orientation, purchase prompts, overlays, and the leave/exit notifications a
+/// plugin-visible `onLeave` would be built from, if one existed. None does.
 class NativeGLJavaInterface : public Object {
 public:
     /// The static half of the same game-loaded announcement `NativeHelper`
@@ -767,8 +767,10 @@ public:
         fprintf(stderr, "[roblox] exitGameWithError(%d)\n", code);
     }
     static void gameDidLeave(ENV*, Class*) {
-        // This is `onLeave` in the plugin event schema (spec §9a), and where
-        // "close when you leave an experience" hangs off. Both need core.
+        // Spec §9a called this `onLeave` in the plugin event schema, and hung
+        // "close when you leave an experience" off it. Neither was built: there
+        // is no such core event, and nothing subscribes. This is still the right
+        // place for both, which is why the note stays.
         fprintf(stderr, "[roblox] gameDidLeave\n");
     }
     static void onAppShellReloadNeeded(ENV*, Class*) {}

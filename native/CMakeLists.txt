@@ -163,7 +163,8 @@ endif()
 
 # Thin extern "C" surface over the linker's C++ API, so Rust can drive it.
 # Android liblog. Roblox narrates its own startup through it, so this is the
-# runtime layer's most valuable diagnostic — and the source of onLogLine/onJoin.
+# runtime layer's most valuable diagnostic. It is not the source of
+# onLogLine/onJoin: neither event exists, see the header of liblog.cpp.
 #
 # `aaudio.cpp` is here rather than beside the JNI shim because it belongs with
 # `pipewire_backend.cpp`, and it needs no PipeWire headers of its own — it

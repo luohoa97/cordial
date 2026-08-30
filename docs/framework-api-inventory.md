@@ -42,7 +42,7 @@ Every Android library the APK's native code links against. This is the complete 
 | `libc.so` | all | **implement** | bionic. The single largest Phase 1 item — 490 of the 644 undefined symbols are libc/libm/libdl. |
 | `libm.so` | all | **implement** | Mostly satisfiable from glibc directly. |
 | `libdl.so` | all | **implement** | Must be the *runtime's* loader, not the host's — `dlopen` has to resolve inside the Android namespace. |
-| `liblog.so` | most | **stub-inert** | `__android_log_*`. Route to Cordial's log; also the source of `onLogLine` (spec §9a). Trivial and high value — do it first. |
+| `liblog.so` | most | **stub-inert** | `__android_log_*`. Route to Cordial's log. Trivial and high value — do it first. (Spec §9a also called this the source of `onLogLine`; that event was never built, see liblog.cpp.) |
 | `libGLESv2.so` | `libroblox` | **implement** | 74 undefined `gl*` symbols. → Mesa. |
 | `libEGL.so` | `libroblox` | **implement** | 17 undefined `egl*` symbols. → Mesa/EGL. |
 | `libandroid.so` | `libroblox`, `libsurface_util_jni`, `libimage_processing_util_jni` | **implement** | 31 symbols. NDK native API: `ANativeWindow`, `AInputEvent`, `ALooper`, `AChoreographer`, `AAssetManager`, `ASensor`. This is where host input and windowing actually meet Roblox. |
@@ -232,8 +232,9 @@ there rather than discovering it later.
 
 Derived from the above, cheapest-useful-first:
 
-1. `liblog` → Cordial's log. Trivial, and it is what `onLogLine`, `onJoin` and `onLeave`
-   are built from (spec §9a).
+1. `liblog` → Cordial's log. Trivial. Spec §9a said `onLogLine`, `onJoin` and `onLeave`
+   would be built from it; none of the three was, and the log parsing that does
+   exist reads the engine's own log file instead — see `bloxstrap_rpc`.
 2. `Build.*` + `__system_property_get` + `DisplayMetrics` — desktop identification. Small,
    visible, and unblocks judging what else changes when Roblox stops thinking it is a
    phone.

@@ -5,8 +5,17 @@
 // comes with the client's own account of what it was doing — which is otherwise
 // unavailable, since nothing else in the process can say anything.
 //
-// It is also the source of `onJoin`, `onLeave` and `onLogLine` in the plugin
-// event schema: those are parsed from exactly this stream.
+// An early spec (§9a) put `onJoin`, `onLeave` and `onLogLine` in the plugin
+// event schema and said they were parsed from exactly this stream. None of the
+// three exists. `cordial_plugins::core_events::ALL` is a closed table of five
+// names, none of them these, and nothing anywhere parses this stream for them.
+//
+// Corrected rather than deleted because the claim stood here long enough to be
+// believed, and was repeated into two design documents from this comment. The
+// parsing that would make something like it true is being written against the
+// engine's own log file instead -- `cordial_runtime::bloxstrap_rpc` reads
+// `appData/logs/*_Player_*.log`, which is a file with a settled format, and
+// not this stderr channel, whose shape is Cordial's own narration.
 //
 // Written in C++ rather than Rust because three of the six entry points are
 // variadic, and forwarding a C variadic to a real `vsnprintf` is the one thing

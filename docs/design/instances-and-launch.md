@@ -59,7 +59,7 @@ the main's cookie jar, and closing it cannot log the main out.
 | Behaviour | Layer | Mechanism |
 |---|---|---|
 | X quits the instance | Framework + Core | window close → `Activity.onDestroy` → instance teardown |
-| Close after leaving an experience | Core | `onLeave` (§9a) → teardown, behind a setting |
+| Close after leaving an experience | Core | `onLeave` (§9a) → teardown, behind a setting. **Not built**: no such event exists; `gameDidLeave` in `android_classes.cpp` is where it would hang off. |
 | Browser handles `roblox://` | **Core setting** | desktop MIME registration — see §5 |
 | A launch URI starts an instance | Core (instance manager) | one URI → one instance, own data dir |
 | Multiple accounts | falls out of the above | per-instance data dir = per-instance cookie jar |
@@ -87,7 +87,8 @@ An instance is a Roblox process plus everything it is allowed to see:
 ```
 ~/.var/app/<app-id>/data/instances/<instance-id>/
     data/         the app's private storage — cookies, cache, settings
-    logs/         parsed for onJoin / onLeave / onLogLine (§9a)
+    logs/         the engine's own log. §9a planned onJoin / onLeave / onLogLine
+                  off it; none was built. `bloxstrap_rpc` parses it now.
 ```
 
 Separate data directory, separate namespace, separate lifetime. Refcounted, per
