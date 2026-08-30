@@ -69,11 +69,12 @@ plain and a masked field:
   a box with a genuinely different alignment would draw left-aligned regardless
   of what it asked for. That is a real gap and it is exactly the shape of bug
   the report describes, but nothing reachable without joining an experience
-  exercises it, so it is written down here rather than guessed at and fixed.
-  Wiring it up blind would also contradict `editor_font.rs`'s own note that
-  slot 6 fits `Enum.Font.Legacy=0` exactly as well as `xAlignment=Left=0` --
-  compiling in a guess between two untested readings is the mistake this file
-  already warns against for the font slot, and the same caution applies here.
+  exercises it, so it was written down here rather than guessed at and fixed
+  in the moment: `editor_font.rs`'s own note that slot 6 fits
+  `Enum.Font.Legacy=0` exactly as well as `xAlignment=Left=0` meant wiring it
+  up here would have been compiling in a guess, the mistake this file already
+  warns against for the font slot. See the fix below for how that ambiguity
+  was resolved without a live capture.
 
 **Not reached, and why.** The most likely place for a non-default alignment is
 the chat box (`/`) or a restyled TextBox inside an experience, neither of which
@@ -82,18 +83,73 @@ profile. `CordialTest` -- the profile AGENTS.md designates for exactly this --
 was held by a live client the entire session (`pidof cordial-run` returned it
 throughout, `ps` showed it launched from `cordial-shell`, i.e. a human's own
 session rather than a leftover agent specimen), and no other profile on this
-machine is this agent's to sign into. So this is where the investigation stops:
+machine is this agent's to sign into. So the investigation stopped there:
 refuted on every surface reached, unconfirmed on the one surface most likely to
 show it.
 
-**No code changed.** Every hypothesis this brief suggested up front was tested
-and did not hold, and inventing a fix for a defect that does not reproduce is
-the exact failure mode AGENTS.md opens with -- "no FastFlag reaches the
-engine", "~1 fps", "stays up twelve seconds" were all fixes that measured
-nothing. If the report recurs, the next session should start from a joined
-experience and the chat box, with `i6`/`i7` read alongside `cordial_textbox` on
-a box that is *not* Left/Centre, which is the one measurement this session
-could not take.
+**One more measured detail, worth keeping rather than losing:** the masked
+password field's caret centred about 1.5px low of the box's logical centre,
+and its caret was visibly shorter than the plain username field's for the
+identical font, size and box height -- both true, both under 2px, and both
+almost certainly GTK's own invisible-char glyph having different line metrics
+in Builder Sans than a Latin letter does, rather than anything Cordial computes.
+Not the reported bug, not investigated further.
+
+## Fixed (X axis), UNVERIFIED end to end (Y axis), 2026-08-30
+
+The slot ambiguity above is resolved. `~/Projects/mocktail`, consulted per
+AGENTS.md's instruction to check it before inferring a platform contract,
+implements the same `NativeTextBoxInfo.<init>` hook
+(`src/jnivm/jnivm.cc:4016-4024`, Apache-2.0) and its varargs reader declares
+the six int constructor arguments in order: `xAlignment, yAlignment,
+textColor, font, textInputType, returnKeyType`. That is a fact about Roblox's
+platform API -- the constructor's own declared parameter order -- taken and
+credited rather than copied, per the line AGENTS.md draws between the idea and
+the transcription; the *values* this project's own boxes hold were never
+mocktail's. Applied to this struct's slots it settles all of `i6`=`xAlignment`,
+`i7`=`yAlignment`, `i9`=`font` (confirming `font_slot`'s existing default
+rather than merely excusing it), `i10`=`textInputType`, `i11`=`returnKeyType`.
+`i6`/`i7` are renamed to `x_alignment`/`y_alignment` in `RawTextBoxInfo` and
+`CordialTextBoxInfo`; `i9`/`i10`/`i11` are left numbered to keep this change to
+the slots the fix needed -- see `native/android_classes.cpp`'s updated comment
+for the reasoning kept in one place.
+
+**Horizontal is a real GTK property and is applied outright.**
+`gtk::Text` implements `Editable`, which has `set_alignment(xalign: f32)` --
+`0.0`/`0.5`/`1.0` for Left/Center/Right, applied on every `set_text_overlay`
+call alongside the family and input-purpose that already get reapplied per
+box. `host_window.rs::gtk_xalign` maps the three ordinals; the default
+(`Left`, the only value ever measured) is unit-tested to stay `0.0` and an
+unrecognised ordinal falls back to it rather than to something arbitrary.
+
+**Vertical has no equivalent GTK property**, because `gtk::Text` is a
+single-line widget and Pango centres whatever it is given within the height it
+is allocated -- which is exactly why `Center`, the only `yAlignment` this
+project has ever measured, needed no code at all and still gets none:
+`vertical_placement`'s `Center` arm returns `y`/`h` unchanged, so the
+2026-08-30 measurement above (caret centre within 0.5px of the box's own
+centre) is the regression test for that arm, not just a note. `Top`/`Bottom`
+are approximated by measuring the widget's own natural line height
+(`gtk::Widget::measure`, taken after the font attributes are set, not a
+guessed line-height multiple of the font size) and anchoring that at the box's
+own edge instead of letting the widget fill the box and self-centre.
+
+**UNVERIFIED, and said so in the code.** No box this project has ever focused
+uses anything but `yAlignment=Center`, so the `Top`/`Bottom` branches have
+unit tests for their arithmetic (`host_window.rs::tests::
+vertical_placement_centre_is_untouched_top_and_bottom_anchor` and
+`..._clamps_a_natural_height_taller_than_the_box`) and no live measurement at
+all. The next session that can reach a joined experience or a restyled TextBox
+should focus one with a non-default alignment, read `xAlign`/`yAlign` off
+`cordial_textbox`, and take a `grim` composited screenshot the same way this
+entry did, before trusting the vertical half of this fix.
+
+**Measured:** `cargo build --release` and `cargo test --workspace` both clean
+on this change, including three new tests and the renamed fields in
+`editor_font.rs`'s and `cordial-linker-sys`'s existing slot tests, which still
+pass under the new names -- 156/156 in `cordial-runtime`, 332/332 in
+`cordial-shell`, 0 failures workspace-wide, run twice (once at `-j4`, once at
+`-j2` after a memory advisory) with the same result both times.
 
 ## Open: a camera sensitivity driven negative and persisted, 2026-08-30
 

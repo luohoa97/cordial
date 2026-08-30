@@ -34,13 +34,21 @@
 //! to a font file. So a per-box font needs no hand-maintained table that would
 //! rot across Roblox builds; the authoritative one is already on disk.
 //!
-//! **What is still not established is which constructor slot carries the id.**
-//! The only capture this project holds is of two Login-screen boxes, where
-//! slot 9 read 46 on both and never varied; slot 6 read 0 on both and
-//! `Enum.Font.Legacy` is 0, so slot 6 fits that evidence equally well. Slots 7,
-//! 10 and 11 are unexcluded. Rather than compile that guess in, the slot is a
-//! runtime value -- see [`font_slot`] -- so the one capture that settles it
-//! needs a variable and not a rebuild.
+//! **Which constructor slot carries the id is now confirmed, as of
+//! 2026-08-30.** This used to say slot 6 fit the two-box capture (`0` on
+//! both) exactly as well as `Enum.Font.Legacy=0`, because nothing here could
+//! tell "the font id, always Legacy" from "some other field, always zero"
+//! apart. That ambiguity is resolved from outside this codebase: mocktail
+//! (`~/Projects/mocktail/src/jnivm/jnivm.cc:4016-4024`, Apache-2.0) implements
+//! the same `NativeTextBoxInfo` constructor and lists its six int arguments in
+//! declared order as `xAlignment, yAlignment, textColor, font, textInputType,
+//! returnKeyType` -- a fact about Roblox's platform API, taken and credited
+//! rather than copied, per AGENTS.md's line between the idea and the
+//! transcription. Slot 6 is `xAlignment`, not `font`; `font` is slot 9,
+//! exactly where [`font_slot`]'s default already pointed it. `slot_value`
+//! keeps reading positionally rather than by field name -- see that
+//! function's own doc comment for why -- but the slot it defaults to is now
+//! corroborated instead of merely chosen under ambiguity.
 //!
 //! Reading `TextBox.FontFace` out of the DataModel would answer it directly and
 //! is permanently out of scope: that is in-process introspection of the engine,
@@ -287,8 +295,8 @@ pub fn slot_value(
     slot: u8,
 ) -> Option<i32> {
     match slot {
-        6 => Some(info.i6),
-        7 => Some(info.i7),
+        6 => Some(info.x_alignment),
+        7 => Some(info.y_alignment),
         9 => Some(info.i9),
         10 => Some(info.i10),
         11 => Some(info.i11),
@@ -763,8 +771,8 @@ mod tests {
     #[test]
     fn slot_numbers_select_the_field_of_that_number() {
         let info = RawTextBoxInfo {
-            i6: 606,
-            i7: 707,
+            x_alignment: 606,
+            y_alignment: 707,
             text_color: 808,
             i9: 909,
             i10: 1010,
@@ -877,8 +885,8 @@ mod tests {
             width: 340.0,
             height: 22.0,
             font_size: 16.0,
-            i6: 0,
-            i7: 1,
+            x_alignment: 0,
+            y_alignment: 1,
             text_color: 0xffd5_d5ddu32 as i32,
             i9: 46,
             i10: 7,

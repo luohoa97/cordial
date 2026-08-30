@@ -2232,14 +2232,17 @@ impl WaylandWindow {
             // when the getter or the fallback supplies the geometry instead.
             //
             // **All five candidate ints, on the same line as the family that
-            // was resolved from whichever one is selected.** The slot carrying
-            // the font id is not established, and the capture that settles it
-            // is one person focusing a restyled TextBox in a game: with the
-            // candidates and the outcome side by side, whichever int moved
-            // *and* changed the family is the field, and this line is the whole
-            // experiment. Split across two lines or two sources it would need
-            // correlating by hand, which is how the last five candidates
-            // survived a capture each.
+            // was resolved from whichever one is selected.** `xAlign`/`yAlign`
+            // (slots 6/7) and the font slot (9) are confirmed rather than
+            // candidates now -- mocktail's `NativeTextBoxInfo` constructor
+            // field order, credited in `RawTextBoxInfo`'s own doc comment --
+            // but `i10`/`i11` stay printed numerically alongside the resolved
+            // family for the same reason they always were: with the candidates
+            // and the outcome side by side, whichever int moved *and* changed
+            // the family is the field, and this line is the whole experiment.
+            // Split across two lines or two sources it would need correlating
+            // by hand, which is how the last five candidates survived a
+            // capture each.
             let (slot, id, family, ratio) = match (super::editor_font::font_slot(), face.as_ref()) {
                 (Some(slot), Some((id, face))) => {
                     (slot.to_string(), id.to_string(), face.family.clone(), face.from_rbx_font_ratio)
@@ -2251,11 +2254,11 @@ impl WaylandWindow {
             };
             eprintln!(
                 "[cordial] text editor placed from {} x={} y={} w={} h={} \
-                 i6={} i7={} i9={} i10={} i11={} fontSlot={slot} fontId={id} family={family:?} \
+                 xAlign={} yAlign={} i9={} i10={} i11={} fontSlot={slot} fontId={id} family={family:?} \
                  fontSize={} fromRbxFontRatio={ratio} drawnFontSize={}",
                 placed.source(),
                 info.x, info.y, info.width, info.height,
-                info.i6, info.i7, info.i9, info.i10, info.i11,
+                info.x_alignment, info.y_alignment, info.i9, info.i10, info.i11,
                 info.font_size, info.font_size * ratio,
             );
         }
@@ -2292,6 +2295,14 @@ impl WaylandWindow {
             // previous box's place is still sitting on a real field and must
             // not suddenly grow a background.
             fallback: placed == Placed::Fallback,
+            // Passed straight through rather than mapped to a GTK type here:
+            // `host_window.rs` is where every other Android-to-Pango
+            // conversion in this spec already lives (`pango_weight`, the CSS
+            // colour string), and `gtk_xalign`/`vertical_placement` follow the
+            // same pattern. See `RawTextBoxInfo::x_alignment` for why these
+            // two ints are confirmed and not a guess.
+            x_alignment: info.x_alignment,
+            y_alignment: info.y_alignment,
         }));
         if !self.text_overlay_visible.swap(true, Ordering::SeqCst)
             && self.open_web_view_dialogs.load(Ordering::SeqCst) == 0
@@ -2327,6 +2338,16 @@ impl WaylandWindow {
             // against most places a text box appears. The real spec carries the
             // box's colour and is preferred whenever it exists.
             text_color: 0x00FF_FFFFu32 as i32,
+            // Explicit, not left to `Default::default()`'s zero. A synthesised
+            // box has no real `yAlignment` to report, and `0` is `Top` --
+            // `vertical_placement`'s Top branch would shrink this pill to one
+            // line's height and anchor it at the top rather than centring it,
+            // which is a regression in the one placement this project has
+            // actually verified (`tools/text-input-e2e.py`, 2026-08-25).
+            // `x_alignment`'s default of `0` (Left) needs no such override:
+            // that already matches what this bar drew before alignment was
+            // read at all.
+            y_alignment: 1,
             ..Default::default()
         }
     }

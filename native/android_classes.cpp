@@ -105,36 +105,63 @@
 /// is the only reading that is not absurd: a 22px line box holding 16pt text is
 /// a text field, a 16px box holding 22pt text is not. INFERRED.
 ///
-/// Slots 6, 7, 9, 10 and 11 hold 0, 1, 46, and a pair that differs per box.
-/// Consistent with xAlignment=Left, yAlignment=Centre, a font id, then
-/// textInputType and returnKeyType — the second box being the one below a
-/// username field, slot 11 going 3 to 1 the way Next then Done would. Every
-/// word of that is INFERRED; what is observed is only that 10 and 11 are the
-/// ints that vary between two boxes and the other four do not.
+/// **Slots 6, 7, 9, 10 and 11 are now CONFIRMED, not INFERRED, as of
+/// 2026-08-30.** This used to read them off two Login-screen boxes alone --
+/// `0, 1, 46`, and a pair that differed between the boxes -- and say every
+/// word of the reading that follows was a guess, because `Enum.Font.Legacy`
+/// is also `0` and fit slot 6 exactly as well as `xAlignment=Left`. That
+/// ambiguity is resolved, from outside this codebase entirely: `~/Projects
+/// /mocktail`, consulted per AGENTS.md's instruction to check it before
+/// inferring a platform contract, implements the same `<init>` hook
+/// (`src/jnivm/jnivm.cc:4016-4024`, Apache-2.0) and its varargs reader lists
+/// the six int arguments in the order the *constructor declares them*:
+/// `xAlignment, yAlignment, textColor, font, textInputType, returnKeyType`.
+/// That is a fact about Roblox's platform API -- the shape a real
+/// `NativeTextBoxInfo.<init>` call takes -- not about mocktail's own
+/// implementation, so taking the order and crediting it is the right side of
+/// the line AGENTS.md draws; the values this struct actually held from two
+/// login boxes (`0, 1, 46`, then a pair distinguishing Next/Done) were never
+/// mocktail's, and still are not. Applied to this struct's own slots, in the
+/// order the six ints already sit at (`i6, i7, text_color, i9, i10, i11`):
+/// slot 6 is `xAlignment`, slot 7 `yAlignment` -- both renamed below -- slot 9
+/// is `font` exactly as `font_slot`'s default of 9 already assumed, slot 10
+/// `textInputType`, slot 11 `returnKeyType`. `text_color` sitting between
+/// `yAlignment` and `font` is also why the naive alphabetical-ish reading put
+/// it at slot 7 and was wrong, noted above.
 ///
-/// **Nothing on this side picks between them, and nothing should.** The Rust
-/// editor reads the font id out of whichever of 6, 7, 9, 10 and 11
-/// `CORDIAL_TEXTBOX_FONT_SLOT` names, defaulting to 9 — see `font_slot` in
-/// `crates/cordial-runtime/src/android/editor_font.rs`, which carries the
-/// argument for the default and the reasons it is weak. Compiling the guess in
-/// would have made the one capture that settles it cost a rebuild, and the
-/// capture needs a person in a game that restyled a box, not a change here.
+/// `CORDIAL_TEXTBOX_FONT_SLOT` (see `font_slot` in
+/// `crates/cordial-runtime/src/android/editor_font.rs`) still defaults to 9
+/// and is kept rather than deleted: it is one env var now confirming a fact
+/// instead of covering for an unresolved one, and it stays useful if a future
+/// Roblox build renumbers the constructor again.
 ///
-/// Slot 12 is not multiline. Both boxes are single-line login fields and both
-/// report 1 there, so multiline is slot 5 or slot 13. Which, and which of the
-/// remaining two is textWrapped and which manualFocusRelease, wants a box that
-/// actually differs — an in-experience chat entry rather than a login form.
+/// Slot 12 is not multiline. Both Login boxes are single-line fields and both
+/// report 1 there, so multiline is slot 5 or slot 13. mocktail's *fourteen*-
+/// argument form (it predates the `editable` field discovered here on
+/// 2026-08-27) has `manualFocusRelease` at the position this struct's slot 12
+/// occupies and `textWrapped` at slot 13, matching what this file already
+/// guessed from the two Login boxes -- corroborated, not merely repeated,
+/// since mocktail's list is by name and declared order rather than by two
+/// numbers that happened to both read 1. `z14` (`editable`) has no
+/// corresponding field in mocktail's older constructor and stays unnamed.
 ///
 /// When a slot is settled, rename it here and in `RawTextBoxInfo` in
 /// `crates/cordial-linker-sys/src/lib.rs` together. A wrong name would be worse
-/// than no name, because it would be believed.
+/// than no name, because it would be believed -- which is why only `i6`/`i7`
+/// are renamed below: `i9`/`i10`/`i11` are equally settled now, but renaming
+/// them is left for whoever next touches the font-slot or input-type code, to
+/// keep this change to the slots the alignment fix actually needed.
 struct CordialTextBoxInfo {
     float x, y, width, height, font_size;
     // The three `Z` slots are widened to `int` rather than kept as `jboolean`.
     // This struct is mirrored field-for-field on the Rust side, and a one-byte
     // member sitting between four-byte ones is padding waiting to be got wrong.
     int z5;
-    int i6, i7;
+    // Roblox's `Enum.TextXAlignment`/`Enum.TextYAlignment`: `Left`/`Top` = 0,
+    // `Center` = 1, `Right`/`Bottom` = 2. Confirmed via mocktail's
+    // `NativeTextBoxInfo` constructor field order -- see the struct's own doc
+    // comment above.
+    int x_alignment, y_alignment;
     int text_color;
     int i9, i10, i11;
     int z12, z13, z14;
@@ -172,10 +199,10 @@ std::atomic<unsigned> g_textbox_generation{0};
 void trace_textbox_info(const char* source, const CordialTextBoxInfo& i) {
     fprintf(stderr,
             "[cordial] textbox spec from %s x=%g y=%g w=%g h=%g fontSize=%g "
-            "z5=%d i6=%d i7=%d textColor=%#x i9=%d i10=%d i11=%d z12=%d z13=%d z14=%d\n",
+            "z5=%d xAlign=%d yAlign=%d textColor=%#x i9=%d i10=%d i11=%d z12=%d z13=%d z14=%d\n",
             source, static_cast<double>(i.x), static_cast<double>(i.y),
             static_cast<double>(i.width), static_cast<double>(i.height),
-            static_cast<double>(i.font_size), i.z5, i.i6, i.i7,
+            static_cast<double>(i.font_size), i.z5, i.x_alignment, i.y_alignment,
             static_cast<unsigned>(i.text_color), i.i9, i.i10, i.i11, i.z12, i.z13,
             i.z14);
 }
@@ -307,8 +334,8 @@ extern "C" void cordial_textbox_test_focus(long long handle, const char* text,
     info.height = s3;
     info.font_size = s4;
     info.z5 = s5;
-    info.i6 = s6;
-    info.i7 = s7;
+    info.x_alignment = s6;
+    info.y_alignment = s7;
     info.text_color = s8;
     info.i9 = s9;
     info.i10 = s10;
@@ -496,15 +523,15 @@ public:
     /// the tool to reach for whenever a hook silently does nothing.
     static std::shared_ptr<NativeTextBoxInfo> init(
         ENV*, Class*, jfloat f0, jfloat f1, jfloat f2, jfloat f3, jfloat f4,
-        jboolean z5, jint i6, jint i7, jint i8, jint i9, jint i10, jint i11,
-        jboolean z12, jboolean z13, jboolean z14) {
+        jboolean z5, jint x_alignment, jint y_alignment, jint i8, jint i9,
+        jint i10, jint i11, jboolean z12, jboolean z13, jboolean z14) {
         auto o = std::make_shared<NativeTextBoxInfo>();
         // Positional on purpose: these are the constructor's slots, and only
         // some of them have earned a name. See `CordialTextBoxInfo`.
         o->spec = CordialTextBoxInfo{
             f0, f1, f2, f3, f4,
             z5 ? 1 : 0,
-            i6, i7, i8, i9, i10, i11,
+            x_alignment, y_alignment, i8, i9, i10, i11,
             z12 ? 1 : 0, z13 ? 1 : 0, z14 ? 1 : 0,
         };
         o->spec_known = true;
