@@ -95,6 +95,66 @@ experience and the chat box, with `i6`/`i7` read alongside `cordial_textbox` on
 a box that is *not* Left/Centre, which is the one measurement this session
 could not take.
 
+## Open: a camera sensitivity driven negative and persisted, 2026-08-30
+
+Reported on Discord: *"my camera on cordial lwk just fried itself and went to a
+sensetivity of like -4 or something tried restarting the game and its just
+cursed"*, plus *"wasnt able to resize the window in that state"*.
+
+**Recovery, which matters more than the diagnosis and is verified.** The value
+is Roblox's own, in
+`<profile>/data/files/appData/GlobalBasicSettings_13.xml`, under
+`<Item class="UserGameSettings">`: `MouseSensitivity`,
+`MouseSensitivityFirstPerson`, `MouseSensitivityThirdPerson` and
+`GamepadCameraSensitivity`, all `1` on a healthy profile. Confirmed identical
+across five profiles on this host, host and Flatpak roots alike. Close Cordial
+so the lock releases, set them back to 1 or delete the file.
+
+**Cordial does not write it.** Grepped `crates/` for `GlobalBasicSettings`,
+`MouseSensitivity` and `UserGameSettings`: one hit, in `load.rs:2505-2521`,
+handing the engine a directory path. The engine writes the file itself. So the
+persistence in symptom 2 is fully explained by symptom 1 -- something drove
+Roblox's own slider past its range and the engine saved it.
+
+**The wheel-overshoot theory: corroborated, not measured.** `axis_to_notches`
+(`wayland.rs` around 2906) divides a `wl_pointer.axis` distance by
+`WHEEL_AXIS_STEP = 10.0`, and that constant's own comment is marked `INFERRED`:
+"10.0 is what mutter and Weston both use ... a compositor that disagrees makes
+every notch scroll by the wrong amount but still in the right direction."
+`CORDIAL_WHEEL_SCALE` (`input.rs:1897`) multiplies on top.
+
+Sober #105 corroborates the premise from outside this project: scrolling far too
+fast on KDE Plasma/Wayland, with a maintainer replying that a compositor sending
+overly high scroll deltas is not a Sober bug. A commenter mitigates it for menus
+with `FIntScrollWheelDeltaAmount` (default 140). So one physical gesture, on a
+compositor that does not use 10.0, landing on the sensitivity slider, plausibly
+carries the value from 1.0 through zero into strongly negative -- matching both
+the magnitude and the sign.
+
+**That is a fit, not a measurement.** The control is still open and is cheap:
+drive a known number of notches at the slider with `CORDIAL_WHEEL_SCALE=1` and
+again altered, and compare how far the value moves per notch. If one notch moves
+it more than one step, the bug is measured. Nobody has done it -- the run was
+declined on the day for memory pressure and to avoid killing a live client.
+
+**Ruled out:** the pointer-acceleration raw/accel split at `wayland.rs:3494`. It
+affects real-time deltas only and has no path to a persisted value.
+
+**Symptom 3, the window not resizing, is open.** One speculative candidate:
+`sync_pointer_lock` (`wayland.rs:3639`) engages a Wayland pointer lock while the
+engine wants first person or a camera-drag button is held, and a locked pointer
+has no absolute position, which would plausibly defeat a border drag. Not
+corroborated by code reading or by the Sober corpus, and not tested.
+
+**Correcting a guess recorded earlier in this file.** The section on the freeze
+notes a second reporter with *"no sensetivity option avaible"* and I suggested
+here that the two might be one bug -- a value the engine cannot parse both
+hiding the row and reading back as nonsense. **Sober #1399 gives a different and
+more mundane cause for a missing sensitivity row:** Roblox not detecting a mouse
+because it was not moved during load, fixed by moving it while loading. That
+weakens the shared-cause idea without refuting it, and it should not be carried
+forward as though it were a lead.
+
 ## Open: a refused capability is invisible, and the fix for it is dead code, 2026-08-30
 
 A user reported Discord presence not broadcasting, then found the cause
@@ -152,6 +212,59 @@ The proposal that satisfies both: keep default-deny, extend the *existing*
 consent flow to built-ins so enabling one asks the same itemised question, and
 wire `denials()` into something a person can see. Neither needs new mechanism --
 both already exist and are simply not connected.
+
+**Fixed, 2026-08-30.** Both halves landed, default-deny untouched, and a third
+instance of the same class was found and fixed alongside them.
+
+- **Built-in consent.** A built-in's row now calls `consent::verdict` itself,
+  the first time this profile's Plugins page is built and only then --
+  recorded in a new `plugin-consent-seen.json` per profile
+  (`consent::seen_path_in`/`has_been_asked`/`mark_asked`), because a built-in
+  has no install click to hang a one-off prompt on the way a user install
+  does. It reuses the itemised effects list but not `Prompt::footer`'s "It
+  starts switched off" -- untrue of something that ships enabled and may
+  already have been running, denied, for as long as the profile has existed
+  -- so `settings.rs` gained `consent_body_for_builtin` rather than reusing
+  `consent_body` verbatim. Enablement (`SHIPS_DISABLED`) is untouched: this
+  prompt answers "may it do X", never "does it run at all".
+- **Denials, made visible.** `Broker::denials()` is still the record, but
+  nothing outside one plugin's own serving thread could ever read it -- a new
+  `cordial_plugins::denials` module persists a denial to
+  `plugin-denials.json` per profile the first time it happens, cleared the
+  moment the matching capability is granted (`grants::set`'s callers now also
+  call `denials::clear`, wired in `settings.rs`). A capability switch that has
+  a live denial on record says so in its own subtitle -- "Cordial has refused
+  this at least once because it was not granted" -- which is a stronger claim
+  than the existing "Not allowed" line, because it means the plugin actually
+  asked and was actually refused, not merely that nobody has granted it yet.
+- **`log.write` survives a terminal-less launch.** One `plugin.log` per
+  profile, appended to beside the existing `println!`. No rotation, no
+  levels -- deliberately not a logging subsystem, only the one gap that
+  mattered.
+- **A third instance of the same class, found while wiring the above and not
+  by design.** `start_all` read the grants file exactly once, before any
+  plugin thread existed, and never again -- so a capability turned on in
+  Settings had no effect on an already-running plugin until the next launch.
+  Measured on a live Flatpak instance: `cordial-shell` started at 14:19:12,
+  every capability `discord-presence` asked for was granted through Settings,
+  and `plugin-grants.json` was written at 14:20:51 -- ninety seconds into a
+  run whose broker still held the empty set it read before the file existed.
+  Fixed by `plugin_host::refresh_grant`, checked by `mtime` on every request a
+  plugin makes so an unchanged file costs one `stat(2)` and nothing more. It
+  updates two snapshots, not one: `Broker`'s, which gates the calls a plugin
+  makes, and `Listener::granted`, a second copy `flush_core_events` reads for
+  *delivering* a core event, which `refresh_grant` would have left stale on
+  its own -- a plugin whose `lifecycle.subscribe` started succeeding while it
+  stayed permanently deaf to the `client.launch`/`client.ready` events that
+  capability exists to unlock, the same bug one hop further downstream.
+
+**Not done, and worth naming.** The Listener half of the live-reload is
+exercised by review rather than by an automated test: constructing one needs
+a real `Writer`, which this crate can only get from a spawned Deno process,
+and adding one Deno-spawning test solely to observe a `BTreeSet` field copy
+was judged the heaviest possible test for the smallest possible claim. The
+`Broker` half, which shares the same `modified != last_seen` gate and the
+same `grants::load` call, is tested directly.
 
 ## Open: two build-shape traps that cost a session each, 2026-08-30
 
