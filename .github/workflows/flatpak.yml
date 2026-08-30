@@ -432,7 +432,16 @@ jobs:
           # app-id means the rename that happened today does not reach into the
           # HTML as well.
           cp "packaging/icons/hicolor/scalable/apps/$APP_ID.svg" pages/favicon.svg
-          cp "packaging/icons/$APP_ID.svg" pages/cordial.svg
+          #
+          # **The source path is the banner's real name, and getting that wrong
+          # broke every Flatpak run for a day.** The commit that renamed these
+          # renamed the *destinations* here by role, exactly so a future rename
+          # would not reach the HTML -- and then left the source pointing at
+          # `packaging/icons/$APP_ID.svg`, which is the file it had just moved to
+          # `packaging/banner.svg`. The step failed with `cp: cannot stat` and
+          # took the whole Pages deploy with it. Nothing else references the
+          # banner but the README, so nothing else caught it.
+          cp packaging/banner.svg pages/cordial.svg
           mv repo pages/repo
 
           # The apt repository, downloaded above from apt.yml's latest green
