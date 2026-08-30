@@ -181,11 +181,68 @@ jobs:
           done
           test -s release.json
 
+      - name: Fetch the release history, for the compare link
+        # The action builds Compare Changes as
+        # `compare/{target_commitish}...{tag}`, and target_commitish is the
+        # branch the release was cut from -- always "main" here -- so the link
+        # read `compare/main...v0.12.1`, which answers "what is in the release
+        # that is not on main". That is nothing once the tag is an ancestor of
+        # main, and after that it is a list of commits main has *reverted*. The
+        # question a reader actually has is what changed since the last
+        # release, so the previous tag belongs on the left of the three dots.
+        #
+        # Only the fetch happens here; picking the previous tag out of the list
+        # is the script's job, where it is a tested function rather than a
+        # second copy of the same logic in a shell heredoc.
+        #
+        # Failing soft: with no usable history the script leaves the action's
+        # own default alone rather than emitting `compare/...v1.0.0`.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          if ! gh api "repos/${REPO}/releases?per_page=100" > releases.json 2>/dev/null; then
+            echo "::warning::could not list releases; the compare link will use the action's default"
+            echo '[]' > releases.json
+          fi
+
       - name: Assemble the release event, trimmed to Discord's limits
         id: event
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python3 .github/scripts/discord-release-event.py release.json >> "$GITHUB_OUTPUT"
+        run: python3 .github/scripts/discord-release-event.py release.json releases.json >> "$GITHUB_OUTPUT"
+
+      - name: Work out who to ping, and say so when the answer is nobody
+        # **`@updates` typed as text pings nobody**, and that is the whole
+        # reason this step exists rather than a literal string in the `with:`
+        # block below. Discord only turns a role into a notification when the
+        # content carries `<@&ROLE_ID>`; anything else -- including the role's
+        # own name with an at sign in front of it -- renders as grey text that
+        # looks exactly like a working mention to whoever wrote it and reaches
+        # nobody. That is the silent-success shape AGENTS.md rules out for
+        # stubs, and it is worse here because the failure is invisible on the
+        # only screen anyone checks.
+        #
+        # So the id lives in a repository variable rather than this file: it is
+        # not a secret, a role can be changed without touching the workflow,
+        # and a fork announcing to its own server should not inherit ours. The
+        # warnings turn both failure modes -- unset, and set to something
+        # Discord will not parse -- into something visible in the run summary.
+        id: mention
+        env:
+          RAW: ${{ vars.DISCORD_RELEASE_MENTION }}
+        run: |
+          set -uo pipefail
+          raw="${RAW:-}"
+          if [ -z "$raw" ]; then
+            echo "::warning::DISCORD_RELEASE_MENTION is not set, so this announcement will not ping anyone. To ping the updates role: turn on Discord's Developer Mode (User Settings > Advanced), right-click the role in Server Settings > Roles and Copy Role ID, then add a repository variable DISCORD_RELEASE_MENTION set to <@&THAT_ID>."
+          elif ! printf '%s' "$raw" | grep -qE '^(@here|@everyone|<@&[0-9]+>)$'; then
+            echo "::warning::DISCORD_RELEASE_MENTION is '$raw', which Discord renders as plain text and will not ping. A role must be written <@&ROLE_ID>, with the numeric id -- the role's name will not do. If it is already in that form and still does not notify, check the role is mentionable in Server Settings > Roles."
+          else
+            echo "pinging $raw"
+          fi
+          echo "value=$raw" >> "$GITHUB_OUTPUT"
 
       - name: Post it
         uses: tenedev/releasify-action@bfade1fe75a8a4e8faafbc31c257e44ebfbe8352 # v1.0.1
@@ -198,8 +255,6 @@ jobs:
           username: Cordial
           color: '#5865F2'
           footer: Cordial loads Roblox natively on Linux
-          # Optional, and empty unless somebody sets it: a repository variable
-          # rather than a secret, because a role id is not sensitive and a
-          # variable can be changed without rotating anything. Set
-          # DISCORD_RELEASE_MENTION to `@here` or `<@&ROLE_ID>` to ping.
-          mention: ${{ vars.DISCORD_RELEASE_MENTION }}
+          # Checked and warned about in the step above rather than read raw,
+          # because the way this goes wrong is silent.
+          mention: ${{ steps.mention.outputs.value }}

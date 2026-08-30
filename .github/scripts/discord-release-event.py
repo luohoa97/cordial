@@ -27,6 +27,10 @@ characters against a 1,024 cap -- so the signatures are dropped here (they are
 on the release page, which is where somebody verifying a download is already
 looking) and the remainder is trimmed until it fits.
 
+Takes the release JSON as its first argument and, optionally, the repository's
+release list as its second -- the latter only to work out which tag this one
+follows, for the compare link.
+
 **This file knows how the action formats things, which is coupling, and the
 commit pin is what makes that safe.** The workflow pins
 bfade1fe75a8a4e8faafbc31c257e44ebfbe8352, so the formatting cannot change
@@ -109,6 +113,32 @@ def source_links(assets: list[dict], repo: str, tag: str) -> list[dict]:
     return keep
 
 
+def previous_tag(releases: list[dict], tag: str) -> str | None:
+    """The tag of the release published just before `tag`.
+
+    The list comes back newest-first, so this is the entry after the one being
+    announced. Drafts are skipped -- a draft has no tag anybody can compare
+    against -- and so is the release itself, which is the only entry whose
+    tag_name matches.
+
+    `None` when there is nothing before it, which is a real case exactly once
+    and then never again.
+    """
+    published = [r for r in releases if not r.get("draft") and r.get("tag_name")]
+    for i, r in enumerate(published):
+        if r["tag_name"] == tag:
+            nxt = published[i + 1 :]
+            return nxt[0]["tag_name"] if nxt else None
+    # The release is not in the list -- a very long release history and a
+    # paginated read, or a tag announced before the API caught up. Falling back
+    # to the newest entry that is not this one is better than comparing against
+    # a branch.
+    for r in published:
+        if r["tag_name"] != tag:
+            return r["tag_name"]
+    return None
+
+
 def main() -> int:
     with open(sys.argv[1], encoding="utf-8") as fh:
         release = json.load(fh)
@@ -122,6 +152,33 @@ def main() -> int:
     html_url = release.get("html_url") or f"https://github.com/{repo}/releases/tag/{tag}"
 
     release["assets"] = source_links(release.get("assets") or [], repo, tag)
+
+    # **The compare link, hidden inside `target_commitish`.**
+    #
+    # The action builds its Compare Changes field as
+    # `compare/{target_commitish}...{tag}`, and `target_commitish` is the
+    # branch a release was cut from -- "main" for every release here. So the
+    # link it produced was `compare/main...v0.12.1`, which reads as "what is in
+    # the release that is not on main": nothing, once the tag is an ancestor of
+    # main, and an increasingly misleading list of *reverted* commits after
+    # that. It is never the thing a reader wants, which is what changed between
+    # this release and the last one.
+    #
+    # `target_commitish` is not used for anything else in the action -- checked
+    # against the pinned bundle, it appears once -- so overwriting it with the
+    # previous tag turns that same formula into `compare/v0.12.0...v0.12.1`.
+    # Doing it here rather than asking upstream for a field is what the commit
+    # pin buys: the formula cannot move without somebody editing the pin.
+    # The release history, when the workflow managed to fetch it.
+    if len(sys.argv) > 2:
+        try:
+            with open(sys.argv[2], encoding="utf-8") as fh:
+                history = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            history = []
+        prev = previous_tag(history, tag) if isinstance(history, list) else None
+        if prev:
+            release["target_commitish"] = prev
 
     # What the rest of the embed will cost, so the notes get the remainder
     # rather than a guessed constant. The title is the action's own default
