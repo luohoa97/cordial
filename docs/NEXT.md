@@ -1082,8 +1082,25 @@ itself a bug -- but "the engine was told nothing about the refresh rate" is an
 untested variable sitting right next to a presentation stall, and it is cheap
 to test by forcing a rate.
 
-Neither is a theory yet. They are two things that were true of this run and
-have never been true of a measured one.
+**A third detail, from a second user on 2026-08-30:** *"first i had no
+sensetivity option avaible and the next second it froze"*. The mouse-sensitivity
+row missing from Roblox's own settings menu, and the freeze arriving
+immediately after.
+
+That ordering is worth more than either half. Every measurement in this file
+treats the freeze as presents stopping -- a rendering symptom -- but a settings
+menu that fails to populate its own rows is the engine's Lua app already
+failing to do work, *before* anything stops being drawn. If that holds up it
+moves the search earlier, away from the swapchain and towards whatever the app
+shell is doing when it stops.
+
+Unconfirmed and second-hand, so it is written here as a report and not as an
+observation. The thing to establish is whether the missing row reproduces on
+its own without a freeze following, which would make it an unrelated bug, or
+only ever immediately before one.
+
+Neither of the first two is a theory yet. They are things that were true of
+these runs and have never been true of a measured one.
 
 ## 0. The freeze has a reliable reproduction, 2026-08-24
 
