@@ -1071,6 +1071,49 @@ fn build_general_page(
     }
     group.add(&optimisation);
 
+    // Order has to match PresentMode::index/from_index.
+    //
+    // **Automatic is last, not first, and that is the opposite of the Renderer
+    // row above.** There it is first because it is the recommended value; here
+    // the recommended value is FIFO, and putting the one that means "no
+    // opinion" at the top of a list whose whole point is a power default would
+    // invite people to leave it there. It stays on the list because an absent
+    // `CORDIAL_PRESENT_MODE` is the only state in which a plugin's
+    // `CordialPresentMode` counts, and removing the row's only route to that
+    // state would silently retire a capability ADR-020 documents.
+    let present_model = gtk::StringList::new(&[
+        "Match your display (FIFO)",
+        "Uncapped, no tearing (Mailbox)",
+        "Uncapped, may tear (Immediate)",
+        "Automatic",
+    ]);
+    let present = adw::ComboRow::builder()
+        .title("Frame pacing")
+        // What a user can act on, in the order they need it: what the default
+        // does, what changing it costs, and the one caveat that would
+        // otherwise read as a bug. The mechanics -- that this is
+        // `VkSwapchainCreateInfoKHR::presentMode`, that FIFO is the only mode
+        // the specification guarantees, that a mode the driver does not
+        // advertise leaves the engine's own choice standing -- are in
+        // `shell_config::PresentMode` and in the runtime beside the code.
+        .subtitle(
+            "Matching your display draws one frame per refresh, which is every frame you can              actually see. The uncapped settings draw more and throw the extra ones away, so              they cost battery and fan for no visible frames unless you are chasing input              latency. If your driver does not offer the one you pick, Roblox's own choice is              left alone.",
+        )
+        .model(&present_model)
+        .selected(config.borrow().present_mode.index())
+        .build();
+    present.set_subtitle_lines(5);
+    {
+        let config = config.clone();
+        let config_path = config_path.clone();
+        present.connect_selected_notify(move |row| {
+            config.borrow_mut().present_mode =
+                crate::shell_config::PresentMode::from_index(row.selected());
+            persist(&config, &config_path);
+        });
+    }
+    group.add(&present);
+
     page.add(&group);
     page.add(&build_audio_group(config.clone(), config_path.clone()));
     page.add(&build_performance_group(config, config_path));

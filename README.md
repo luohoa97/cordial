@@ -755,6 +755,7 @@ page at about 27 fps. `--run` is how many seconds to stay up.
 | `CORDIAL_WINDOW_POS=<x>,<y>` | explicit position, overrides the above |
 | `CORDIAL_RESOLUTION=<w>x<h>` | render resolution, default 1280x720 |
 | `CORDIAL_DPI_SCALE=<f>` | UI density Roblox lays out against; 1.0 is a low-density phone |
+| `CORDIAL_PRESENT_MODE=<m>` | frame pacing: `fifo` (the default), `mailbox`, `immediate`, `uncapped`, `off` — Settings has a row for this |
 | `CORDIAL_GAMEPAD=0` | turn controller support off; it is on by default |
 | `CORDIAL_GAMEPAD_TYPE=<n>` | which controller brand Roblox draws glyphs for — see below |
 | `CORDIAL_ANDROID_TRACE=1` | log Android API calls |

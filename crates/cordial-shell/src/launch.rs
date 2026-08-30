@@ -409,6 +409,23 @@ pub fn spawn(
         command.env("CORDIAL_GRAPHICS", &config.graphics);
     }
 
+    // The Present mode row, and **only when it is not Automatic** -- the same
+    // rule as the Renderer row above and for the same reason. An absent
+    // `CORDIAL_PRESENT_MODE` is the one state in which a plugin's
+    // `CordialPresentMode` flag-layer entry counts (ADR-007, ADR-020), so
+    // sending `fifo` unconditionally would have made that capability
+    // unreachable from the shell for everybody while the row still said
+    // Automatic was available.
+    //
+    // Note that this is not the same as "the default sends nothing": FIFO is
+    // the default *selection*, so a fresh install does send `fifo` and does
+    // outrank a plugin. That is deliberate. The power cost of MAILBOX is paid
+    // by the person holding the machine, and a plugin should not be able to
+    // spend it on somebody who never opened this page.
+    if let Some(mode) = config.present_mode.as_env() {
+        command.env("CORDIAL_PRESENT_MODE", mode);
+    }
+
     // The Graphics optimisation row, and **only for the parameters the chosen
     // mode actually asks for** -- exactly the rule the Renderer row above
     // follows, for exactly the same reason. `CordialDeviceProfile` is a

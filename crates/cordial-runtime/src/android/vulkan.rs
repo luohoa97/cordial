@@ -53,7 +53,7 @@
 //! * `vkCreateSwapchainKHR` — the engine never names a present mode it did not
 //!   have to name, and the one it names is `VK_PRESENT_MODE_FIFO_KHR`, which is
 //!   a hard vsync lock. [`vk_create_swapchain_khr`] offers
-//!   `VK_PRESENT_MODE_MAILBOX_KHR` instead when the driver advertises it. See
+//!   `VK_PRESENT_MODE_MAILBOX_KHR` instead when a setting asks for it. See
 //!   that function for the measurement and for why overriding what the engine
 //!   asked for is defensible here and would not be for most calls.
 //!
@@ -834,7 +834,7 @@ pub const PRESENT_MODE_ENV: &str = "CORDIAL_PRESENT_MODE";
 /// this project keeps finding.
 fn parse_present_mode(text: &str) -> Option<PresentModeChoice> {
     match text.trim().to_ascii_lowercase().as_str() {
-        "" | "auto" => Some(PresentModeChoice::Prefer(&[VK_PRESENT_MODE_MAILBOX_KHR])),
+        "" | "auto" => Some(PresentModeChoice::Prefer(&[VK_PRESENT_MODE_FIFO_KHR])),
         "off" | "engine" => Some(PresentModeChoice::Untouched),
         "mailbox" => Some(PresentModeChoice::Prefer(&[VK_PRESENT_MODE_MAILBOX_KHR])),
         "immediate" => Some(PresentModeChoice::Prefer(&[VK_PRESENT_MODE_IMMEDIATE_KHR])),
@@ -871,7 +871,7 @@ fn resolve_present_mode(
     from_env: Option<String>,
     from_flags: Option<(String, String)>,
 ) -> (PresentModeChoice, String) {
-    let auto = PresentModeChoice::Prefer(&[VK_PRESENT_MODE_MAILBOX_KHR]);
+    let auto = PresentModeChoice::Prefer(&[VK_PRESENT_MODE_FIFO_KHR]);
 
     if let Some(text) = from_env.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         match parse_present_mode(text) {
@@ -915,12 +915,19 @@ fn present_mode_from_flags() -> Option<(String, String)> {
 
 /// The present mode this process will ask for, decided once.
 ///
-/// `auto` prefers MAILBOX alone and not IMMEDIATE. Both uncap the frame rate;
-/// only MAILBOX does it without tearing, because it replaces the queued image
-/// rather than scanning out mid-refresh. Somebody who wants the tearing one can
-/// name it — or say `uncapped` and take whichever the driver has — and then it
-/// is their choice rather than a default that quietly made the picture worse to
-/// make a number better.
+/// **`auto` is FIFO, and it used to be MAILBOX.** The old default was argued
+/// from picture quality alone -- MAILBOX uncaps without tearing, so it looked
+/// like the free option -- and that argument left out what uncapping costs.
+/// MAILBOX draws every frame the GPU can produce and throws away the ones the
+/// display never scans out, so on a 60 Hz panel a scene the GPU could render at
+/// 300 fps burns five times the power to show the same sixty frames. On a
+/// handheld that is battery, and on a laptop it is the fan. FIFO is also the
+/// one mode the specification guarantees exists, so it is the only default that
+/// never silently falls back to something else.
+///
+/// Anyone who wants the frames can still name `mailbox` -- or `uncapped`, and
+/// take whichever of the two the driver has -- and then it is a choice rather
+/// than a default that quietly spent their battery to raise a number.
 ///
 /// Decided once and not re-read: the mode is a field of
 /// `VkSwapchainCreateInfoKHR`, so changing it means a new swapchain, and the
@@ -1594,7 +1601,10 @@ extern "C" fn vk_create_android_surface_khr(
 mod tests {
     use super::*;
 
-    const MAILBOX: PresentModeChoice = PresentModeChoice::Prefer(&[VK_PRESENT_MODE_MAILBOX_KHR]);
+    /// What nothing-set resolves to. Named rather than spelled out at each
+    /// use, because the whole point of these tests is that the fallback is one
+    /// decision made in one place.
+    const DEFAULT: PresentModeChoice = PresentModeChoice::Prefer(&[VK_PRESENT_MODE_FIFO_KHR]);
 
     fn resolved(env: Option<&str>, flag: Option<(&str, &str)>) -> PresentModeChoice {
         resolve_present_mode(
@@ -1604,10 +1614,40 @@ mod tests {
         .0
     }
 
+    /// **The default is FIFO, and this test used to assert MAILBOX.**
+    ///
+    /// It was called "the behaviour Cordial has always had", which was true of
+    /// the code and misleading about the machine: before any of this file's
+    /// present-mode handling existed the engine picked FIFO for itself, so the
+    /// MAILBOX default was a change Cordial introduced, not one it preserved.
+    ///
+    /// FIFO is the default now because uncapping costs power. MAILBOX renders
+    /// every frame the GPU can manage and discards the ones the display never
+    /// scans out, which on a handheld is battery and on a laptop is the fan --
+    /// and it is the one mode the specification guarantees, so it can never
+    /// fall back to something else without saying so.
     #[test]
-    fn nothing_set_is_the_behaviour_cordial_has_always_had() {
-        assert_eq!(resolved(None, None), MAILBOX);
-        assert_eq!(resolved(Some(""), None), MAILBOX);
+    fn nothing_set_is_fifo_because_uncapping_costs_power() {
+        assert_eq!(resolved(None, None), DEFAULT);
+        assert_eq!(resolved(Some(""), None), DEFAULT);
+        assert_eq!(
+            resolved(None, None),
+            PresentModeChoice::Prefer(&[VK_PRESENT_MODE_FIFO_KHR]),
+            "spelled out once, so a change to DEFAULT cannot make this test agree with itself"
+        );
+    }
+
+    /// Asking for MAILBOX must still work, or the setting is decoration.
+    #[test]
+    fn the_uncapped_modes_are_still_reachable_by_name() {
+        assert_eq!(
+            resolved(Some("mailbox"), None),
+            PresentModeChoice::Prefer(&[VK_PRESENT_MODE_MAILBOX_KHR])
+        );
+        assert_eq!(
+            resolved(Some("immediate"), None),
+            PresentModeChoice::Prefer(&[VK_PRESENT_MODE_IMMEDIATE_KHR])
+        );
     }
 
     #[test]
@@ -1661,8 +1701,8 @@ mod tests {
     fn a_value_nobody_understands_falls_back_rather_than_guessing() {
         // From either source. A misspelled mode must not silently become the
         // one whose name it is closest to.
-        assert_eq!(resolved(Some("imediate"), None), MAILBOX);
-        assert_eq!(resolved(None, Some(("plugin:p", "as-fast-as-possible"))), MAILBOX);
+        assert_eq!(resolved(Some("imediate"), None), DEFAULT);
+        assert_eq!(resolved(None, Some(("plugin:p", "as-fast-as-possible"))), DEFAULT);
     }
 
     #[test]

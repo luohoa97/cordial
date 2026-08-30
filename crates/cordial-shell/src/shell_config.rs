@@ -364,6 +364,88 @@ impl PointerAcceleration {
     }
 }
 
+/// Which Vulkan present mode the client asks the driver for.
+///
+/// **This is a power setting before it is a frame-rate setting, and the row in
+/// Settings is worded that way.** FIFO queues one image per display refresh, so
+/// the GPU renders exactly the frames that get shown; MAILBOX renders every
+/// frame it can and discards the ones the display never scans out, which on a
+/// 60 Hz panel with headroom to spare is several times the power for the same
+/// sixty visible frames. On a handheld that is battery and on a laptop it is
+/// the fan. IMMEDIATE does not synchronise at all, which is the lowest latency
+/// and the one that tears.
+///
+/// FIFO is the default, and it is also the only mode `VkSurfaceKHR` guarantees
+/// -- the other two may simply not be advertised, in which case
+/// `cordial_runtime::android::vulkan` leaves the engine's own choice alone
+/// rather than substituting something nobody asked for.
+///
+/// **[`PresentMode::Automatic`] is not a fourth mode, it is the absence of an
+/// opinion**, and it is here for the same reason `graphics`'s "automatic" is:
+/// an absent `CORDIAL_PRESENT_MODE` is the one state in which a plugin's
+/// `CordialPresentMode` entry counts (ADR-007, ADR-020). Without it, shipping
+/// this row would have quietly made a documented plugin capability
+/// unreachable for everybody, which is the kind of silent contradiction
+/// AGENTS.md asks to be argued in an ADR rather than introduced in a widget.
+/// Choosing Automatic still lands on FIFO when no plugin says otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PresentMode {
+    /// One image per refresh. The default: no tearing, no wasted frames.
+    Fifo,
+    /// Uncapped without tearing, where the driver advertises it. Costs power.
+    Mailbox,
+    /// Uncapped, unsynchronised, tears. The lowest latency there is.
+    Immediate,
+    /// No opinion, so a plugin may have one. Falls back to FIFO.
+    Automatic,
+}
+
+impl Default for PresentMode {
+    fn default() -> Self {
+        PresentMode::Fifo
+    }
+}
+
+impl PresentMode {
+    /// Order matches the `AdwComboRow` model in `settings.rs`, as
+    /// [`ThrottleWhen::index`] does.
+    pub fn index(self) -> u32 {
+        match self {
+            PresentMode::Fifo => 0,
+            PresentMode::Mailbox => 1,
+            PresentMode::Immediate => 2,
+            PresentMode::Automatic => 3,
+        }
+    }
+
+    pub fn from_index(index: u32) -> Self {
+        match index {
+            0 => PresentMode::Fifo,
+            1 => PresentMode::Mailbox,
+            2 => PresentMode::Immediate,
+            _ => PresentMode::Automatic,
+        }
+    }
+
+    /// The word `cordial_runtime::android::vulkan::parse_present_mode` takes
+    /// out of `CORDIAL_PRESENT_MODE`, or `None` for Automatic.
+    ///
+    /// `None` rather than the string "auto" because the two are not the same
+    /// thing to the runtime's precedence rules -- an absent variable and an
+    /// explicit `auto` both let a plugin through, but only an absent one keeps
+    /// the launcher out of a decision it was not asked to make. Sending
+    /// nothing is the smaller claim.
+    pub fn as_env(self) -> Option<&'static str> {
+        match self {
+            PresentMode::Fifo => Some("fifo"),
+            PresentMode::Mailbox => Some("mailbox"),
+            PresentMode::Immediate => Some("immediate"),
+            PresentMode::Automatic => None,
+        }
+    }
+}
+
 /// Which PipeWire sink Roblox's audio goes to, by stable `node.name`.
 ///
 /// Empty — the default — means *follow the system default sink*, and it has to
@@ -668,6 +750,16 @@ pub struct ShellConfig {
     /// how many threads it asks for, and the two do not interact.
     #[serde(default)]
     pub graphics_optimization_mode: GraphicsOptimization,
+    /// Which present mode the client asks the driver for. See [`PresentMode`],
+    /// which carries the reasoning and the reason FIFO is the default.
+    ///
+    /// `#[serde(default)]`, so a `shell.json` written by an older Cordial --
+    /// which had no such key and got MAILBOX from the runtime -- reads as FIFO
+    /// on the next launch rather than failing to parse. That is a behaviour
+    /// change on upgrade and an intended one: the old default spent power
+    /// nobody chose to spend.
+    #[serde(default)]
+    pub present_mode: PresentMode,
     pub mangohud: bool,
     /// Which audio device Roblox plays through. See [`AudioOutput`], which
     /// carries the whole of the reasoning, including why the stored form is a
@@ -739,6 +831,7 @@ impl Default for ShellConfig {
             pointer_acceleration: PointerAcceleration::default(),
             graphics: "automatic".to_string(),
             graphics_optimization_mode: GraphicsOptimization::default(),
+            present_mode: PresentMode::default(),
             audio_output: AudioOutput::default(),
             mangohud: false,
             fullscreen_accel: default_fullscreen_accel(),
@@ -1044,5 +1137,61 @@ mod tests {
         for scheme in [AppearanceScheme::Light, AppearanceScheme::Dark, AppearanceScheme::System] {
             assert_eq!(AppearanceScheme::from_index(scheme.index()), scheme);
         }
+    }
+
+    /// **A fresh install pins the frame rate to the display, and that is a
+    /// power decision rather than a taste one.**
+    ///
+    /// Pinned because it is easy to reverse by accident: MAILBOX reads as the
+    /// strictly better mode if you only look at the frame counter, and it was
+    /// the default here until somebody asked why the fans were running. The
+    /// cost is invisible in every measurement this project takes -- presents
+    /// per second goes up, and the watts that bought it are not on the chart.
+    #[test]
+    fn a_fresh_install_matches_the_display_rather_than_racing_it() {
+        assert_eq!(ShellConfig::default().present_mode, PresentMode::Fifo);
+        assert_eq!(PresentMode::default().as_env(), Some("fifo"));
+    }
+
+    /// Automatic must send nothing, or ADR-020's plugin path is unreachable.
+    ///
+    /// The runtime's precedence is environment, then flag layers, then FIFO.
+    /// An empty string or the word "auto" would both also fall through today,
+    /// but only sending nothing keeps the launcher out of a decision it was
+    /// not asked to make -- and only `None` is checked by the `if let` in
+    /// `launch.rs`, so this is the assertion that actually holds that branch.
+    #[test]
+    fn automatic_sends_no_variable_at_all() {
+        assert_eq!(PresentMode::Automatic.as_env(), None);
+        for mode in [PresentMode::Fifo, PresentMode::Mailbox, PresentMode::Immediate] {
+            assert!(mode.as_env().is_some(), "{mode:?} must name itself to the client");
+        }
+    }
+
+    /// The combo model's positions and the enum must not drift apart.
+    ///
+    /// Every other enum on this page has the same round trip for the same
+    /// reason: `settings.rs` builds a `gtk::StringList` whose order is the
+    /// only thing tying a row to a value, and nothing in the type system
+    /// notices when somebody inserts an entry in the middle of it.
+    #[test]
+    fn present_mode_survives_the_combo_row_round_trip() {
+        for mode in [
+            PresentMode::Fifo,
+            PresentMode::Mailbox,
+            PresentMode::Immediate,
+            PresentMode::Automatic,
+        ] {
+            assert_eq!(PresentMode::from_index(mode.index()), mode);
+        }
+    }
+
+    /// A `shell.json` from a Cordial that predates this key must still load,
+    /// and must read as FIFO rather than refusing to parse.
+    #[test]
+    fn an_older_config_without_the_key_reads_as_fifo() {
+        let older = r#"{"gamemode":true,"graphics":"automatic","mangohud":false}"#;
+        let parsed: ShellConfig = serde_json::from_str(older).expect("an older shell.json must load");
+        assert_eq!(parsed.present_mode, PresentMode::Fifo);
     }
 }
