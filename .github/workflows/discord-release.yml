@@ -1,0 +1,152 @@
+# Announce a published release in the Cordial Discord.
+#
+# The gap this closes is the one CLAUDE.md already names: "a change that is not
+# in a release has not reached anybody", and a release nobody is told about is
+# the same failure one step later. The Discord server is linked from the top of
+# the README and is where people actually ask for help, so it is where a new
+# version should turn up without anyone remembering to paste a link.
+#
+# This runs `releasify`, which is a third-party action, and the rest of this
+# header is what was checked before handing it a webhook.
+#
+# **It is pinned to a commit, not to `@v1`, and that is not boilerplate here.**
+# `tenedev/releasify-action` is archived, has no stars, and was renamed from
+# `teneplaysofficial` after its README was written. An archived repository
+# cannot receive a fix, but it can still have its tags moved by whoever holds
+# the account, and `@v1` and `@v1.0.1` today both resolve to
+# bfade1fe75a8a4e8faafbc31c257e44ebfbe8352. Pinning the commit is what makes
+# "archived" a stable fact rather than an unmaintained moving target. The
+# licence is MIT and its one source file does exactly one thing: POST a Discord
+# embed. Nothing else in it reads a secret or the network.
+#
+# **Following its own README posts an announcement with nothing in it, and that
+# is measured rather than suspected.** The action reads the release out of
+# `process.env.GITHUB_EVENT`. No such variable exists -- Actions sets
+# `GITHUB_EVENT_PATH`, a path to a file -- and the bundled `dist/index.js`
+# (sha256 0c1b00d8…, confirmed identical at the pinned commit) never mentions
+# `GITHUB_EVENT_PATH` at all. Run against the pinned bundle with its documented
+# workflow and the payload it builds is:
+#
+#     content     : "New Release: `v?.?` in `luohoa97/cordial`"
+#     description : "_No release notes provided._"
+#     author.name : "unknown"
+#     Compare Changes: .../compare/main...v?.?
+#
+# Every field falls through to a default, including a compare link that 404s.
+# Supplying `GITHUB_EVENT` ourselves fixes all of it in the same run -- same
+# bundle, same inputs, tag, notes, author, assets and timestamp all correct.
+# So the `env:` on the final step is load-bearing; deleting it does not break
+# the job, it makes the job succeed at announcing nothing, which is the failure
+# mode this repository's own rule about instruments is about.
+#
+# **That we build the event is also what lets us fit Discord's limits.** An
+# embed description is capped at 4096 characters and the whole embed at 6000.
+# Cordial's release notes are long on purpose -- they carry a what-is-broken
+# section -- and four of the last five were over the cap: v0.12.1 5,376,
+# v0.12.0 6,593, v0.11.0 9,657, v0.9.0 5,064. Discord answers an over-length
+# embed with a 400 and posts nothing, and the action logs the status code
+# without failing the step, so the whole thing would have gone green while the
+# server stayed silent. The trim below happens before the action sees it.
+#
+# No thumbnail or avatar is set. The only icons this project ships are SVG
+# (packaging/icons/hicolor/scalable/), Discord does not render SVG in an embed,
+# and a deliberate default beats a broken image.
+
+name: Announce a release on Discord
+
+on:
+  release:
+    types: [published]
+  # **A hand-run path, because this project has already lost a release to a
+  # workflow that did not fire.** release.yml carries the same escape hatch and
+  # says why: a `paths` filter silently matched nothing on a tag and left
+  # v0.11.0 tagged twice with no build. An announcement that was missed, or that
+  # went out before the release notes were finished, should be re-sendable
+  # without inventing a tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag of an existing release to announce, e.g. v0.12.1'
+        required: true
+        type: string
+
+# Read is enough. Nothing here writes to the repository; the only outbound
+# write is to Discord, and that authority is the webhook, not the token.
+permissions:
+  contents: read
+
+concurrency:
+  group: discord-release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  announce:
+    name: Post the release to Discord
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse to run without a webhook, loudly
+        # **Failing here rather than skipping is deliberate.** A skipped job is
+        # a green tick that says the release was announced when it was not,
+        # which is the same lie as the empty embed above with the evidence
+        # removed. AGENTS.md: never make a stub lie -- reporting failure keeps
+        # the gap where somebody can find it.
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          if [ -z "${WEBHOOK}" ]; then
+            echo "::error::No DISCORD_WEBHOOK secret is set, so this release was not announced." >&2
+            echo "Create a webhook in the Discord channel (Edit Channel > Integrations >" >&2
+            echo "Webhooks > New Webhook, Copy Webhook URL) and add it to this repository as" >&2
+            echo "the DISCORD_WEBHOOK secret. Then re-run this workflow from the Actions tab" >&2
+            echo "with the tag as input; nothing needs re-releasing." >&2
+            exit 1
+          fi
+
+      - name: Check out, for the assembling script below
+        uses: actions/checkout@v4
+        with:
+          # This job reads one Python file and no history. `sparse-checkout`
+          # rather than a full clone because a submodule-less shallow checkout
+          # of this repository is still tens of megabytes to post a chat
+          # message with.
+          fetch-depth: 1
+          submodules: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Assemble the release event, trimmed to Discord's limits
+        id: event
+        # The action wants a whole `release` event object. On a real release we
+        # already have one; on a hand-run we fetch the release by tag, which is
+        # also the check that the tag exists before anything is posted.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FROM_EVENT: ${{ toJSON(github.event.release) }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "${DISPATCH_TAG}" ]; then
+            gh api "repos/${REPO}/releases/tags/${DISPATCH_TAG}" > release.json
+          else
+            printf '%s' "${FROM_EVENT}" > release.json
+          fi
+          python3 .github/scripts/discord-release-event.py release.json >> "$GITHUB_OUTPUT"
+
+      - name: Post it
+        uses: tenedev/releasify-action@bfade1fe75a8a4e8faafbc31c257e44ebfbe8352 # v1.0.1
+        env:
+          # See the header. Without this the action announces `v?.?` with no
+          # notes, and does it successfully.
+          GITHUB_EVENT: ${{ steps.event.outputs.event }}
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK }}
+          username: Cordial
+          color: '#5865F2'
+          footer: Cordial loads Roblox natively on Linux
+          # Optional, and empty unless somebody sets it: a repository variable
+          # rather than a secret, because a role id is not sensitive and a
+          # variable can be changed without rotating anything. Set
+          # DISCORD_RELEASE_MENTION to `@here` or `<@&ROLE_ID>` to ping.
+          mention: ${{ vars.DISCORD_RELEASE_MENTION }}
