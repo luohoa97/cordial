@@ -1320,10 +1320,41 @@ pub fn pass_key_event(down: bool, evdev_code: i32, modifiers: i32) {
     //
     // `KEYS_HELD` is still updated below, before this returns, or a key held
     // when a box took focus would never be recorded as released.
-    if !keys_to_game_while_typing()
+    let would_suppress = !keys_to_game_while_typing()
         && evdev_is_text_key(evdev_code)
-        && cordial_linker_sys::game_activity::focused_textbox().is_some()
-    {
+        && cordial_linker_sys::game_activity::focused_textbox().is_some();
+
+    // **A key whose press reached the engine must have its release reach it
+    // too, whatever happened to the focus in between.**
+    //
+    // This is why "/" took two presses to open chat. Pressing "/" with nothing
+    // focused is what *causes* chat's TextBox to focus, and that focus arrives
+    // asynchronously, from `showKeyboard` on another thread. When it lands
+    // between the key's own down and up -- which it does, on a timing that
+    // varies run to run -- the test above answers "no box" for the down and
+    // "box" for the up. The press went to the engine and the release did not,
+    // so as far as the engine is concerned "/" is still held, and the next
+    // press is a repeat of a key already down rather than a new one.
+    //
+    // Measured live, joined to an experience with `CORDIAL_TRACE_TEXT=1`,
+    // sweeping the gap between down and up:
+    //
+    //     pass_key_event down=true  code=53 mods=0x0 focus=None
+    //     textbox focused handle=140015588225152 current=0 bytes
+    //     pass_key_event suppressed: code=53 down=false
+    //
+    // With the guard off entirely (`CORDIAL_KEYS_TO_GAME_WHILE_TYPING=1`) the
+    // same race happens and nothing is dropped: 6 of 8 gaps opened chat,
+    // against 2 of 8 with it on. So the guard, not engine timing, was the
+    // unreliability.
+    //
+    // Pairing releases to presses keeps Sober #987 intact, which is the whole
+    // reason the guard exists: a key whose *down* was suppressed because a box
+    // already had focus is not recorded here, so its up is suppressed too, and
+    // typing "/" into an open chat box still cannot reopen chat.
+    let release_of_a_forwarded_press = !down && take_forwarded_press(evdev_code);
+
+    if would_suppress && !release_of_a_forwarded_press {
         track_key_held(down, evdev_code);
         if trace_text() {
             eprintln!(
@@ -1332,6 +1363,15 @@ pub fn pass_key_event(down: bool, evdev_code: i32, modifiers: i32) {
             );
         }
         return;
+    }
+    if down {
+        remember_forwarded_press(evdev_code);
+    }
+    if trace_text() && release_of_a_forwarded_press && would_suppress {
+        eprintln!(
+            "[cordial] pass_key_event code={evdev_code} up: forwarded anyway, \
+             its press reached the engine before the box took focus"
+        );
     }
     track_key_held(down, evdev_code);
     let key_code = evdev_code;
@@ -1370,6 +1410,42 @@ pub fn pass_key_event(down: bool, evdev_code: i32, modifiers: i32) {
 /// This exists for [`idle_keepalive`] — see that function for what it is
 /// tracking held keys *for*.
 static KEYS_HELD: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+/// Codes whose press was forwarded to the engine and whose release has not
+/// been yet.
+///
+/// Separate from [`KEYS_HELD`], which cannot answer this: that one is updated
+/// on the suppressed path too, deliberately, so it records a key held when a
+/// box took focus. This one records only what the engine was actually told
+/// about, which is the distinction `pass_key_event` needs to pair a release to
+/// its press.
+///
+/// A `Vec` for the same reason as `KEYS_HELD` -- a handful of entries at most,
+/// a linear scan beats hashing, and `Vec::new()` is a `const fn`.
+static FORWARDED_PRESSES: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+fn remember_forwarded_press(evdev_code: i32) {
+    let mut sent = FORWARDED_PRESSES.lock().unwrap_or_else(|e| e.into_inner());
+    if !sent.contains(&evdev_code) {
+        sent.push(evdev_code);
+    }
+}
+
+/// Whether this code's press was forwarded, consuming the record.
+///
+/// Consuming rather than peeking, so one press releases exactly once. Without
+/// that, a release whose press was suppressed could ride on a stale entry from
+/// an earlier press of the same key and defeat the guard.
+fn take_forwarded_press(evdev_code: i32) -> bool {
+    let mut sent = FORWARDED_PRESSES.lock().unwrap_or_else(|e| e.into_inner());
+    match sent.iter().position(|&c| c == evdev_code) {
+        Some(i) => {
+            sent.remove(i);
+            true
+        }
+        None => false,
+    }
+}
 
 fn track_key_held(down: bool, evdev_code: i32) {
     let mut held = KEYS_HELD.lock().unwrap_or_else(|e| e.into_inner());
@@ -3017,5 +3093,65 @@ mod tests {
         let mut f = TextField::new();
         f.seed("draft".into());
         assert_eq!((f.text.clone(), f.caret as i32), ("draft".to_string(), 5));
+    }
+
+    // Distinct codes per test on purpose: `FORWARDED_PRESSES` is a process
+    // static and these run in parallel in one binary, so sharing a code between
+    // two tests would make them flaky in a way that looks like a real bug.
+
+    /// The pairing itself. A release forwards only if its own press did.
+    #[test]
+    fn a_release_is_paired_to_the_press_that_was_forwarded() {
+        let code = 9001;
+        assert!(!take_forwarded_press(code), "nothing was pressed yet");
+        remember_forwarded_press(code);
+        assert!(take_forwarded_press(code), "its press was forwarded");
+    }
+
+    /// Consuming, not peeking.
+    ///
+    /// If the record survived, a release whose press was suppressed could ride
+    /// on a stale entry from an earlier press of the same key, which is exactly
+    /// the Sober #987 reopening this guard exists to stop.
+    #[test]
+    fn one_press_releases_exactly_once() {
+        let code = 9002;
+        remember_forwarded_press(code);
+        assert!(take_forwarded_press(code));
+        assert!(!take_forwarded_press(code), "the record must not survive its release");
+    }
+
+    /// A key held down does not get two records, or the second release would
+    /// also be treated as paired.
+    #[test]
+    fn repeated_presses_of_a_held_key_record_once() {
+        let code = 9003;
+        remember_forwarded_press(code);
+        remember_forwarded_press(code);
+        assert!(take_forwarded_press(code));
+        assert!(!take_forwarded_press(code));
+    }
+
+    /// Keys are tracked independently, so releasing one does not free another.
+    #[test]
+    fn one_keys_release_does_not_answer_for_another(){
+        let (a, b) = (9004, 9005);
+        remember_forwarded_press(a);
+        assert!(!take_forwarded_press(b), "b was never pressed");
+        assert!(take_forwarded_press(a));
+    }
+
+    /// The suppression test itself, which decides whether the guard applies at
+    /// all. "/" is 53 and has to be in it, because that is the key the whole
+    /// bug is about; Escape and Enter must not be, because they are how
+    /// somebody leaves a box.
+    #[test]
+    fn the_guard_covers_character_keys_and_not_the_ways_out_of_a_box() {
+        assert!(evdev_is_text_key(53), "slash");
+        assert!(evdev_is_text_key(57), "space");
+        assert!(evdev_is_text_key(30), "a");
+        assert!(!evdev_is_text_key(1), "escape");
+        assert!(!evdev_is_text_key(28), "enter");
+        assert!(!evdev_is_text_key(15), "tab");
     }
 }
