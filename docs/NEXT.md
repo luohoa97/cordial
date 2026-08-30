@@ -21,6 +21,40 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## Open: two build-shape traps that cost a session each, 2026-08-30
+
+**The Discord Presence plugin does not appear as a built-in under `just dev --in
+toolbox`.** Reported from use, not yet diagnosed. Built-in plugins are not
+embedded in the binary -- there is no `include_dir!` or `include_str!` anywhere
+in `cordial-plugins` -- so they are read from a directory on disk, and a
+development build that has not had `plugins/` installed beside it will list
+none. Every shipping package installs them, so this is a developer-environment
+trap rather than a user-facing bug, which is exactly why it will keep being
+rediscovered.
+
+**The plain host build has no web view at all, and it fails silently in the
+shape this file keeps warning about.** `just client` and `just dev` on the bare
+host build without `--features cordial-shell/webview,cordial-runtime/webview`,
+so `dialog_in_front`, `webview_dialog_opened`/`closed` and the `sync_pointer_lock`
+gate are dead code in that binary: every `openWindow` falls through to the
+external browser. The client says so at startup -- `webview: built without the
+'webview' feature` -- and `ldd` shows no `libwebkitgtk`. Only the `--in toolbox`
+and `--in distrobox` builds, and every shipping package, link it. An agent
+testing the dialog gate on a host build would be measuring nothing and would
+have no way to tell.
+
+**And the development MCP cannot test that gate either, even on the right
+build.** `cordial_click`/`cordial_move` go through `devctl.rs` to
+`android::input::script_move`/`script_button`, which call `pass_mouse_move`/
+`pass_mouse_button` directly. The `dialog_in_front()` check and the
+`CORDIAL_TRACE_MOUSE=1` "click withheld" line live only inside the real
+`wl_pointer` listener callbacks, which fire exclusively from genuine compositor
+seat events. A devctl click therefore always reaches the engine whether or not a
+dialog is up, and observing that demonstrates nothing about the bug. Testing it
+needs a real `wl_pointer` button event -- a human, or a virtual device inside a
+nested compositor per `tools/build-wl-holders.sh`. This is the same class of
+error as measuring a frame rate with present counts.
+
 ## Open: the corners bleed through, and it is the opaque region again, 2026-08-28
 
 Reported with a screenshot: at the four corners of the window, **the desktop
