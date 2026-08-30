@@ -198,8 +198,7 @@ install -Dpm 0755 target/release/cordial-shell %{buildroot}%{_bindir}/cordial-sh
 ln -sf cordial-shell %{buildroot}%{_bindir}/cordial
 install -Dpm 0755 target/release/cordial-run   %{buildroot}%{_bindir}/cordial-run
 
-# The square icons under packaging/icons/hicolor/, not the 680x480 banner at
-# packaging/icons/io.github.luohoa97.Cordial.svg. Both of them: Frostbite is the
+# The square icons under packaging/icons/hicolor/. Both of them: Frostbite is the
 # twice-a-year name in crates/cordial-shell/src/branding.rs, and a missing one
 # is a blank icon in the task switcher on the one day nobody is watching for it.
 # A test in that file asserts both exist and are square.

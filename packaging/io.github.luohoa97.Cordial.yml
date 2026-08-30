@@ -284,9 +284,11 @@ modules:
       # through `command:` above; this is for `flatpak run --command=cordial`.
       - ln -sf cordial-shell /app/bin/cordial
       - install -Dm755 target/release/cordial-run /app/bin/cordial-run
-      # The square icon, not packaging/icons/io.github.luohoa97.Cordial.svg, which is
-      # the 680x480 README banner. flatpak-validate-icon rejects a non-square
-      # icon and the export fails rather than warns.
+      # flatpak-validate-icon rejects a non-square icon and the export fails
+      # rather than warns. The 680x480 README banners used to sit in this same
+      # directory under these same two filenames, which is how PR #22 came to
+      # disable the Frostbite icon to fix an export failure that had already
+      # been fixed; they are packaging/banner*.svg now.
       - install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg
           /app/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg
       # Frostbite, the twice-a-year joke in `crates/cordial-shell/src/branding.rs`.
