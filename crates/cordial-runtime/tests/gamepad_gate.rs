@@ -10,7 +10,7 @@
 //!
 //! `crates/cordial-runtime/src/android/gamepad.rs` has five tests and every one
 //! of them is about decoding a joydev packet or a mapping table. None touches
-//! the gate, the default-off switch, or the type argument.
+//! the gate, the on-unless-switched-off default, or the type argument.
 //!
 //! **One test for the gate, and it is one on purpose.** The six pointers live in
 //! process-wide `AtomicPtr` statics, so every test in this binary shares them,
@@ -103,7 +103,10 @@ fn poll_in_child(vars: &[(&str, &str)]) -> String {
     cmd.env("CORDIAL_GAMEPAD_POLL_CHILD", "1");
     // Cleared explicitly rather than assumed absent: this binary inherits the
     // developer's environment, and a `CORDIAL_GAMEPAD` they set for their own
-    // run would otherwise turn the off-by-default case into a false pass.
+    // run would otherwise decide both arms below. It mattered in both
+    // directions: under the old off-by-default contract an inherited `=1` made
+    // the off case a false pass, and now an inherited `=0` would make the
+    // on case a false failure.
     cmd.env_remove("CORDIAL_GAMEPAD");
     cmd.env_remove("CORDIAL_GAMEPAD_PROBE");
     cmd.env_remove("CORDIAL_GAMEPAD_TYPE");
@@ -114,32 +117,43 @@ fn poll_in_child(vars: &[(&str, &str)]) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// Gamepad support must be off unless asked for, and the probe must obey it.
+/// Gamepad support runs unless it is switched off, and the switch must work.
 ///
-/// The failure this exists to catch: someone makes the host poll unconditional
-/// -- it is one line in `looper::pump` and looks harmless -- and every client
-/// starts reading `/dev/input/js*` and announcing pads with a `gamepadType`
-/// nobody has verified. The engine would then draw controller glyphs at users
-/// who have no controller, from an ordinal that is still a guess.
+/// **This asserted the opposite until 0.13.0, and the reason it changed is
+/// worth keeping rather than deleting.** The old contract was off-by-default,
+/// on the argument that announcing a pad with an unverified `gamepadType`
+/// would "draw controller glyphs at users who have no controller, from an
+/// ordinal that is still a guess". The ordinal is still a guess. What that
+/// argument left out is the cost: no controller support of any kind, on a
+/// runtime whose users include handhelds. Sober #584 and #1810 are the same
+/// wrong-ordinal symptom on the neighbouring runtime and neither reports a
+/// button that stopped working -- the glyphs are wrong and the pad works.
 ///
-/// The control is the same child with the same probe and the switch off. Without
-/// it this asserts only that setting a variable does something, not that leaving
-/// it unset does nothing, which is the half that matters.
+/// So the failure this now exists to catch is the mirror image: someone makes
+/// the host poll unconditional and `CORDIAL_GAMEPAD=0` stops turning it off,
+/// leaving a user who is hitting a real problem -- a pad that steals focus, a
+/// joydev node that misbehaves -- with no way out and a documented switch that
+/// lies.
+///
+/// The control is the same child with the same probe and the switch set to 0.
+/// Without it this asserts only that leaving a variable unset does something,
+/// not that setting it stops it, which is the half a user depends on.
 #[test]
-fn the_host_poll_stays_off_until_asked() {
+fn the_host_poll_runs_unless_switched_off() {
     const ANNOUNCE: &str = "announcing a synthetic pad";
 
-    let off = poll_in_child(&[("CORDIAL_GAMEPAD_PROBE", "1")]);
-    assert!(
-        !off.contains(ANNOUNCE),
-        "the probe ran with CORDIAL_GAMEPAD unset; off-by-default is not holding.\nstderr: {off}"
-    );
-
-    let on = poll_in_child(&[("CORDIAL_GAMEPAD", "1"), ("CORDIAL_GAMEPAD_PROBE", "1")]);
+    let on = poll_in_child(&[("CORDIAL_GAMEPAD_PROBE", "1")]);
     assert!(
         on.contains(ANNOUNCE),
-        "the probe did not announce with both switches on, so the arm above proves \
-         nothing -- a silent no-op passes the off case for free.\nstderr: {on}"
+        "the probe did not run with CORDIAL_GAMEPAD unset; on-by-default is not \
+         holding.\nstderr: {on}"
+    );
+
+    let off = poll_in_child(&[("CORDIAL_GAMEPAD", "0"), ("CORDIAL_GAMEPAD_PROBE", "1")]);
+    assert!(
+        !off.contains(ANNOUNCE),
+        "the probe still announced with CORDIAL_GAMEPAD=0, so the off switch does \
+         not work and the arm above proves nothing.\nstderr: {off}"
     );
 }
 
