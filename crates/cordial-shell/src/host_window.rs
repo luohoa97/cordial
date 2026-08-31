@@ -274,6 +274,12 @@ pub struct HostWindow {
     /// rebuilt when the *editor* moves, without waiting for the next geometry
     /// sync to supply the canvas again.
     canvas_rect: std::cell::Cell<Option<(i32, i32, i32, i32)>>,
+    /// Whether a web-view dialog is up, so [`input_region`] stops punching the
+    /// canvas out of what GTK will accept clicks for.
+    ///
+    /// Separate from `canvas_see_through`, which both the editor and a dialog
+    /// set: those two want opposite answers here. See `input_region`.
+    dialog_up: std::cell::Cell<bool>,
 }
 
 /// The Android editor rectangle Roblox asks the platform to paint over its
@@ -633,6 +639,7 @@ impl HostWindow {
             editor_rect: std::cell::Cell::new(None),
             canvas_see_through: std::cell::Cell::new(false),
             canvas_rect: std::cell::Cell::new(None),
+            dialog_up: std::cell::Cell::new(false),
             editor_seeding,
             editor_changed,
             editor_font_family: std::cell::RefCell::new(None),
@@ -951,6 +958,18 @@ impl HostWindow {
     /// painting, which is the invisible window 5a295e3 had to fix. Tying it to
     /// the lowered state means it is only ever transparent while something is
     /// known to be painting underneath.
+    /// A web-view dialog opened or closed.
+    ///
+    /// Rewrites the input region, because a modal wants the whole window and
+    /// the ordinary layout gives the canvas rectangle to the engine. See
+    /// [`input_region`] for why this is a different answer from the editor's.
+    pub fn set_dialog_up(&self, up: bool) {
+        if self.dialog_up.replace(up) == up {
+            return;
+        }
+        self.refresh_input_region();
+    }
+
     pub fn set_canvas_see_through(&self, on: bool) {
         if on {
             // **Every layer, not just the window.** Making the toplevel
@@ -991,6 +1010,7 @@ impl HostWindow {
             (surface.width(), surface.height()),
             canvas,
             self.editor_rect.get(),
+            self.dialog_up.get(),
         );
         surface.set_input_region(Some(&region));
     }
@@ -1303,11 +1323,36 @@ fn input_region(
     surface: (i32, i32),
     content: (i32, i32, i32, i32),
     editor: Option<(i32, i32, i32, i32)>,
+    modal: bool,
 ) -> gtk::cairo::Region {
     let (cx, cy, cw, ch) = content;
     let w = surface.0.max(cx + cw);
     let h = surface.1.max(cy + ch);
     let region = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(0, 0, w, h));
+    // **A web-view dialog wants the whole window, so the hole is not punched
+    // at all.** An `AdwDialog` draws inside this toplevel and is centred over
+    // the canvas, so with the usual cut-out its buttons sit in the rectangle
+    // that belongs to the engine -- and every click on them goes to the
+    // subsurface instead of to GTK. Reported as "I cant click on the webview's
+    // items".
+    //
+    // Not the same answer as the editor below, and the difference is the point.
+    // The editor is a widget on one TextBox and the rest of the canvas is still
+    // the game's, so it punches itself back in as a rectangle. A dialog is
+    // modal: nothing behind it should take a click while it is up, which is
+    // also exactly what `wayland::dialog_in_front` already enforces on the
+    // forwarding side. Claiming the whole surface says the same thing to the
+    // compositor.
+    //
+    // **The other way round was tried first and was much worse.** 07564e2 gave
+    // the *canvas* an empty input region instead, which does not hand the click
+    // to the parent -- it says no surface here wants it, and with this hole
+    // already punched in the parent nothing else claimed it either, so clicks
+    // fell through Cordial's window and raised whatever was behind. Reverted in
+    // 73c74eb.
+    if modal {
+        return region;
+    }
     // Subtract rather than build up from the chrome: the header bar is not the
     // only thing outside the canvas, and enumerating the rest by hand would go
     // stale the first time the layout changes.
@@ -1427,10 +1472,42 @@ mod tests {
         assert_eq!(vertical_placement(2, 10, 22, 40), (10, 22));
     }
 
+    /// **While a dialog is up the whole window is ours to click.**
+    ///
+    /// The `AdwDialog` is drawn inside this toplevel and centred over the
+    /// canvas, so with the ordinary cut-out its buttons sit in the rectangle
+    /// that belongs to the engine and every click on them misses GTK. This is
+    /// the assertion that "I cant click on the webview's items" is fixed.
+    #[test]
+    fn a_dialog_takes_the_whole_window_rather_than_a_hole() {
+        let (surface, content, editor) = layout();
+        let region = input_region(surface, content, Some(editor), true);
+        let (cx, cy, cw, ch) = content;
+        // The middle of the canvas, which is where a centred dialog's buttons
+        // land, and which is emphatically not clickable without this.
+        assert!(region.contains_point(cx + cw / 2, cy + ch / 2));
+        assert!(region.contains_point(cx, cy));
+        assert!(region.contains_point(1, 1), "the chrome stays ours too");
+    }
+
+    /// And the moment it closes, the canvas goes back to the engine.
+    ///
+    /// The failure this catches is a modal that leaves the region claimed:
+    /// every click afterwards would be swallowed by GTK and the game would
+    /// stop responding to the mouse entirely, which is far worse than the bug
+    /// being fixed and would look nothing like it.
+    #[test]
+    fn closing_a_dialog_gives_the_canvas_back() {
+        let (surface, content, editor) = layout();
+        let region = input_region(surface, content, Some(editor), false);
+        let (cx, cy, cw, ch) = content;
+        assert!(!region.contains_point(cx + cw / 2, cy + ch / 2));
+    }
+
     #[test]
     fn the_canvas_is_not_ours_to_click() {
         let (surface, content, _) = layout();
-        let r = input_region(surface, content, None);
+        let r = input_region(surface, content, None, false);
         assert!(r.contains_point(10, 10), "the header bar still takes input");
         assert!(!r.contains_point(640, 400), "the canvas does not");
     }
@@ -1444,7 +1521,7 @@ mod tests {
         let (surface, content, editor) = layout();
         let (cx, cy, _, _) = content;
         let (ex, ey, ew, eh) = editor;
-        let r = input_region(surface, content, Some(editor));
+        let r = input_region(surface, content, Some(editor), false);
 
         for (dx, dy, what) in [(1, 1, "top left"), (ew / 2, eh / 2, "middle"), (ew - 2, eh - 2, "bottom right")] {
             assert!(
@@ -1474,7 +1551,7 @@ mod tests {
         // region that stopped at the stale width would clip the subtraction and
         // leave part of the canvas taking input.
         let (_, content, _) = layout();
-        let r = input_region((320, 200), content, None);
+        let r = input_region((320, 200), content, None, false);
         assert!(!r.contains_point(1200, 700), "still excluded, not merely off the end");
         assert!(r.contains_point(10, 10));
     }

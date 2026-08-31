@@ -2138,6 +2138,19 @@ impl WaylandWindow {
         {
             self.set_engine_stacking(false);
         }
+        // **Claim the whole window for GTK while the dialog is up.**
+        //
+        // The parent's input region normally has the canvas rectangle punched
+        // out of it, which is what lets a click over the game reach the engine
+        // at all -- `host_window::refresh_input_region` has the measurement.
+        // An `AdwDialog` draws inside that same toplevel and is centred over
+        // the canvas, so without this its buttons sit in the engine's
+        // rectangle and every click on them misses GTK entirely. That is the
+        // reported "I cant click on the webview's items".
+        //
+        // Unconditional rather than gated on the 0-to-1 edge, and cheap: the
+        // setter returns immediately when the flag has not changed.
+        self.host.0.set_dialog_up(true);
         // A `relative_motion` sample can already be sitting in
         // `PENDING_UNLOCKED_DELTA`, waiting for the `wl_pointer.motion` that
         // drains it, at the exact moment this runs -- this is invoked from a
@@ -2166,6 +2179,12 @@ impl WaylandWindow {
             && !self.text_overlay_visible.load(Ordering::SeqCst)
         {
             self.set_engine_stacking(true);
+        }
+        // Only on the last close. With two dialogs up, closing one must leave
+        // the window claimed for the other -- the same edge the restack above
+        // uses, and for the same reason.
+        if self.open_web_view_dialogs.load(Ordering::SeqCst) == 0 {
+            self.host.0.set_dialog_up(false);
         }
         // Nothing should have accumulated while a dialog was in front — see
         // `webview_dialog_opened` — but a last dialog closing is the same
