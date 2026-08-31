@@ -111,8 +111,69 @@ fn shared() -> &'static Shared {
 /// the client working without a plugin is a much better outcome than a plugin
 /// stopping the client.
 pub fn start_all() -> usize {
-    let root = manifest::plugin_root();
-    let found = manifest::discover(&root);
+    // **Both roots, and the system one first.** This read only
+    // `manifest::plugin_root()` -- the *user* directory -- so every built-in
+    // plugin was discovered by the settings window, listed, granted, switched
+    // on, and then never started by anything. Reported as Discord Rich
+    // Presence not working: `discord-presence` ships built-in, so it had never
+    // run once. The profile's `plugin.log` had lines from `fps-flex` and from
+    // nothing else, because `fps-flex` was the one plugin with a copy in the
+    // user directory.
+    //
+    // It is also the real form of "built in plugins cant be tested ... it has
+    // to be packaged": packaging did not help either. They were never started
+    // from anywhere.
+    //
+    // System first, so a user directory cannot take a first-party id --
+    // `flags::collect` already reads the two in this order for that reason,
+    // and `flags::tests::a_user_plugin_cannot_shadow_a_first_party_id` pins
+    // it. Cordial ships the web-view interceptor as a plugin; a same-id
+    // directory in a writable location must not become it.
+    let mut found = manifest::discover(&manifest::system_plugin_root());
+    let builtin = found.len();
+    for plugin in manifest::discover(&manifest::plugin_root()) {
+        let id = plugin.manifest.id.clone();
+        if found.iter().any(|p| p.manifest.id == id) {
+            println!(
+                "  plugin {id}: a built-in already has this id, so the copy at {} is not used",
+                plugin.dir.display()
+            );
+            continue;
+        }
+        found.push(plugin);
+    }
+    if builtin > 0 {
+        println!("  plugins: {builtin} built-in, {} installed", found.len() - builtin);
+    }
+    // Folders named by Developer mode, each one a plugin being worked on where
+    // it lives rather than copied into the root first. Appended rather than
+    // merged into `discover`, which answers "what is under this root" and has
+    // callers that rely on that -- see `manifest::discover_unpacked`.
+    //
+    // **Deduplicated here, explicitly.** `discover`'s own `seen_ids` is
+    // internal to one call, so appending to its result does not go through it
+    // -- an unpacked folder claiming an id that is also installed would put
+    // two plugins with one id in this list, and `start_all` would spawn both.
+    // Two processes under one id share a grant set, a writer slot and an event
+    // namespace, which is exactly the collision `discover` refuses within a
+    // root for the reasons its own doc comment sets out.
+    //
+    // The installed one wins, matching `discover`'s first-in-sorted-order
+    // rule, and the loser is named rather than dropped in silence: a developer
+    // whose unpacked copy is being ignored needs to be told why, and it is
+    // usually because they have also installed it.
+    for plugin in manifest::discover_unpacked() {
+        let id = plugin.manifest.id.clone();
+        if found.iter().any(|p| p.manifest.id == id) {
+            println!(
+                "  plugin {id}: an installed plugin already has this id, so the unpacked copy \
+                 at {} is not used",
+                plugin.dir.display()
+            );
+            continue;
+        }
+        found.push(plugin);
+    }
     if found.is_empty() {
         return 0;
     }

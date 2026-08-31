@@ -212,6 +212,65 @@ impl Plugin {
 }
 
 /// Where plugins are installed.
+/// Plugin folders loaded from wherever they happen to be, for development.
+///
+/// **Each entry is one plugin's own folder -- the one with `plugin.json` in it
+/// -- and not a folder that plugins are kept in.** That distinction is the
+/// whole feature. `plugin_root` and `system_plugin_dir` below are both
+/// *collections*: Cordial reads every subdirectory and each one is a plugin.
+/// This is the other thing entirely, and it is what "load unpacked" means
+/// elsewhere -- you point at the thing you are working on, in the checkout
+/// where you are working on it, and it loads.
+///
+/// Getting that backwards would mean somebody has to make a containing
+/// directory to hold their one plugin, and put their working copy inside it,
+/// which is the packaging step this exists to remove.
+///
+/// `CORDIAL_UNPACKED_PLUGINS`, colon-separated in the shape of `PATH`. The
+/// launcher sets it from Developer mode; nothing sets it otherwise, so an
+/// ordinary run pays one `var_os` miss.
+///
+/// Nothing here is trusted more for having been named explicitly. A folder
+/// listed here still parses through [`parse`], still starts with no grants at
+/// all (ADR-003's default deny), and still has to be granted whatever it asks
+/// for. The only step skipped is the copy into the plugin root -- not consent,
+/// not the manifest checks, not the id rules.
+pub fn unpacked_dirs() -> Vec<PathBuf> {
+    let Some(raw) = std::env::var_os("CORDIAL_UNPACKED_PLUGINS") else {
+        return Vec::new();
+    };
+    std::env::split_paths(&raw).filter(|p| !p.as_os_str().is_empty()).collect()
+}
+
+/// Parse the plugin in each of [`unpacked_dirs`], skipping what does not.
+///
+/// Separate from [`discover`] rather than folded into it, because they answer
+/// different questions: `discover` answers "what is under this root", and
+/// every caller -- the tests, `marketplace::installed` -- relies on the answer
+/// being confined to the root it passed. Returning folders from elsewhere
+/// would make all of them quietly wrong.
+///
+/// A folder that does not parse is reported and skipped, as in `discover`.
+/// Being named by a developer is a reason to say so loudly, not a reason to
+/// load something broken.
+pub fn discover_unpacked() -> Vec<Plugin> {
+    let mut found = Vec::new();
+    for dir in unpacked_dirs() {
+        let path = dir.join("plugin.json");
+        match std::fs::read_to_string(&path) {
+            Err(e) => println!("  plugin: unpacked {} could not be read ({e})", path.display()),
+            Ok(text) => match parse(&text, &dir) {
+                Ok(p) => {
+                    println!("  plugin {}: loaded unpacked from {}", p.manifest.id, dir.display());
+                    found.push(p);
+                }
+                Err(e) => println!("  plugin: unpacked {} is unusable ({e})", path.display()),
+            },
+        }
+    }
+    found
+}
+
 pub fn plugin_root() -> PathBuf {
     std::env::var_os("CORDIAL_PLUGIN_DIR")
         .map(PathBuf::from)
