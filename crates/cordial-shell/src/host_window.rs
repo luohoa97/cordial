@@ -256,6 +256,10 @@ pub struct HostWindow {
     /// Where the editor is in surface coordinates, so the input-region punch
     /// can hand that one rectangle back to GTK. `None` when nothing is focused.
     editor_rect: std::cell::Cell<Option<(i32, i32, i32, i32)>>,
+    /// Where canvas pointer events go under [`gtk_input`]. Installed by the
+    /// runtime, which owns the engine's input entry points -- `cordial-runtime`
+    /// depends on this crate, so the arrow cannot point the other way.
+    canvas_pointer: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(CanvasPointer)>>>>,
     /// Set while Cordial is seeding the widget from the engine's text, so the
     /// change signal does not echo Cordial's own write straight back at it.
     editor_seeding: std::rc::Rc<std::cell::Cell<bool>>,
@@ -426,6 +430,49 @@ fn pango_weight(open_type: i32) -> gtk::pango::Weight {
 /// `CORDIAL_SHOW_CURSOR=1` restores the host cursor, which is the debugging
 /// switch this has always had; it now works by not overriding the widget
 /// rather than by skipping a Wayland request, and so covers the editor too.
+/// `CORDIAL_GTK_INPUT=1` — route pointer input through GTK instead of through
+/// Cordial's own `wl_pointer`.
+///
+/// **A spike behind a switch, which is what [ADR-029] asks for.** The overlay
+/// system today works by moving three pieces of compositor state whenever
+/// something is drawn over the engine: the subsurface's stacking, GTK's
+/// background, and a hole punched in the parent's input region. Every one of
+/// those has caused a shipped bug, and the hole causes two that are still
+/// open -- during an animation it sits where the editor *was*, so a click
+/// aimed at the game lands in it and never blurs the box.
+///
+/// With this on, none of it moves. The canvas stays below, the background
+/// stays transparent over it, the input region is the whole window always, and
+/// the canvas widget forwards pointer events to the engine through
+/// [`HostWindow::connect_canvas_pointer`]. GTK's own hit testing then decides
+/// what reaches the game, so an overlay is an ordinary widget and a stale
+/// rectangle cannot block anything.
+///
+/// Off by default until it has been run against the existing path in the same
+/// session. ADR-029 names that as the condition, and this file is a list of
+/// input changes shipped on a plausible reading that turned out wrong.
+///
+/// [ADR-029]: ../../../docs/adr/ADR-029-overlays-are-three-decisions.md
+pub fn gtk_input() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("CORDIAL_GTK_INPUT").is_some())
+}
+
+/// A pointer event on the engine's canvas, in canvas-local coordinates.
+///
+/// Canvas-local because that is what GTK hands a controller on the canvas
+/// widget, and it is also what the engine wants -- the header bar offset that
+/// `wl_pointer` coordinates need subtracting is simply not present here, which
+/// removes one of the two coordinate spaces `input_region`'s doc comment
+/// describes going wrong.
+#[derive(Debug, Clone, Copy)]
+pub enum CanvasPointer {
+    Motion { x: f64, y: f64 },
+    /// `button` is GDK's numbering: 1 primary, 2 middle, 3 secondary.
+    Button { button: u32, press: bool, x: f64, y: f64 },
+    Scroll { dx: f64, dy: f64 },
+}
+
 fn canvas_cursor() -> Option<&'static str> {
     if std::env::var_os("CORDIAL_SHOW_CURSOR").is_some() {
         None
@@ -556,6 +603,64 @@ impl HostWindow {
     }
 
     pub fn new(title: &str, width: i32, height: i32, content: &impl IsA<gtk::Widget>) -> Self {
+        // **The canvas forwards pointer input to the engine, under `gtk_input`.**
+        //
+        // Controllers are attached unconditionally and are inert on the old
+        // path, which is a property of the design rather than an accident: with
+        // the input hole punched, the compositor gives pointer focus over the
+        // canvas to the engine's subsurface, GTK never sees the pointer there,
+        // and these never fire. Flipping the flag stops punching the hole,
+        // focus moves to the parent, and forwarding moves from
+        // `wayland::pointer_*` to here with no second gate to keep in step.
+        //
+        // The runtime installs the sink; `cordial-runtime` depends on this
+        // crate, so the call cannot go the other way. Same shape as
+        // `connect_editor_changed`.
+        let canvas_pointer: std::rc::Rc<
+            std::cell::RefCell<Option<Box<dyn Fn(CanvasPointer)>>>,
+        > = std::rc::Rc::new(std::cell::RefCell::new(None));
+        {
+            let motion = gtk::EventControllerMotion::new();
+            let sink = canvas_pointer.clone();
+            motion.connect_motion(move |_, x, y| {
+                if let Some(f) = sink.borrow().as_ref() {
+                    f(CanvasPointer::Motion { x, y });
+                }
+            });
+            content.as_ref().add_controller(motion);
+
+            let click = gtk::GestureClick::new();
+            // Every button, not just the primary one. Roblox turns the camera
+            // on a right drag and pans on the middle, and `GtkGestureClick`
+            // reports only button 1 unless told otherwise.
+            click.set_button(0);
+            let down = canvas_pointer.clone();
+            click.connect_pressed(move |g, _, x, y| {
+                if let Some(f) = down.borrow().as_ref() {
+                    f(CanvasPointer::Button { button: g.current_button(), press: true, x, y });
+                }
+            });
+            let up = canvas_pointer.clone();
+            click.connect_released(move |g, _, x, y| {
+                if let Some(f) = up.borrow().as_ref() {
+                    f(CanvasPointer::Button { button: g.current_button(), press: false, x, y });
+                }
+            });
+            content.as_ref().add_controller(click);
+
+            let scroll = gtk::EventControllerScroll::new(
+                gtk::EventControllerScrollFlags::BOTH_AXES,
+            );
+            let wheel = canvas_pointer.clone();
+            scroll.connect_scroll(move |_, dx, dy| {
+                if let Some(f) = wheel.borrow().as_ref() {
+                    f(CanvasPointer::Scroll { dx, dy });
+                }
+                glib::Propagation::Stop
+            });
+            content.as_ref().add_controller(scroll);
+        }
+
         let header = adw::HeaderBar::new();
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&header);
@@ -685,6 +790,7 @@ impl HostWindow {
             editor,
             editor_css,
             editor_rect: std::cell::Cell::new(None),
+            canvas_pointer: canvas_pointer.clone(),
             canvas_see_through: std::cell::Cell::new(false),
             canvas_rect: std::cell::Cell::new(None),
             dialog_up: std::cell::Cell::new(false),
@@ -731,6 +837,11 @@ impl HostWindow {
     /// Text and caret arrive together and never separately, because the engine
     /// is told them together and a caret reported for text the engine has not
     /// seen yet is a caret past the end of the string it holds.
+    /// Where canvas pointer events go. See [`gtk_input`].
+    pub fn connect_canvas_pointer<F: Fn(CanvasPointer) + 'static>(&self, f: F) {
+        *self.canvas_pointer.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn connect_editor_changed<F: Fn(&str, i32) + 'static>(&self, f: F) {
         *self.editor_changed.borrow_mut() = Some(Box::new(f));
     }
@@ -1019,6 +1130,11 @@ impl HostWindow {
     }
 
     pub fn set_canvas_see_through(&self, on: bool) {
+        // Under `gtk_input` the canvas lives below the parent permanently, so
+        // the background is transparent permanently too. Ignoring the
+        // caller keeps the one rule in one place rather than making every
+        // caller remember the flag.
+        let on = on || gtk_input();
         if on {
             // **Every layer, not just the window.** Making the toplevel
             // transparent is not enough: `AdwToolbarView` sits between the
@@ -1058,7 +1174,14 @@ impl HostWindow {
             (surface.width(), surface.height()),
             canvas,
             self.editor_rect.get(),
-            self.dialog_up.get(),
+            // **Under `gtk_input` the hole is never punched.** That is the
+            // whole change: with the window entirely GTK's, an overlay is an
+            // ordinary widget, hit testing is GTK's, and the stale-rectangle
+            // failure -- "when text box overlay is animating, you cant click
+            // off, before it finishes" -- cannot happen, because there is no
+            // rectangle. `modal` already means exactly this, so the flag
+            // reuses it rather than adding a second way to say it.
+            self.dialog_up.get() || gtk_input(),
         );
         surface.set_input_region(Some(&region));
     }

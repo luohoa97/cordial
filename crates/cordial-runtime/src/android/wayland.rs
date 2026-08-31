@@ -1796,6 +1796,47 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     // `WINDOW`, and `WINDOW` is what `get_or_init` above has just produced.
     // The closure captures nothing and reads the static, so it cannot outlive
     // what it points at.
+    // **Pointer input from GTK, under `gtk_input`.** Inert otherwise: with the
+    // input hole punched the compositor never gives GTK the pointer over the
+    // canvas, so the controllers behind this never fire. See
+    // `host_window::gtk_input`.
+    host.host.0.connect_canvas_pointer(|event| {
+        use cordial_shell::host_window::CanvasPointer;
+        let Some(w) = WINDOW.get() else { return };
+        // The same refusal the Wayland path makes: while one of Cordial's own
+        // dialogs is in front, nothing reaches the engine. It matters more
+        // here, because GTK *does* deliver over the canvas widget while a
+        // dialog is up -- the backdrop is part of this widget.
+        if dialog_in_front(w) {
+            return;
+        }
+        match event {
+            CanvasPointer::Motion { x, y } => w.dispatch_pointer_motion(x as f32, y as f32),
+            CanvasPointer::Button { button, press, .. } => {
+                // GDK numbers buttons 1/2/3 in click order, the same order
+                // `wl_pointer` does not -- see `roblox_mouse_button`'s note.
+                let android = match button {
+                    1 => super::input::BUTTON_PRIMARY,
+                    2 => super::input::BUTTON_TERTIARY,
+                    3 => super::input::BUTTON_SECONDARY,
+                    8 => super::input::BUTTON_BACK,
+                    9 => super::input::BUTTON_FORWARD,
+                    _ => return,
+                };
+                w.dispatch_pointer_button(android, press);
+            }
+            CanvasPointer::Scroll { dx, dy } => {
+                // GTK reports scroll in the same detent unit `input::wheel`
+                // documents as the one both backends can produce honestly, and
+                // with the same sign convention -- positive down. The engine
+                // wants positive away from the user, hence the negation.
+                let (x, y) = w.pointer_position();
+                let handle = w.active_handle.load(Ordering::Relaxed);
+                super::input::wheel(handle, x, y, dx as f32, -dy as f32, w.now_ms());
+            }
+        }
+    });
+
     host.host.0.connect_editor_changed(|text, caret| {
         let Some(w) = WINDOW.get() else { return };
         // No focused box means no editor, and a change arriving anyway is the
@@ -2655,6 +2696,14 @@ impl WaylandWindow {
     /// `parent_surface` directly as well, the same belt-and-braces the
     /// geometry sync already needed.
     fn set_engine_stacking(&self, above: bool) {
+        // **Under `gtk_input` the canvas is below permanently and this is a
+        // no-op.** Raising it would put the engine back on top of every
+        // overlay and take the pointer focus back off GTK, which is the whole
+        // arrangement the flag exists to try. One early return rather than a
+        // condition at each of the four call sites.
+        if cordial_shell::host_window::gtk_input() {
+            return;
+        }
         // The window has to stop painting its own background over the canvas
         // for a lowered engine to be visible at all -- punching the opaque
         // region is not enough, because GTK's pixels are still there. Measured:
