@@ -533,11 +533,7 @@ const WL_SUBSURFACE_SET_DESYNC: u32 = 5;
 const WL_DISPLAY_GET_REGISTRY: u32 = 1;
 const WL_REGISTRY_BIND: u32 = 0;
 const WL_COMPOSITOR_CREATE_SURFACE: u32 = 0;
-const WL_COMPOSITOR_CREATE_REGION: u32 = 1;
-const WL_REGION_DESTROY: u32 = 0;
 const WL_SURFACE_COMMIT: u32 = 6;
-/// `wl_surface.set_input_region`. See [`WaylandWindow::set_canvas_takes_input`].
-const WL_SURFACE_SET_INPUT_REGION: u32 = 5;
 /// `wl_surface.set_opaque_region`. Sent by Cordial directly, not through GDK --
 /// see `set_engine_stacking`.
 const WL_SURFACE_SET_OPAQUE_REGION: u32 = 4;
@@ -675,9 +671,6 @@ struct WlClient {
     subcompositor_interface: *const WlInterface,
     subsurface_interface: *const WlInterface,
     surface_interface: *const WlInterface,
-    /// `wl_region_interface`, for the empty input region that takes the engine
-    /// canvas out of the way of a dialog. See `set_canvas_takes_input`.
-    region_interface: *const WlInterface,
     seat_interface: *const WlInterface,
     pointer_interface: *const WlInterface,
     keyboard_interface: *const WlInterface,
@@ -772,7 +765,6 @@ impl WlClient {
             subcompositor_interface: sym!("wl_subcompositor_interface"),
             subsurface_interface: sym!("wl_subsurface_interface"),
             surface_interface: sym!("wl_surface_interface"),
-            region_interface: sym!("wl_region_interface"),
             seat_interface: sym!("wl_seat_interface"),
             pointer_interface: sym!("wl_pointer_interface"),
             keyboard_interface: sym!("wl_keyboard_interface"),
@@ -2145,11 +2137,6 @@ impl WaylandWindow {
             && !self.text_overlay_visible.load(Ordering::SeqCst)
         {
             self.set_engine_stacking(false);
-            // Paired with the restack, never on its own: lowering decides what
-            // is *seen* and this decides what is *clicked*, and a dialog needs
-            // both. See `set_canvas_takes_input` for why the restack alone left
-            // the dialog unclickable.
-            self.set_canvas_takes_input(false);
         }
         // A `relative_motion` sample can already be sitting in
         // `PENDING_UNLOCKED_DELTA`, waiting for the `wl_pointer.motion` that
@@ -2179,7 +2166,6 @@ impl WaylandWindow {
             && !self.text_overlay_visible.load(Ordering::SeqCst)
         {
             self.set_engine_stacking(true);
-            self.set_canvas_takes_input(true);
         }
         // Nothing should have accumulated while a dialog was in front — see
         // `webview_dialog_opened` — but a last dialog closing is the same
@@ -2708,89 +2694,35 @@ impl WaylandWindow {
         );
     }
 
-    /// Whether the engine's canvas accepts pointer input at all.
-    ///
-    /// **Lowering the canvas is not enough to let a dialog be clicked, and this
-    /// is the half that was missing.** `set_engine_stacking(false)` puts the
-    /// subsurface below the parent so the dialog is *visible*, and
-    /// `dialog_in_front` stops Cordial forwarding anything it does receive to
-    /// the engine. Neither of those puts a pointer event into GTK's hands: a
-    /// `wl_surface`'s input region defaults to the whole surface and nothing in
-    /// this file has ever set one, so the compositor goes on treating the
-    /// canvas as a thing that takes input and picking between it and the parent
-    /// by rules Cordial does not control.
-    ///
-    /// The observable result is the reported one. Before `dialog_in_front`,
-    /// pointer events reached the canvas and were forwarded, which is "its
-    /// stuck underneath the webview clicking on roblox stuff". After it, the
-    /// same events reach the canvas and are dropped, which is "I cant click on
-    /// the webview's items, it just broke". The events were never reaching GTK
-    /// in either case; only what Cordial did with them changed.
-    ///
-    /// An empty input region is the protocol's own way to say "pass through
-    /// me". Null means the whole surface -- the default, and emphatically not
-    /// what is wanted here -- so this creates a real `wl_region` and adds no
-    /// rectangle to it. The region may be destroyed immediately: it is
-    /// double-buffered state, copied into the surface's pending state by the
-    /// request, so the object is not needed after the commit.
-    ///
-    /// Committed on the canvas itself rather than the parent, because
-    /// `set_input_region` is that surface's own state. A subsurface in
-    /// synchronised mode would need the parent's commit too, which is why the
-    /// parent is committed after it.
-    fn set_canvas_takes_input(&self, takes: bool) {
-        let region = if takes {
-            // Null: the whole surface, which is the default and what the engine
-            // should have whenever nothing of Cordial's is over it.
-            std::ptr::null_mut::<c_void>()
-        } else {
-            // SAFETY: `self.compositor` is the bound `wl_compositor`, live for
-            // the process's lifetime; `create_region` takes no arguments and
-            // returns one new proxy of `wl_region_interface`.
-            unsafe {
-                (self.wl.marshal_flags)(
-                    self.compositor,
-                    WL_COMPOSITOR_CREATE_REGION,
-                    self.wl.region_interface,
-                    1,
-                    0,
-                    std::ptr::null_mut::<c_void>(),
-                )
-            }
-        };
-        if !takes && region.is_null() {
-            // Reported rather than swallowed: without the region the dialog
-            // stays unclickable, and a silent failure here is indistinguishable
-            // from the bug it is meant to fix.
-            eprintln!(
-                "[android] wayland: could not create an empty wl_region; a web-view dialog may not accept clicks"
-            );
-            return;
-        }
-        // SAFETY: `self.surface` is the engine's canvas subsurface, live for
-        // the process's lifetime. `set_input_region`'s signature is "?o" -- one
-        // nullable object -- and `region` is either null or the proxy just
-        // created.
-        unsafe {
-            (self.wl.marshal_flags)(
-                self.surface,
-                WL_SURFACE_SET_INPUT_REGION,
-                std::ptr::null(),
-                1,
-                0,
-                region,
-            );
-            (self.wl.marshal_flags)(self.surface, WL_SURFACE_COMMIT, std::ptr::null(), 1, 0);
-            if !region.is_null() {
-                (self.wl.marshal_flags)(region, WL_REGION_DESTROY, std::ptr::null(), 1, 0);
-            }
-        }
-        self.host.0.queue_commit();
-        println!(
-            "[android] wayland: engine canvas {} pointer input",
-            if takes { "accepts" } else { "is transparent to" }
-        );
-    }
+    // **An empty input region on the canvas was tried here, and reverted.**
+    //
+    // 07564e2 gave the engine's subsurface an empty `wl_surface.set_input_region`
+    // while a web-view dialog was up, on the theory that the canvas was eating
+    // pointer events aimed at the dialog. What that produced was worse than
+    // what it was meant to fix: a click anywhere over the canvas fell through
+    // Cordial's window entirely and raised whatever was behind it -- reported
+    // as "as soon as we press anything it selects the window behind and focuses
+    // it ... my terminal gets focused".
+    //
+    // That is what an empty input region means. It does not say "give this to
+    // the parent", it says "this surface is not present for input", and when
+    // nothing else of the window claims that point the compositor gives the
+    // click to the next window down. Lowering the canvas below the parent in
+    // `set_engine_stacking` is already what routes a dialog's clicks to GTK.
+    //
+    // **The premise was never measured either.** "The canvas eats the clicks"
+    // was inferred from a report and from reading this file. The likelier
+    // reading now is that the original "I cant click on the webview's items"
+    // was the invisible cursor -- fixed separately in the same commit -- making
+    // it impossible to see what was being pointed at.
+    //
+    // Before reaching for this again, answer the question that was skipped:
+    // does a click over a dialog reach GTK at all with the canvas merely
+    // lowered? That is one `CORDIAL_TRACE_MOUSE=1` session.
+    //
+    // Nothing here is the text editor's path. `update_text_overlay` uses
+    // `set_engine_stacking` and never touched this, so none of the above
+    // reaches typing.
 
     pub fn geometry(&self) -> (i32, i32, i32) {
         let g = self.buffers.lock().unwrap_or_else(|e| e.into_inner());
