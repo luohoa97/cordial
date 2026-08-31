@@ -205,9 +205,9 @@ pub fn resolve(layers: Vec<Layer>) -> BTreeMap<String, Resolved> {
 /// it makes one file serve every profile — so it is a development switch, not a
 /// supported arrangement.
 pub fn user_path_in(profile_dir: &Path) -> PathBuf {
-    std::env::var_os("CORDIAL_FLAGS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| profile_dir.join("flags.json"))
+    // Delegated so the settings window, which cannot depend on this crate, can
+    // name the identical file. See `cordial_plugins::flag_document::path_in`.
+    cordial_plugins::flag_document::path_in(profile_dir)
 }
 
 /// The user's overrides file for the profile this instance is running.
@@ -351,6 +351,24 @@ pub fn write_plugin_layer(id: &str, values: &BTreeMap<String, String>) -> Result
     let tmp = path.with_extension("json.new");
     std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Parse the text of a user flags document, the way [`read_layer`] would.
+///
+/// Delegates to [`cordial_plugins::flag_document::parse`], which is where the
+/// format lives so that the settings window can use the identical rule --
+/// `cordial-runtime` depends on `cordial-shell`, so the window cannot depend
+/// back on this crate. That module's header has the argument in full; the
+/// short version is that two implementations of "is this document valid" is
+/// how a window comes to say "Saved 40 flags" about a file the client then
+/// ignores.
+pub fn parse_user_text(text: &str) -> Result<BTreeMap<String, String>, String> {
+    cordial_plugins::flag_document::parse(text)
+}
+
+/// Replace the user's own `flags.json` for `profile_dir`.
+pub fn write_user_layer(profile_dir: &Path, values: &BTreeMap<String, String>) -> Result<(), String> {
+    cordial_plugins::flag_document::write(&user_path_in(profile_dir), values)
 }
 
 fn config_dir() -> PathBuf {
@@ -849,11 +867,36 @@ pub fn report(resolved: &BTreeMap<String, Resolved>) {
             r.source.describe()
         );
     }
+
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// **What the editor writes, the loader reads back identically.**
+    ///
+    /// The one test that has to live here rather than beside the parser in
+    /// `cordial_plugins::flag_document`: it spans both crates. The window
+    /// validates and writes through that module; the client reads through
+    /// `read_layer` in this one. Nothing else asserts that those two agree,
+    /// and them disagreeing is the failure the shared module exists to stop --
+    /// a page that says "Saved 40 flags" about a file the client then reports
+    /// as malformed and ignores.
+    #[test]
+    fn a_written_document_round_trips_through_the_loader() {
+        let dir = std::env::temp_dir().join(format!("cordial-flags-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let values = parse_user_text(r#"{"FFlagA": "True", "DFIntB": 12}"#).unwrap();
+        write_user_layer(&dir, &values).expect("write");
+
+        let layer = read_layer(&user_path_in(&dir), Source::User).expect("read back");
+        assert_eq!(layer.values, values);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// `read_layer` must not prefer one value shape over another: an `FLog`
     /// channel's own type, bare number or severity name, is not something

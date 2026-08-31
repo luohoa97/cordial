@@ -794,6 +794,19 @@ pub struct ShellConfig {
     /// and the test below caught it, which is why both the attribute's absence
     /// and the reason are written down.
     pub gamepad: bool,
+    /// Quit the client when the user leaves a game and returns to the home
+    /// screen.
+    ///
+    /// Off by default, and it has to be: closing somebody's session is the
+    /// least reversible thing Cordial does on its own initiative, and a person
+    /// who did not ask for it meets it once and loses whatever they were doing
+    /// next. Whoever wants it wants it deliberately -- they launched from a
+    /// deep link to play one game and have no use for the home screen.
+    ///
+    /// Keyed on the engine's own `leaveUGCGameInternal` and not on a
+    /// disconnect; see `cordial_runtime::game_log`, which has the capture and
+    /// the reason those are different questions.
+    pub close_on_leave: bool,
     pub mangohud: bool,
     /// Which audio device Roblox plays through. See [`AudioOutput`], which
     /// carries the whole of the reasoning, including why the stored form is a
@@ -867,6 +880,7 @@ impl Default for ShellConfig {
             graphics_optimization_mode: GraphicsOptimization::default(),
             present_mode: PresentMode::default(),
             gamepad: true,
+            close_on_leave: false,
             audio_output: AudioOutput::default(),
             mangohud: false,
             fullscreen_accel: default_fullscreen_accel(),

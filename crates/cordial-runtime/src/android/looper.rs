@@ -692,8 +692,34 @@ fn asked_to_stop() -> Option<&'static str> {
     if !no_close_exit() && super::window_closed() {
         return Some("the window closing");
     }
+    // Deliberately not behind `no_close_exit`. That switch is the control for
+    // "did the *window* closing end this run", and something that asked to
+    // quit outright is a different question -- gating it on the same variable
+    // would make the control also disable an unrelated feature, which is the
+    // trap the comment above notes about the signal branch.
+    if QUIT_REQUESTED.load(std::sync::atomic::Ordering::Acquire) {
+        return Some("something asking the pump to stop");
+    }
     None
 }
+
+/// Ask the pump to stop, from anywhere.
+///
+/// **Backend-agnostic on purpose.** `window_closed` is the Wayland backend's
+/// own observation and answers `false` on X11 by design (see
+/// `android::mod`'s dispatcher), so hanging close-on-leave off it would make
+/// the setting silently do nothing on the diagnostic backend. This flag is the
+/// pump's own and works wherever the pump runs.
+///
+/// Sets a flag rather than exiting. `process::exit` from a caller's thread
+/// would drop the engine's cookie jar and storage mid-write; every other way
+/// out of this client returns through `stop_reason` and unwinds the same way,
+/// and so does this.
+pub fn request_quit() {
+    QUIT_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+static QUIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn no_close_exit() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -1290,10 +1316,11 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
             if super::input::keepalive_wanted(policy, observed, visible) {
                 super::input::idle_keepalive();
             }
-            // Gamepads, from the host's joydev nodes. Off unless
-            // `CORDIAL_GAMEPAD=1`, and a single `OnceLock` read when it is off
-            // -- see `android::gamepad`, whose module comment carries why the
-            // default is off and what would let it change.
+            // Gamepads, from the host's joydev nodes. **On unless
+            // `CORDIAL_GAMEPAD=0`**, and a single `OnceLock` read when it is
+            // off. This comment said "off unless `CORDIAL_GAMEPAD=1`" for one
+            // commit after the default flipped; `android::gamepad`'s module
+            // comment carries why it flipped and what is still unverified.
             //
             // Not inside the `keepalive_wanted` branch above it: that gate is
             // about whether Cordial should defeat the engine's idle throttle,
@@ -1314,6 +1341,14 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
         // and reading the jar back from inside it would re-enter the engine on
         // its own thread. Cheap when nothing has changed: one relaxed load.
         crate::cookies::flush_if_dirty();
+
+        // What the engine's own log says it is doing. Here rather than in the
+        // input branch above for the same reason as the cookie flush: it is
+        // housekeeping that must keep happening while the window is in the
+        // background, and it is cheap when nothing has changed -- one
+        // `read_dir` a second, and between those a metadata read that usually
+        // finds the file no longer than it was.
+        crate::game_log::poll();
 
         // A deep link waiting for the app shell to exist, here for the same
         // reason and on the same thread: `APP_READY` arrives on the engine's

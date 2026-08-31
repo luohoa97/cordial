@@ -18,6 +18,7 @@ pub mod core_events;
 pub mod denials;
 pub mod enablement;
 pub mod events;
+pub mod flag_document;
 pub mod grants;
 pub mod host;
 pub mod manifest;

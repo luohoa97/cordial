@@ -436,6 +436,13 @@ pub fn spawn(
         command.env("CORDIAL_GAMEPAD", "0");
     }
 
+    // Close on leave, and **only when it is on**. The client's own gate wants
+    // one of "1", "true" or "yes" and reads everything else as off, so the
+    // absent case and the off case agree without this having to spell either.
+    if config.close_on_leave {
+        command.env("CORDIAL_CLOSE_ON_LEAVE", "1");
+    }
+
     // The Graphics optimisation row, and **only for the parameters the chosen
     // mode actually asks for** -- exactly the rule the Renderer row above
     // follows, for exactly the same reason. `CordialDeviceProfile` is a

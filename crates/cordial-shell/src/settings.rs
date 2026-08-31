@@ -609,6 +609,29 @@ fn build_performance_group(
     }
     group.add(&gamemode);
 
+    // Under Performance rather than beside Controllers: this is about what
+    // Cordial does with the process, like GameMode above and the background
+    // throttle below, rather than about what the engine is told.
+    let close_on_leave = adw::SwitchRow::builder()
+        .title("Quit when you leave a game")
+        // Says which moment it acts on, because the obvious worry is that it
+        // fires on a network blip. It does not -- the engine's own
+        // "returned to the home screen" is a different log line from any
+        // disconnect, and a teleport between places is a disconnect.
+        .subtitle("Closes Cordial when you return to the home screen. Leaving a server or being disconnected mid-game does not count.")
+        .active(config.borrow().close_on_leave)
+        .build();
+    close_on_leave.set_subtitle_lines(3);
+    {
+        let config = config.clone();
+        let config_path = config_path.clone();
+        close_on_leave.connect_active_notify(move |row| {
+            config.borrow_mut().close_on_leave = row.is_active();
+            persist(&config, &config_path);
+        });
+    }
+    group.add(&close_on_leave);
+
     // Order has to match ThrottleWhen::index/from_index.
     let throttle_model = gtk::StringList::new(&[
         "When the window is not visible",
@@ -2444,12 +2467,154 @@ pub fn build_preferences_window(
     let general = build_general_page(config.clone(), config_path.clone());
     add_appearance_groups(&general, config.clone(), config_path.clone());
     window.add(&general);
+    let config_for_flags = config.clone();
     let (plugins, installed) = build_plugins_page(&window, config.clone());
     add_get_plugins_groups(parent, &window, config, config_path, &installed, &plugins);
     window.add(&plugins);
+    window.add(&build_fastflags_page(config_for_flags));
     window.add(&build_report_page(parent));
 
     window
+}
+
+/// "FastFlags" — the user's own `flags.json`, edited as text.
+///
+/// **A sixth page, in a window that was cut from seven to five.** That
+/// reduction was reported as "why are there so many tabs" and the rule it
+/// established is the one applied here: Appearance and Get Plugins went
+/// because neither was a *destination* -- nobody opens Settings to change a
+/// theme. FastFlags is the opposite. Somebody who has a flag list from a video
+/// or a Discord message came here for exactly this and nothing else, and
+/// burying a JSON editor inside another page would put it behind a scroll.
+///
+/// **Text rather than a row per flag.** The flags people actually use arrive as
+/// a block of JSON copied from somewhere, so the paste is the interaction. A
+/// typed editor would mean transcribing forty lines by hand, and would have to
+/// know every flag's type -- which nothing here does, and which Roblox does not
+/// publish.
+///
+/// The format is Bloxstrap's because it is already Cordial's:
+/// `flags::read_layer` has always taken a flat object of name to value. That is
+/// asserted in `flags::tests::a_bloxstrap_style_document_parses` rather than
+/// claimed here.
+fn build_fastflags_page(config: Rc<RefCell<ShellConfig>>) -> adw::PreferencesPage {
+    use gtk::prelude::TextBufferExt;
+    use gtk::prelude::TextViewExt;
+
+    let page = adw::PreferencesPage::builder()
+        .title("FastFlags")
+        .name("fastflags")
+        .icon_name("preferences-system-symbolic")
+        .build();
+
+    let group = adw::PreferencesGroup::builder()
+        .title("Engine flag overrides")
+        // Three facts, and each one is something a user gets wrong otherwise:
+        // where these sit against everything else that sets a flag, that the
+        // format they already have works, and that this is not magic.
+        .description(
+            "One JSON object of flag names to values, in the same format Bloxstrap uses — paste              a list straight in. These win over anything a plugin sets, and take effect the next              time you press Roblox. A flag Roblox does not have is ignored by the engine, not an              error.",
+        )
+        .build();
+
+    let profile = config.borrow().profile.clone();
+    let profile_dir = cordial_shell::profile::dir(&profile).ok();
+    let path = profile_dir.as_ref().map(|d| cordial_plugins::flag_document::path_in(d));
+
+    let view = gtk::TextView::builder()
+        .monospace(true)
+        .top_margin(8)
+        .bottom_margin(8)
+        .left_margin(8)
+        .right_margin(8)
+        .build();
+    // Read what is on disk rather than what this window last wrote: the file is
+    // editable by hand and by `cordial-run`, and showing a stale copy would
+    // make Apply silently discard somebody else's edit.
+    let existing = path
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_else(|| "{}\n".to_string());
+    view.buffer().set_text(&existing);
+
+    let scroller = gtk::ScrolledWindow::builder()
+        .child(&view)
+        .min_content_height(320)
+        .vexpand(true)
+        .build();
+    scroller.add_css_class("card");
+    group.add(&scroller);
+
+    // Where the file is, because a person who breaks it needs to find it, and
+    // because "which profile am I editing" is a real question in a client that
+    // has profiles.
+    let where_row = adw::ActionRow::builder()
+        .title("Saved in")
+        .subtitle(match &path {
+            Some(p) => p.display().to_string(),
+            None => format!("no profile directory for {profile:?}; nothing can be saved"),
+        })
+        .build();
+    where_row.set_subtitle_lines(2);
+    group.add(&where_row);
+    page.add(&group);
+
+    // **The status line is the whole safety of this page.** A refusal has to
+    // name the flag it choked on -- see `flags::parse_user_text` -- and it has
+    // to be visible without a dialog, because the fix is in the box directly
+    // above it.
+    let status = gtk::Label::builder().wrap(true).xalign(0.0).build();
+    status.add_css_class("dim-label");
+
+    let buttons = gtk::Box::builder().spacing(8).halign(gtk::Align::End).build();
+    let clear = gtk::Button::with_label("Clear all");
+    clear.add_css_class("destructive-action");
+    let apply = gtk::Button::with_label("Apply");
+    apply.add_css_class("suggested-action");
+    buttons.append(&clear);
+    buttons.append(&apply);
+
+    let actions = adw::PreferencesGroup::new();
+    actions.add(&status);
+    actions.add(&buttons);
+    page.add(&actions);
+
+    {
+        let view = view.clone();
+        clear.connect_clicked(move |_| {
+            // Only the box. Nothing is written until Apply, so a mis-click is
+            // one Ctrl+Z away rather than a file that is already gone.
+            view.buffer().set_text("{}\n");
+        });
+    }
+    {
+        let view = view.clone();
+        let status = status.clone();
+        apply.connect_clicked(move |_| {
+            let buffer = view.buffer();
+            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+            let Some(dir) = profile_dir.clone() else {
+                status.set_text("There is no profile directory to save into.");
+                return;
+            };
+            match cordial_plugins::flag_document::parse(&text) {
+                Err(e) => status.set_text(&format!("Not saved — {e}")),
+                Ok(values) => match cordial_plugins::flag_document::write(&cordial_plugins::flag_document::path_in(&dir), &values) {
+                    // Counted, because "saved" alone does not tell somebody
+                    // whose paste half-failed that only three of their forty
+                    // flags are there.
+                    Ok(()) => status.set_text(&format!(
+                        "Saved {} flag{}. Takes effect the next time you press Roblox.",
+                        values.len(),
+                        if values.len() == 1 { "" } else { "s" }
+                    )),
+                    Err(e) => status.set_text(&format!("Could not save: {e}")),
+                },
+            }
+        });
+    }
+
+    page
 }
 
 #[cfg(test)]
