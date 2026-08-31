@@ -250,6 +250,7 @@ will be declined.
 | Web views (Marketplace, Profile, Communities…) | 🟡 they render in a real signed-in WebKitGTK window, with correct canvas stacking; both observed JavaScript bridge formats now reach the runtime, but more pages still need interactive coverage |
 | **Asset overlays** (custom textures, sounds, fonts) | ✅ drop a file mirroring the APK's `assets/` tree into `~/.config/cordial/overlay` and it is served instead; nothing is modified, remove the file and the original returns |
 | Fullscreen | ✅ F11 acts on the gameplay window, hides the compact themed header bar and persists per profile |
+| Getting the cursor back | ✅ **Escape releases the pointer**, and keeps it released for as long as the game goes on asking for it — so a stuck camera or a game that grabs the cursor and will not let go is one key away. Leaving first person hands the lock back normally. `CORDIAL_NO_POINTER_LOCK=1` turns capture off for a whole session |
 | **The engine's content store** | ✅ `RbxStorage` initialises and is read back — a real SQLite database, the engine's own `files` table, eight engine-created partitions, and cache hits rising across launches. Assets are no longer refetched every session |
 | Clean shutdown | ✅ full pause/stop/destroy sequence, observed in the engine's own log |
 | Plugins | 🟡 host, broker and per-profile grants now enforce every capability, not only `flags.*`/`presence.*` as before — notify, url.open, asset overlays, `flags.write` and cross-plugin events all reach a real effect; Settings can grant or revoke a capability, and install or remove a plugin from a local `.tar.zst` archive; still no in-app fetch from a remote index, so the marketplace half of the registry is unbuilt |
@@ -755,6 +756,7 @@ page at about 27 fps. `--run` is how many seconds to stay up.
 | `CORDIAL_WINDOW_POS=<x>,<y>` | explicit position, overrides the above |
 | `CORDIAL_RESOLUTION=<w>x<h>` | render resolution, default 1280x720 |
 | `CORDIAL_DPI_SCALE=<f>` | UI density Roblox lays out against; 1.0 is a low-density phone |
+| `CORDIAL_NO_POINTER_LOCK=1` | never capture the cursor; Escape releases it case by case |
 | `CORDIAL_PRESENT_MODE=<m>` | frame pacing: `mailbox` (the default), `fifo` (saves power, feels floatier), `immediate`, `uncapped`, `off` — Settings has a row for this |
 | `CORDIAL_GAMEPAD=0` | turn controller support off; it is on by default |
 | `CORDIAL_GAMEPAD_TYPE=<n>` | which controller brand Roblox draws glyphs for — see below |
