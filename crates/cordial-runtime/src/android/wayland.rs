@@ -2516,37 +2516,41 @@ impl WaylandWindow {
         // focus. Reported exactly that way: "characters are still invisible
         // till unfocus".
         //
-        // **"and the engine finally draws them" used to be the end of that
-        // sentence, and it is not reliably true.** Reported 2026-08-31: "when
-        // you have a text box, you click off the text box, the text becomes
-        // invisible". On that machine the engine never draws the text at all,
-        // focused or not, so this overlay is the only thing that has ever
-        // shown it and hiding it on blur is the whole of the symptom.
+        // **"and the engine finally draws them" is measured, and something has
+        // since broken it.** Reported 2026-08-31: "when you have a text box,
+        // you click off the text box, the text becomes invisible", on Intel
+        // graphics under Mutter.
         //
-        // It is an engine-on-Linux fault rather than one of Cordial's, and the
-        // neighbouring runtime has it too. Sober #1845 -- "TextBox's do not
-        // sink input" on NVIDIA/Wayland/dwl -- is answered by their own
-        // maintainer with "this is a known bug with our text rendering system
-        // ... we had a fix for it last update, but the fix ended up breaking
-        // some setups, so we disabled it by default", behind
-        // `SOBER_FORCE_NEW_TEXT_RENDERER=1`. Sober #1026 narrows the
-        // environment: broken on Sway, DWL, Niri and Hyprland with NVIDIA,
-        // fine on KDE Plasma on the same system, and one reporter pins it to
-        // the surface being at least as large as the output -- "stops when
-        // either is even a pixel below that".
+        // That is a regression, not the engine's ordinary behaviour. §"Why the
+        // text is invisible while you type" in docs/NEXT.md has the table, from
+        // 2026-08-03: at t=44 the password field is clicked, the username box
+        // blurs, and the window shows `abc`. Refocusing empties it again and
+        // typing `d` gives `xyzd` on the next blur. The engine holds the text
+        // the whole time and withholds only the drawing, and only while the
+        // box has focus.
         //
-        // That last detail is the only actionable lead here and has not been
-        // tested against Cordial: if the failure really is surface-size
-        // dependent, it is a property of a window Cordial owns rather than of
-        // the engine's renderer, and one measurement would say so.
+        // **It is also not Sober's NVIDIA text-renderer bug**, which is what
+        // this comment said for one commit. Sober #1845 and #1026 are real and
+        // are a different fault: NVIDIA on Sway, DWL, Niri or Hyprland, fine on
+        // KDE Plasma on the same system, answered by Sober's own maintainer
+        // with an opt-in `SOBER_FORCE_NEW_TEXT_RENDERER`. Intel under Mutter is
+        // on the working side of every one of those correlations, so citing
+        // them here was an attribution to the first neighbouring bug that
+        // looked similar. Left written down because it is the kind of wrong
+        // answer that is easy to reach twice.
         //
-        // What Cordial cannot currently do is keep drawing after blur.
-        // `focused_textbox()` is the only handle there is; once the box loses
-        // focus there is no handle, no geometry and no text to draw with. A
-        // fix would need the engine to keep answering for an unfocused box, or
-        // Cordial to remember the last one and guess when it is still on
-        // screen, and guessing that is how a stale editor ends up painted over
-        // a page the user has left.
+        // What changed between the 2026-08-03 measurement and the report is
+        // this overlay: back then nothing was drawn during editing and the
+        // engine's blur-time rendering was the only rendering there was. The
+        // suspicion is therefore that something on the blur path clears the
+        // engine's copy -- `connect_editor_changed` guards against exactly that
+        // by returning when no box has focus, so if it is that, the guard is
+        // losing a race rather than missing.
+        //
+        // Unmeasured. `CORDIAL_TRACE_TEXT=1` across focus, type, blur settles
+        // it: an empty `syncTextbox` going out at blur means the text is being
+        // cleared, and no such call means the engine has it and stopped
+        // drawing it.
         //
         // The spec is the geometry Android would style a real EditText with, and
         // it arrives either as `showKeyboard`'s NativeTextBoxInfo or from a
