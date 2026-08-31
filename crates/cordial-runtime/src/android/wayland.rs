@@ -533,6 +533,7 @@ const WL_SUBSURFACE_SET_DESYNC: u32 = 5;
 const WL_DISPLAY_GET_REGISTRY: u32 = 1;
 const WL_REGISTRY_BIND: u32 = 0;
 const WL_COMPOSITOR_CREATE_SURFACE: u32 = 0;
+const WL_POINTER_SET_CURSOR: u32 = 0;
 const WL_SURFACE_COMMIT: u32 = 6;
 /// `wl_surface.set_opaque_region`. Sent by Cordial directly, not through GDK --
 /// see `set_engine_stacking`.
@@ -623,7 +624,6 @@ unsafe extern "C" fn seat_capabilities(_data: *mut c_void, seat: *mut c_void, ca
 unsafe extern "C" fn seat_name(_data: *mut c_void, _seat: *mut c_void, _name: *const std::ffi::c_char) {}
 
 static SEAT_LISTENER: SeatListener = SeatListener { capabilities: seat_capabilities, name: seat_name };
-const WL_POINTER_SET_CURSOR: u32 = 0;
 
 // --------------------------------------------------------------- dlopen'd API
 
@@ -3118,21 +3118,33 @@ unsafe extern "C" fn pointer_enter(
     // left the canvas is not a movement the user made.
     super::input::reset_mouse_delta();
     super::input::forget_pending_unlocked_delta();
-    // **Hiding the cursor is only right while the engine is what the pointer is
-    // over.** Roblox draws its own cursor into the canvas, so the host one is a
-    // second cursor half a frame behind the first -- but a web-view dialog or
-    // the text editor is a GTK widget, drawing no cursor of its own, and over
-    // one of those a null cursor is simply an invisible pointer.
+    // **Hide it, and unconditionally.** Roblox draws its own cursor into the
+    // canvas, so the host one is a second cursor half a frame behind it.
     //
-    // Reported as "it just breaks the cursor" when a web view opens, after the
-    // stacking and the input-routing halves had both been fixed. This is the
-    // third thing `webview_dialog_opened` has to account for and the only one
-    // that was never wired to it: `set_cursor` is called from this line and
-    // nowhere else in the runtime, always with a null surface, and nothing has
-    // ever put a cursor back.
-    if !cordial_ui_in_front(&w) {
-        w.hide_pointer(pointer, serial);
-    }
+    // **This is the only place that can hide it, and a detour through GTK
+    // established why.** Setting `none` on the canvas *widget* was tried and
+    // does nothing: `host_window::refresh_input_region` punches the canvas out
+    // of the parent's input region, so over the canvas the compositor gives
+    // pointer focus to this subsurface -- which GDK did not create and knows
+    // nothing about. GTK's hit testing never runs there, so its widget cursor
+    // is never consulted. Removing this line on that reasoning deleted the
+    // only thing that worked, and the report came straight back: "I still see
+    // the system cursor".
+    //
+    // No `cordial_ui_in_front` check, and that is deliberate rather than a
+    // simplification. While a web-view dialog is up the parent claims the whole
+    // surface (see `webview_dialog_opened`), so pointer focus never reaches
+    // this subsurface and this never fires -- the dialog gets an ordinary
+    // cursor from GTK because GTK genuinely owns the pointer there. Gating
+    // this as well would be a second answer to a question already answered one
+    // layer down, and the two could disagree.
+    //
+    // The text editor is the other case GTK really does own: its rectangle is
+    // unioned *back into* the parent's input region, so GDK has focus over it
+    // and its widget cursor applies. That is why hovering a focused box used
+    // to spawn a pointer, and why the fix for that one is on the widget rather
+    // than here.
+    w.hide_pointer(pointer, serial);
     // Subsurface coordinates are relative to the subsurface, so these are
     // already canvas-local — no offset for the header bar has to be
     // subtracted anywhere, which is the main practical reason to let the
@@ -5071,27 +5083,15 @@ static TEXT_INPUT_LISTENER: TextInputListener = TextInputListener {
     preedit_hint: ti_preedit_hint,
 };
 
-
-// --------------------------------------------------------- pointer cursor
-
 impl WaylandWindow {
-    /// Hide the host cursor over the canvas.
+    /// Hide the host cursor for as long as the pointer is on the canvas.
     ///
-    /// `wl_pointer.set_cursor` takes the serial of the `wl_pointer.enter` it is
-    /// answering, and a compositor ignores the request with any other value —
-    /// which is why doing this once at setup with a serial of `0`, as this
-    /// previously did, silently did nothing and left two cursors on screen.
+    /// `wl_pointer.set_cursor` with a null surface is the protocol's "draw no
+    /// cursor", and it is scoped to the enter serial it is sent with -- which
+    /// is why this lives in `pointer_enter` and not somewhere it could be
+    /// called at leisure.
     ///
-    /// It also has to be repeated on *every* enter: the cursor a client sets
-    /// applies to that enter only, and reverts as soon as the pointer leaves
-    /// and returns. A null surface is the protocol's way of saying "no cursor
-    /// at all", which is what Roblox wants because it draws its own.
-    ///
-    /// Only for enters onto the engine's own surface. Calling this for the
-    /// header bar would take the pointer away from the window controls, which
-    /// GTK is drawing hover states for and the user is trying to click.
-    ///
-    /// `CORDIAL_SHOW_CURSOR=1` restores the host cursor for debugging input.
+    /// `CORDIAL_SHOW_CURSOR=1` restores it, for debugging input.
     fn hide_pointer(&self, pointer: *mut c_void, serial: u32) {
         if pointer.is_null() || std::env::var_os("CORDIAL_SHOW_CURSOR").is_some() {
             return;
@@ -5112,7 +5112,6 @@ impl WaylandWindow {
             );
         }
     }
-
 }
 
 // -------------------------------------------------------------------- pump

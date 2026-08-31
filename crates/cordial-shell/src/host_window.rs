@@ -415,6 +415,25 @@ fn pango_weight(open_type: i32) -> gtk::pango::Weight {
     }
 }
 
+/// The cursor to show over the engine's canvas, and over the editor drawn on
+/// top of it.
+///
+/// `None` in GTK's sense means "inherit", which is not what is wanted -- the
+/// window's own cursor would show through. `"none"` is the CSS cursor keyword
+/// for *draw nothing*, which is what a surface Roblox is drawing its own
+/// pointer into needs.
+///
+/// `CORDIAL_SHOW_CURSOR=1` restores the host cursor, which is the debugging
+/// switch this has always had; it now works by not overriding the widget
+/// rather than by skipping a Wayland request, and so covers the editor too.
+fn canvas_cursor() -> Option<&'static str> {
+    if std::env::var_os("CORDIAL_SHOW_CURSOR").is_some() {
+        None
+    } else {
+        Some("none")
+    }
+}
+
 impl HostWindow {
     /// Build the window with an empty canvas in the content slot.
     ///
@@ -430,6 +449,21 @@ impl HostWindow {
         let canvas = gtk::DrawingArea::new();
         canvas.set_hexpand(true);
         canvas.set_vexpand(true);
+        // **This does nothing over the engine, and is set anyway.**
+        //
+        // Over the canvas the compositor gives pointer focus to the engine's
+        // subsurface, not to this widget: `refresh_input_region` punches the
+        // canvas rectangle out of the parent's input region on purpose, so GDK
+        // never sees the pointer there and never consults a widget cursor.
+        // `wayland::pointer_enter`'s `hide_pointer` is what actually hides it,
+        // and removing that on the belief that this replaced it put the system
+        // cursor straight back -- "I still see the system cursor".
+        //
+        // Kept because it costs nothing and is right for the moments GDK *does*
+        // own the pointer over this widget: before the engine's subsurface
+        // exists at all, and any future arrangement that stops punching the
+        // hole. What it must not do is imply the line below is load-bearing.
+        canvas.set_cursor_from_name(canvas_cursor());
         let host = Self::new(title, width, height, &canvas);
         host.window.add_css_class("cordial-engine-host");
         // **The window itself is not transparent, and must not be.**
@@ -554,10 +588,24 @@ impl HostWindow {
         // hovering the box swapped the pointer for a GTK one and broke the
         // illusion that the box belongs to Roblox -- reported as "in sober ...
         // its like its part of roblox, but in ours we replace the cursor with
-        // some gtk cursor when you hover over it". Nothing else in the canvas
-        // sets a cursor, so the default arrow is what the rest of the surface
-        // shows and what this must match.
-        editor.set_cursor_from_name(Some("default"));
+        // some gtk cursor when you hover over it".
+        //
+        // **This said `default` and the reasoning under it was wrong.** It
+        // claimed "nothing else in the canvas sets a cursor, so the default
+        // arrow is what the rest of the surface shows and what this must
+        // match". The rest of the canvas shows *no* cursor -- Roblox draws its
+        // own into the frame -- so matching an arrow is what made the system
+        // pointer appear the moment a box took focus. Reported as "after using
+        // a text box the system cursor appears and doesnt disappear on
+        // unfocus ... it shouldnt even show the system cursor even when in the
+        // text box".
+        //
+        // **Unlike the canvas, this one is load-bearing.** The editor's
+        // rectangle is unioned *back into* the parent's input region so it can
+        // be clicked, which means GDK really does own the pointer over it --
+        // so a widget cursor here is consulted, and `none` is what makes
+        // hovering a focused box stop spawning a pointer.
+        editor.set_cursor_from_name(canvas_cursor());
 
         let editor_css = gtk::CssProvider::new();
         let editor_seeding = std::rc::Rc::new(std::cell::Cell::new(false));
