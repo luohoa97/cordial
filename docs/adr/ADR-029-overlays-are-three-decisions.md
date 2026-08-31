@@ -148,11 +148,25 @@ That deletes the restack, the see-through toggle, `POINTER_ON_CANVAS`,
 architecture and it is not adopted here, for three reasons worth stating rather
 than leaving as an omission:
 
-1. **It is untested and this file is a list of untested changes going wrong.**
-   Every failure above was shipped on a plausible reading of the protocol. The
-   correct order is a spike behind an environment variable, measured against
-   the existing path in the same session, and then an ADR that supersedes this
-   one.
+1. **It has now been spiked, and the spike broke input.** `CORDIAL_GTK_INPUT`
+   did exactly what this section describes -- canvas below, background
+   transparent, no input hole, pointer forwarded from GTK controllers -- and
+   the report was immediate: "gtk input 1 doesnt even work ... that one just
+   breaks the input". Removed the same hour.
+
+   **The finding is the point, and it sizes the real job.** Forwarding motion,
+   buttons and scroll is the easy third. `POINTER_ON_CANVAS` is the other two:
+   it gates the drag-side pointer lock in `sync_pointer_lock`, and it gates
+   `relative_pointer_motion` outright. With no input hole, pointer focus never
+   reaches the engine's subsurface, so that flag is never true and the camera
+   -- relative motion under a lock -- stops. A pointer that moves over a game
+   nobody can look around in is a fair description of broken.
+
+   So this is not three event types. It is the lock, the relative-motion path
+   and the focus flag moving together, with a GTK-side answer to "is the
+   pointer over the game" replacing a Wayland-side one. Anyone attempting it
+   should start there rather than with the forwarding, which is the part that
+   already works.
 2. **It moves the riskiest code in the client.** Text entry is the one area
    this project has regressed repeatedly and the one users notice immediately.
 3. **The compositor stops being able to skip work.** A permanently transparent
