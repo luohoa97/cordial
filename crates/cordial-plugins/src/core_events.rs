@@ -118,6 +118,25 @@ pub const ENGINE_VERSION: &str = "engine.version";
 /// so it is left unwired rather than wired on the assumption.
 pub const WINDOW_RESIZED: &str = "window.resized";
 
+/// A running experience set its own Rich Presence, through BloxstrapRPC.
+///
+/// **The game is the author of this, not Cordial.** An experience calls Lua's
+/// `print` with a `[BloxstrapRPC]` marker; the engine writes it to its own log;
+/// `cordial_runtime::game_log` reads the log and
+/// `cordial_runtime::bloxstrap_rpc` parses it. Nothing is injected and nothing
+/// is hooked -- Cordial is reading a file it created the directory for.
+///
+/// Gated on `PresenceSet` rather than `LifecycleRead`, which is the point of
+/// the table being per family. A plugin granted `lifecycle.read` to know when
+/// the client started must not thereby learn what the player is doing inside
+/// an experience; a plugin that is already allowed to publish a presence
+/// learns nothing new by being told what to publish.
+///
+/// The payload is the merged presence as the game has built it up so far --
+/// BloxstrapRPC is a stream of partial updates, and folding them is
+/// `bloxstrap_rpc::Presence`'s job, not every subscriber's.
+pub const GAME_PRESENCE: &str = "game.presence";
+
 /// Every core event, with the capability that gates it.
 ///
 /// **A closed table rather than a prefix convention**, for the reason
@@ -131,6 +150,7 @@ pub const ALL: &[(&str, Capability)] = &[
     (CLIENT_SHUTDOWN, Capability::LifecycleRead),
     (ENGINE_VERSION, Capability::LifecycleRead),
     (WINDOW_RESIZED, Capability::LifecycleRead),
+    (GAME_PRESENCE, Capability::PresenceSet),
 ];
 
 /// Which capability a plugin needs to hear `name`, or `None` if unknown.

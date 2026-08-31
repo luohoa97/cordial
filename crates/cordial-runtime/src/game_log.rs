@@ -313,6 +313,13 @@ fn close_on_leave_for(v: Option<&str>) -> bool {
 /// Called every pump tick. Costs one `read_dir` a second and, in between, one
 /// `File::open` and a metadata read that usually finds nothing new -- the same
 /// order of work as the cookie flush it sits beside.
+/// The game's presence so far, folded from every `[BloxstrapRPC]` line seen.
+///
+/// One per process because there is one engine in it. Reset when the user
+/// leaves, so a presence from the last experience does not outlive it.
+static PRESENCE: Mutex<crate::bloxstrap_rpc::Presence> =
+    Mutex::new(crate::bloxstrap_rpc::Presence::new());
+
 pub fn poll() {
     static WATCHER: Mutex<Option<Watcher>> = Mutex::new(None);
     let mut guard = WATCHER.lock().unwrap_or_else(|e| e.into_inner());
@@ -328,6 +335,16 @@ pub fn poll() {
             }
             Event::Left => {
                 println!("[cordial] game: left");
+                // The experience's presence goes with the experience. Without
+                // this, leaving a game that set a presence would leave its
+                // details on the Discord profile until another game replaced
+                // them -- and on the home screen that is simply wrong.
+                *PRESENCE.lock().unwrap_or_else(|e| e.into_inner()) =
+                    crate::bloxstrap_rpc::Presence::new();
+                crate::plugin_host::publish_core(
+                    cordial_plugins::core_events::GAME_PRESENCE,
+                    serde_json::json!({}),
+                );
                 if close_on_leave() {
                     // Through the same door the window's close button uses,
                     // not `process::exit`. The profile lock is released by
@@ -348,7 +365,26 @@ pub fn poll() {
                 // game author testing their own presence needs to see that
                 // Cordial read the line.
                 Ok(Some(command)) => {
-                    println!("[cordial] game: BloxstrapRPC {command:?} (not yet delivered)");
+                    // **Folded, then published.** BloxstrapRPC is a stream of
+                    // partial updates -- a game sends `details` on one line
+                    // and `state` on another, and "leave this field alone" is
+                    // a distinct value from "clear it". `Presence::apply` is
+                    // what knows that, so the subscriber receives the merged
+                    // picture rather than having to reimplement the folding.
+                    let mut merged = PRESENCE.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(launch) = merged.apply(command) {
+                        // The join button's payload. Carried no further yet:
+                        // acting on it means building a launch URL and
+                        // handing it to Discord as a join secret, which is a
+                        // different capability from showing a presence and
+                        // has not been asked for.
+                        println!("[cordial] game: BloxstrapRPC launch data ({} bytes)", launch.len());
+                    } else {
+                        crate::plugin_host::publish_core(
+                            cordial_plugins::core_events::GAME_PRESENCE,
+                            merged.to_payload(),
+                        );
+                    }
                 }
                 Ok(None) => {}
                 Err(e) => println!("[cordial] game: unusable BloxstrapRPC line: {e}"),
@@ -540,6 +576,48 @@ mod tests {
         for on in ["1", "true", "yes"] {
             assert!(close_on_leave_for(Some(on)), "{on} should turn it on");
         }
+    }
+
+    /// **A game's own presence, from the line it printed to the payload a
+    /// plugin receives.** The whole chain in one test, because it crosses three
+    /// modules -- this one recognises the line, `bloxstrap_rpc` parses and
+    /// folds it, and `Presence::to_payload` shapes what goes on the bus -- and
+    /// a break anywhere in it looks identical from Discord: nothing happens.
+    ///
+    /// The two lines are the shape a game actually prints, wrapped the way the
+    /// engine logs it. Partial updates on purpose: BloxstrapRPC sends fields
+    /// one at a time and "leave this alone" is a distinct value from "clear
+    /// it", so a subscriber seeing only the second line must still get the
+    /// details from the first.
+    #[test]
+    fn a_games_bloxstrap_rpc_becomes_a_presence_payload() {
+        let printed = [
+            r#"2026-09-01T00:10:00.000Z,1,a,6 [FLog::Output] [BloxstrapRPC] {"command":"SetRichPresence","data":{"details":"Fighting the Boss","state":"Round 3 of 5"}}"#,
+            r#"2026-09-01T00:10:05.000Z,1,a,6 [FLog::Output] [BloxstrapRPC] {"command":"SetRichPresence","data":{"timeStart":1788200000}}"#,
+        ];
+        let mut merged = crate::bloxstrap_rpc::Presence::new();
+        for line in printed {
+            let Some(Event::Rpc(raw)) = parse_line(line) else {
+                panic!("the watcher did not recognise {line}");
+            };
+            let command = crate::bloxstrap_rpc::parse_line(&raw)
+                .expect("parses")
+                .expect("is a command");
+            assert!(merged.apply(command).is_none(), "neither line is launch data");
+        }
+
+        let payload = merged.to_payload();
+        assert_eq!(payload["details"], "Fighting the Boss");
+        assert_eq!(payload["state"], "Round 3 of 5", "the first line must survive the second");
+        assert_eq!(payload["start"], 1788200000);
+        assert!(payload.get("end").is_none(), "a field the game never set is absent, not null");
+    }
+
+    /// Leaving clears it, so one experience's presence does not outlive it.
+    #[test]
+    fn a_fresh_presence_carries_nothing() {
+        let payload = crate::bloxstrap_rpc::Presence::new().to_payload();
+        assert_eq!(payload, serde_json::json!({}));
     }
 
     /// An absent directory is silence, not an error.

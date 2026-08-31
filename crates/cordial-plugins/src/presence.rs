@@ -114,8 +114,37 @@ impl PresencePayload {
             }
             activity.insert("assets".into(), Value::Object(assets));
         }
+        // **Cordial's own button, on every presence, including one a game
+        // drove.** BloxstrapRPC lets an experience set the details and the
+        // state from inside itself; this is the one part of the activity that
+        // is Cordial's and not the caller's, which is why it is added here in
+        // the broker rather than by the plugin that happened to make the call.
+        // ADR-007's shape exactly: Cordial performs the effect, so Cordial
+        // decides what its own name is attached to.
+        //
+        // Deliberately not a field a payload may set. `PresencePayload` is
+        // `deny_unknown_fields`, so a plugin asking for `buttons` is refused
+        // rather than quietly ignored -- a plugin that could set its own would
+        // be able to publish an arbitrary link under Cordial's name and icon,
+        // which is a different capability from "show a presence" and is not
+        // one anything has been granted.
+        activity.insert("buttons".into(), json!([cordial_button()]));
         Value::Object(activity)
     }
+}
+
+/// The button Discord renders under every activity Cordial publishes.
+///
+/// One, not two. Discord allows two, and the second is the one that would get
+/// filled with whatever seemed useful at the time; leaving it empty keeps the
+/// activity small and keeps this from becoming a place to advertise.
+///
+/// The label is well inside Discord's 32-character limit and the URL is
+/// `https`, which Discord requires -- it rejects the whole activity otherwise,
+/// silently, which is the failure mode this comment exists to stop somebody
+/// reintroducing with a nicer label.
+fn cordial_button() -> Value {
+    json!({ "label": "Cordial on GitHub", "url": "https://github.com/luohoa97/cordial" })
 }
 
 const OP_HANDSHAKE: u32 = 0;

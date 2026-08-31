@@ -27,6 +27,13 @@
 // protocol games use to say what they are, so the missing piece is the core
 // event carrying it, not the parsing.
 
+// What a running experience asked for, through BloxstrapRPC. Cordial parses
+// the game's `print` output, folds the partial updates, and pushes the merged
+// picture here -- see `cordial_runtime::game_log`. An empty payload means the
+// player left and the game's presence goes with it.
+const GAME_PRESENCE = "cordial/game.presence";
+let fromGame: { details?: string; state?: string; start?: number; end?: number } = {};
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -100,6 +107,8 @@ const pending = new Map<number, (r: any) => void>();
         // it did.
         if (msg.event === "cordial/init") {
           adoptPreferences(msg.payload?.preferences ?? null);
+        } else if (msg.event === GAME_PRESENCE) {
+          onGamePresence(msg.payload);
         } else {
           onLifecycleEvent(msg.event);
         }
@@ -156,7 +165,10 @@ const RESEND_MS = 20_000;
 // seconds -- which is what re-sending a fresh `start` would do, and it would
 // look like a bug in Cordial rather than in this line.
 let startedAt: number | null = null;
-let currentState: string | null = null;
+// Whether a session is up at all. This was a state string, which no longer
+// exists; it is a flag now because the only thing the heartbeat needs to know
+// is whether to keep sending.
+let running = false;
 let lastStatus: string | null = null;
 // `ReturnType<typeof setInterval>` rather than `number`: Deno types this as
 // `Timeout`, not the browser's numeric handle, and hardcoding `number` fails
@@ -164,12 +176,34 @@ let lastStatus: string | null = null;
 let heartbeat: ReturnType<typeof setInterval> | null = null;
 
 async function pushPresence(reason: string) {
-  if (currentState === null || startedAt === null) return;
+  if (!running || startedAt === null) return;
+  // **No `details` and no `state`, deliberately.**
+  //
+  // These used to be "Using Cordial" and "Starting up"/"In session", and it
+  // was reported stuck: "its stuck on starting up". Two separate faults, one
+  // fix. The state only advanced on `client.ready`, so if that event does not
+  // arrive the presence says "Starting up" for the whole session -- a status
+  // line that can be wrong is worse than no status line. And Discord already
+  // renders "Playing Cordial" from the application itself, so both fields were
+  // saying, less reliably, something the header said anyway.
+  //
+  // What is left is the application name, the icon, the elapsed timer, and the
+  // button the broker adds. "Playing Cordial", which is what was asked for and
+  // is the only claim here that cannot go stale.
+  // **The game wins where it said something, and only there.** Cordial's own
+  // presence is "Playing Cordial" and an elapsed timer; an experience using
+  // BloxstrapRPC replaces the lines it sets and leaves the rest alone, which
+  // is what makes a game's own presence look like the game's rather than like
+  // Cordial's with a subtitle.
+  //
+  // `start` is the game's when it gave one, because an experience timing a
+  // round means that, and Cordial's session clock would be wrong for it.
   const res = await call("presence.set", {
     client_id: clientId,
-    details: "Using Cordial",
-    state: currentState,
-    start: startedAt,
+    ...(fromGame.details !== undefined ? { details: fromGame.details } : {}),
+    ...(fromGame.state !== undefined ? { state: fromGame.state } : {}),
+    ...(fromGame.end !== undefined ? { end: fromGame.end } : {}),
+    start: fromGame.start ?? startedAt,
   });
   // Logged only when the answer changes. At one send every twenty seconds an
   // unconditional line would be three an hour per state and would bury
@@ -187,12 +221,26 @@ async function pushPresence(reason: string) {
   }
 }
 
+async function onGamePresence(payload: unknown) {
+  const p = (payload ?? {}) as Record<string, unknown>;
+  fromGame = {
+    details: typeof p.details === "string" ? p.details : undefined,
+    state: typeof p.state === "string" ? p.state : undefined,
+    start: typeof p.start === "number" ? p.start : undefined,
+    end: typeof p.end === "number" ? p.end : undefined,
+  };
+  // Forced rather than left to the heartbeat: a game setting its presence and
+  // Discord showing it up to twenty seconds later would read as broken.
+  lastStatus = null;
+  await pushPresence("game");
+}
+
 async function onLifecycleEvent(event: string) {
   if (event === LAUNCH || event === READY) {
     startedAt ??= Math.floor(Date.now() / 1000);
-    currentState = event === LAUNCH ? "Starting up" : "In session";
-    // Forced, because the state just changed and the reader should see it now
-    // rather than up to twenty seconds later.
+    running = true;
+    // Forced, so a reader sees the answer to this event rather than the answer
+    // to the last one up to twenty seconds ago.
     lastStatus = null;
     await pushPresence(event);
     heartbeat ??= setInterval(() => {
@@ -203,7 +251,7 @@ async function onLifecycleEvent(event: string) {
       clearInterval(heartbeat);
       heartbeat = null;
     }
-    currentState = null;
+    running = false;
     const res = await call("presence.clear");
     await log(`presence.clear on shutdown came back: ${res.status}`);
   } else {

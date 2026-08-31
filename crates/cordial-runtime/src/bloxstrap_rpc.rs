@@ -93,6 +93,20 @@ pub struct Presence {
     pub small_image: Slot<Image>,
 }
 
+impl Slot<String> {
+    /// The string to publish, or `None` when the game never mentioned it.
+    ///
+    /// `Empty` becomes `""` rather than `None`: the game clearing a field is a
+    /// statement, and dropping it would leave whatever was there before.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Slot::Default => None,
+            Slot::Empty => Some(""),
+            Slot::Value(v) => Some(v),
+        }
+    }
+}
+
 /// A field's settled value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Slot<T> {
@@ -167,6 +181,52 @@ impl<T> Default for Update<T> {
 }
 
 impl Presence {
+    /// An empty presence: every field still Cordial's own.
+    ///
+    /// `const` so it can start a `static Mutex` without a lazy initialiser --
+    /// `game_log` keeps one for the process, since there is one engine in it.
+    pub const fn new() -> Self {
+        Presence {
+            details: Slot::Default,
+            state: Slot::Default,
+            time_start: Slot::Default,
+            time_end: Slot::Default,
+            large_image: Slot::Default,
+            small_image: Slot::Default,
+        }
+    }
+
+    /// What a subscriber to `core_events::GAME_PRESENCE` receives.
+    ///
+    /// **Only fields the game actually set.** `Slot::Default` means the game
+    /// never mentioned it and Cordial's own value stands, so it is omitted
+    /// rather than sent as null -- a subscriber that filled a field from a
+    /// null would be publishing "the game asked for nothing here" as though
+    /// the game had asked for it. `Slot::Empty` is the opposite and *is* sent,
+    /// as an empty string, because the game explicitly cleared it.
+    ///
+    /// Images are deliberately not carried. They are Discord asset keys
+    /// belonging to whichever application the presence is published under, and
+    /// a key from a game's own Bloxstrap application means nothing under
+    /// Cordial's -- Discord renders a missing key as no image at all, so
+    /// forwarding them would silently blank the icon rather than improve it.
+    pub fn to_payload(&self) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        if let Some(v) = self.details.as_text() {
+            map.insert("details".into(), serde_json::json!(v));
+        }
+        if let Some(v) = self.state.as_text() {
+            map.insert("state".into(), serde_json::json!(v));
+        }
+        if let Slot::Value(t) = &self.time_start {
+            map.insert("start".into(), serde_json::json!(t));
+        }
+        if let Slot::Value(t) = &self.time_end {
+            map.insert("end".into(), serde_json::json!(t));
+        }
+        serde_json::Value::Object(map)
+    }
+
     /// Fold a command in. Returns the launch data if that is what it was, so a
     /// caller driving both from one stream does not need to match twice.
     pub fn apply(&mut self, command: Command) -> Option<String> {
