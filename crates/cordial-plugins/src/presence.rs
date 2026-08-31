@@ -56,6 +56,18 @@ pub struct PresencePayload {
     pub small_image: Option<String>,
     #[serde(default)]
     pub small_text: Option<String>,
+    /// The experience being played, for the buttons Cordial adds.
+    ///
+    /// **Not the same thing as `details` and `state`, which are decoration.**
+    /// These two are identifiers, and Cordial turns them into URLs -- so they
+    /// are validated here rather than passed through, and a plugin cannot set
+    /// the resulting link directly. See [`buttons_for`].
+    #[serde(default)]
+    pub place_id: Option<u64>,
+    /// The server instance, when one is known. `roblox://...&gameInstanceId=`
+    /// needs it to join *this* server rather than start a new one.
+    #[serde(default)]
+    pub job_id: Option<String>,
 }
 
 /// Discord's own limit on `details` and `state`; rejecting past it here
@@ -75,6 +87,16 @@ impl PresencePayload {
                 if t.chars().count() > TEXT_FIELD_LIMIT {
                     return Err(format!("{name} must be at most {TEXT_FIELD_LIMIT} characters, Discord's own limit"));
                 }
+            }
+        }
+        // A job id becomes part of a `roblox://` URL handed to another
+        // program, so it is checked here rather than trusted. Same rule
+        // `game_log` applies where it is read: a UUID and nothing else.
+        if let Some(job) = &payload.job_id {
+            let shaped = job.len() == 36
+                && job.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-');
+            if !shaped {
+                return Err("job_id must be a server instance UUID".into());
             }
         }
         Ok(payload)
@@ -128,7 +150,7 @@ impl PresencePayload {
         // be able to publish an arbitrary link under Cordial's name and icon,
         // which is a different capability from "show a presence" and is not
         // one anything has been granted.
-        activity.insert("buttons".into(), json!([cordial_button()]));
+        activity.insert("buttons".into(), json!(buttons_for(self.place_id, self.job_id.as_deref())));
         Value::Object(activity)
     }
 }
@@ -145,6 +167,49 @@ impl PresencePayload {
 /// reintroducing with a nicer label.
 fn cordial_button() -> Value {
     json!({ "label": "Cordial on GitHub", "url": "https://github.com/luohoa97/cordial" })
+}
+
+/// The buttons under an activity: at most one about the game, then Cordial's.
+///
+/// **Discord allows exactly two, and that is what decides the shape.**
+/// Bloxstrap uses both of its own -- "Join server" and "See game page" -- and
+/// Cordial's own link has to be on every activity, so one of theirs gives way.
+/// The join link goes first when there is one, because it is the only button
+/// that does something you cannot do from the other; the game page is the
+/// fallback, because a place id alone still tells somebody what is being
+/// played.
+///
+/// The URL shape is Bloxstrap's, adapted rather than transcribed (MIT,
+/// Bloxstrap Labs): `roblox://experiences/start?placeId=…&gameInstanceId=…`.
+///
+/// **No join button without a job id**, and that is not caution for its own
+/// sake -- a `placeId` on its own launches a *new* server, so a "Join server"
+/// button built from one would take somebody somewhere the player is not. A
+/// button that does the wrong thing is worse than an absent one.
+///
+/// Cordial does not know whether the server is public. Bloxstrap does, and
+/// hides the button for private ones; here the link is simply offered and
+/// Roblox refuses it if the clicker cannot join, which is a worse experience
+/// than Bloxstrap's and an honest one -- inventing a server-type guess would
+/// be the kind of plausible inference this project keeps retracting.
+fn buttons_for(place_id: Option<u64>, job_id: Option<&str>) -> Vec<Value> {
+    let mut buttons = Vec::with_capacity(2);
+    if let Some(place) = place_id {
+        match job_id {
+            Some(job) => buttons.push(json!({
+                "label": "Join server",
+                "url": format!(
+                    "roblox://experiences/start?placeId={place}&gameInstanceId={job}"
+                ),
+            })),
+            None => buttons.push(json!({
+                "label": "See game page",
+                "url": format!("https://www.roblox.com/games/{place}"),
+            })),
+        }
+    }
+    buttons.push(cordial_button());
+    buttons
 }
 
 const OP_HANDSHAKE: u32 = 0;
@@ -325,6 +390,74 @@ impl Default for DiscordPresence {
 
 #[cfg(test)]
 mod tests {
+
+    /// **Cordial's button is on every activity, including a game's.** That is
+    /// the requirement -- "keep the github link for every game btw" -- and it
+    /// is the one thing here a caller cannot remove.
+    #[test]
+    fn cordials_button_is_always_last_and_always_present() {
+        for (place, job) in
+            [(None, None), (Some(1u64), None), (Some(1u64), Some("a"))]
+        {
+            let b = super::buttons_for(place, job);
+            assert_eq!(b.last().unwrap()["label"], "Cordial on GitHub", "{place:?}/{job:?}");
+            assert!(b.len() <= 2, "Discord allows two buttons, got {}", b.len());
+        }
+    }
+
+    /// A join link needs the server, not just the place.
+    ///
+    /// **A `placeId` on its own starts a *new* server**, so a "Join server"
+    /// button built from one would send somebody to a place the player is not.
+    /// The game page is offered instead, which is honest about what it does.
+    #[test]
+    fn without_a_job_id_there_is_no_join_button() {
+        let b = super::buttons_for(Some(17625359962), None);
+        assert_eq!(b[0]["label"], "See game page");
+        assert_eq!(b[0]["url"], "https://www.roblox.com/games/17625359962");
+    }
+
+    /// With one, the deeplink names the instance.
+    ///
+    /// The shape is Bloxstrap's (MIT), adapted: their
+    /// `ActivityData.GetInviteDeeplink` builds
+    /// `roblox://experiences/start?placeId=…&gameInstanceId=…`.
+    #[test]
+    fn a_job_id_produces_a_join_deeplink_naming_the_instance() {
+        let b = super::buttons_for(Some(17625359962), Some("3182c122-8e1c-4f50-b0ac-6fb67ba0082f"));
+        assert_eq!(b[0]["label"], "Join server");
+        assert_eq!(
+            b[0]["url"],
+            "roblox://experiences/start?placeId=17625359962&gameInstanceId=3182c122-8e1c-4f50-b0ac-6fb67ba0082f"
+        );
+    }
+
+    /// Outside a game there is only Cordial's own button.
+    #[test]
+    fn the_home_screen_gets_one_button() {
+        assert_eq!(super::buttons_for(None, None).len(), 1);
+    }
+
+    /// **A job id that is not a UUID is refused before it reaches a URL.**
+    ///
+    /// It arrives from a plugin over the wire and ends up in a `roblox://`
+    /// link handed to another program, so the check is at the boundary rather
+    /// than trusted from wherever it came.
+    #[test]
+    fn a_job_id_that_is_not_a_uuid_is_refused_at_the_payload() {
+        let bad = serde_json::json!({
+            "client_id": "1543200871767212062",
+            "job_id": "../../etc/passwd",
+        });
+        let err = super::PresencePayload::parse(&bad).unwrap_err();
+        assert!(err.contains("job_id"), "{err}");
+
+        let good = serde_json::json!({
+            "client_id": "1543200871767212062",
+            "job_id": "3182c122-8e1c-4f50-b0ac-6fb67ba0082f",
+        });
+        assert!(super::PresencePayload::parse(&good).is_ok());
+    }
     use super::*;
     use std::os::unix::net::UnixListener;
 

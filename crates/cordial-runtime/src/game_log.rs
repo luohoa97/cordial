@@ -344,6 +344,31 @@ fn close_on_leave_for(v: Option<&str>) -> bool {
 static PRESENCE: Mutex<crate::bloxstrap_rpc::Presence> =
     Mutex::new(crate::bloxstrap_rpc::Presence::new());
 
+/// The experience being played: `(place_id, job_id)`.
+///
+/// Kept beside the presence because the buttons need it and BloxstrapRPC does
+/// not carry it -- the two facts arrive on different log lines, minutes apart
+/// in a long session, and only Cordial sees both.
+static PLAYING: Mutex<Option<(u64, Option<String>)>> = Mutex::new(None);
+
+/// The presence payload plus what the buttons need.
+///
+/// Merged here rather than in `Presence::to_payload`, which is the parsed
+/// BloxstrapRPC protocol and has no business knowing about a job id it never
+/// sees.
+fn presence_payload() -> serde_json::Value {
+    let mut payload = PRESENCE.lock().unwrap_or_else(|e| e.into_inner()).to_payload();
+    if let (Some(map), Some((place, job))) =
+        (payload.as_object_mut(), PLAYING.lock().unwrap_or_else(|e| e.into_inner()).as_ref())
+    {
+        map.insert("place_id".into(), serde_json::json!(place));
+        if let Some(job) = job {
+            map.insert("job_id".into(), serde_json::json!(job));
+        }
+    }
+    payload
+}
+
 pub fn poll() {
     static WATCHER: Mutex<Option<Watcher>> = Mutex::new(None);
     let mut guard = WATCHER.lock().unwrap_or_else(|e| e.into_inner());
@@ -355,9 +380,22 @@ pub fn poll() {
                 println!(
                     "[cordial] game: joined place {place_id} (universe {universe_id}) as {user_id}"
                 );
+                // The job id, if `! Joining game` was seen for this same place.
+                // Not cleared when it was not: a teleport reports the join line
+                // again and the instance may legitimately be unknown, and an
+                // absent job id costs the join button rather than breaking it.
+                let mut playing = PLAYING.lock().unwrap_or_else(|e| e.into_inner());
+                let job = playing.take().filter(|(p, _)| *p == place_id).and_then(|(_, j)| j);
+                *playing = Some((place_id, job));
+                drop(playing);
+                crate::plugin_host::publish_core(
+                    cordial_plugins::core_events::GAME_PRESENCE,
+                    presence_payload(),
+                );
             }
             Event::Joining { job_id, place_id } => {
                 println!("[cordial] game: joining server {job_id} of place {place_id}");
+                *PLAYING.lock().unwrap_or_else(|e| e.into_inner()) = Some((place_id, Some(job_id)));
             }
             Event::Server { address, port } => {
                 println!("[cordial] game: server {address}:{port}");
@@ -370,6 +408,7 @@ pub fn poll() {
                 // them -- and on the home screen that is simply wrong.
                 *PRESENCE.lock().unwrap_or_else(|e| e.into_inner()) =
                     crate::bloxstrap_rpc::Presence::new();
+                *PLAYING.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 crate::plugin_host::publish_core(
                     cordial_plugins::core_events::GAME_PRESENCE,
                     serde_json::json!({}),
@@ -409,9 +448,10 @@ pub fn poll() {
                         // has not been asked for.
                         println!("[cordial] game: BloxstrapRPC launch data ({} bytes)", launch.len());
                     } else {
+                        drop(merged);
                         crate::plugin_host::publish_core(
                             cordial_plugins::core_events::GAME_PRESENCE,
-                            merged.to_payload(),
+                            presence_payload(),
                         );
                     }
                 }

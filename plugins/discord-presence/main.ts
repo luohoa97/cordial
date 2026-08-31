@@ -32,7 +32,14 @@
 // picture here -- see `cordial_runtime::game_log`. An empty payload means the
 // player left and the game's presence goes with it.
 const GAME_PRESENCE = "cordial/game.presence";
-let fromGame: { details?: string; state?: string; start?: number; end?: number } = {};
+let fromGame: {
+  details?: string;
+  state?: string;
+  start?: number;
+  end?: number;
+  place_id?: number;
+  job_id?: string;
+} = {};
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -203,6 +210,11 @@ async function pushPresence(reason: string) {
     ...(fromGame.details !== undefined ? { details: fromGame.details } : {}),
     ...(fromGame.state !== undefined ? { state: fromGame.state } : {}),
     ...(fromGame.end !== undefined ? { end: fromGame.end } : {}),
+    // The broker turns these into the buttons; this plugin never builds a URL.
+    // A plugin that could would be publishing an arbitrary link under
+    // Cordial's name and icon, which is not what `presence.set` grants.
+    ...(fromGame.place_id !== undefined ? { place_id: fromGame.place_id } : {}),
+    ...(fromGame.job_id !== undefined ? { job_id: fromGame.job_id } : {}),
     start: fromGame.start ?? startedAt,
   });
   // Logged only when the answer changes. At one send every twenty seconds an
@@ -228,6 +240,8 @@ async function onGamePresence(payload: unknown) {
     state: typeof p.state === "string" ? p.state : undefined,
     start: typeof p.start === "number" ? p.start : undefined,
     end: typeof p.end === "number" ? p.end : undefined,
+    place_id: typeof p.place_id === "number" ? p.place_id : undefined,
+    job_id: typeof p.job_id === "string" ? p.job_id : undefined,
   };
   // Forced rather than left to the heartbeat: a game setting its presence and
   // Discord showing it up to twenty seconds later would read as broken.
