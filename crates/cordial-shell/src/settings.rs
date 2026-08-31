@@ -577,6 +577,47 @@ pub(crate) fn choose_file(
 /// unconditionally would be a control that reports success and does not act.
 /// The plugins page in this same window exists in its current form because that
 /// exact defect shipped here twice.
+/// "Session" — what Cordial does with the client, as opposed to how it runs.
+///
+/// **One row, and it is in its own group rather than under Performance
+/// because it is not one.** It was, briefly, and the correction is the reason
+/// this group exists: Performance is GameMode, the background throttle and
+/// MangoHUD -- how hard the machine is driven. When to stop is a preference
+/// about behaviour, and filing it under Performance would have somebody
+/// looking for it in the wrong place and finding the wrong things while they
+/// looked.
+///
+/// A group of one is thin and is the honest shape today. What belongs beside
+/// it later is the rest of "what happens around a session" rather than
+/// anything about frames.
+fn build_session_group(
+    config: Rc<RefCell<ShellConfig>>,
+    config_path: Rc<PathBuf>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder().title("Session").build();
+
+    let close_on_leave = adw::SwitchRow::builder()
+        .title("Quit when you leave a game")
+        // Says which moment it acts on, because the obvious worry is that it
+        // fires on a network blip. It does not -- the engine's own "returned
+        // to the home screen" is a different log line from any disconnect, and
+        // a teleport between places is a disconnect.
+        .subtitle("Leaving a server or being disconnected mid-game does not count.")
+        .active(config.borrow().close_on_leave)
+        .build();
+    close_on_leave.set_subtitle_lines(2);
+    {
+        let config = config.clone();
+        let config_path = config_path.clone();
+        close_on_leave.connect_active_notify(move |row| {
+            config.borrow_mut().close_on_leave = row.is_active();
+            persist(&config, &config_path);
+        });
+    }
+    group.add(&close_on_leave);
+    group
+}
+
 fn build_performance_group(
     config: Rc<RefCell<ShellConfig>>,
     config_path: Rc<PathBuf>,
@@ -609,28 +650,6 @@ fn build_performance_group(
     }
     group.add(&gamemode);
 
-    // Under Performance rather than beside Controllers: this is about what
-    // Cordial does with the process, like GameMode above and the background
-    // throttle below, rather than about what the engine is told.
-    let close_on_leave = adw::SwitchRow::builder()
-        .title("Quit when you leave a game")
-        // Says which moment it acts on, because the obvious worry is that it
-        // fires on a network blip. It does not -- the engine's own
-        // "returned to the home screen" is a different log line from any
-        // disconnect, and a teleport between places is a disconnect.
-        .subtitle("Closes Cordial when you return to the home screen. Leaving a server or being disconnected mid-game does not count.")
-        .active(config.borrow().close_on_leave)
-        .build();
-    close_on_leave.set_subtitle_lines(3);
-    {
-        let config = config.clone();
-        let config_path = config_path.clone();
-        close_on_leave.connect_active_notify(move |row| {
-            config.borrow_mut().close_on_leave = row.is_active();
-            persist(&config, &config_path);
-        });
-    }
-    group.add(&close_on_leave);
 
     // Order has to match ThrottleWhen::index/from_index.
     let throttle_model = gtk::StringList::new(&[
@@ -1194,7 +1213,8 @@ fn build_general_page(
 
     page.add(&group);
     page.add(&build_audio_group(config.clone(), config_path.clone()));
-    page.add(&build_performance_group(config, config_path));
+    page.add(&build_performance_group(config.clone(), config_path.clone()));
+    page.add(&build_session_group(config, config_path));
     page
 }
 
