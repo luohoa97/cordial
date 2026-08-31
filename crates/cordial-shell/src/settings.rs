@@ -1139,6 +1139,36 @@ fn build_general_page(
     }
     group.add(&present);
 
+    // A switch rather than a combo, because it is one question with two
+    // answers, and it lives beside Frame pacing rather than under Performance
+    // because it decides what Cordial tells the engine about the machine --
+    // the same kind of thing as the Renderer row -- and not how hard the
+    // machine is driven.
+    let gamepad = adw::SwitchRow::builder()
+        .title("Controllers")
+        // **The caveat is on the row because it is the reason somebody would
+        // turn this off.** The buttons work; the glyphs Roblox draws may name
+        // the wrong brand, because which integer selects which brand is still
+        // unestablished (Sober #584 and #1810 are the same symptom on the
+        // neighbouring runtime). Somebody who would rather have no controller
+        // than the wrong buttons drawn should be able to see that here rather
+        // than discover it in a game.
+        .subtitle(
+            "Roblox may draw the wrong brand of button glyphs; the buttons themselves work.              Turn this off if a device that is not a controller is being detected as one.",
+        )
+        .active(config.borrow().gamepad)
+        .build();
+    gamepad.set_subtitle_lines(3);
+    {
+        let config = config.clone();
+        let config_path = config_path.clone();
+        gamepad.connect_active_notify(move |row| {
+            config.borrow_mut().gamepad = row.is_active();
+            persist(&config, &config_path);
+        });
+    }
+    group.add(&gamepad);
+
     page.add(&group);
     page.add(&build_audio_group(config.clone(), config_path.clone()));
     page.add(&build_performance_group(config, config_path));

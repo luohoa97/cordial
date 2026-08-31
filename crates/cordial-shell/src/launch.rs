@@ -426,6 +426,16 @@ pub fn spawn(
         command.env("CORDIAL_PRESENT_MODE", mode);
     }
 
+    // The Controllers switch, and **only when it is off**. `CORDIAL_GAMEPAD`
+    // is an off switch on the client side -- absent means on, and only the
+    // exact string "0" disables it -- so sending nothing is how "leave it on"
+    // is spelled. Sending `1` would work today and would quietly become a
+    // second way of saying the same thing the day anybody gives that variable
+    // another value.
+    if !config.gamepad {
+        command.env("CORDIAL_GAMEPAD", "0");
+    }
+
     // The Graphics optimisation row, and **only for the parameters the chosen
     // mode actually asks for** -- exactly the rule the Renderer row above
     // follows, for exactly the same reason. `CordialDeviceProfile` is a

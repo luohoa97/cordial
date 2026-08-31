@@ -770,6 +770,30 @@ pub struct ShellConfig {
     /// upgrading gets a different feel than they had.
     #[serde(default)]
     pub present_mode: PresentMode,
+    /// Whether Cordial reads `/dev/input/js*` and tells Roblox about pads.
+    ///
+    /// On by default. Off is a real setting rather than a debugging knob:
+    /// gamepad support ships with `gamepadType` still unestablished, so the
+    /// glyphs Roblox draws may name the wrong brand (Sober #584, #1810), and
+    /// somebody who would rather have no controller than the wrong buttons
+    /// drawn should not have to find an environment variable to say so.
+    ///
+    /// It is also the escape hatch for a device that misbehaves. joydev binds
+    /// to anything advertising ABS_X/ABS_Y, and while
+    /// `gamepad::is_a_controller` now rejects the ones that are plainly not
+    /// pads -- a virtual mouse became `/dev/input/js0` on the machine this was
+    /// written on -- a filter that reads capabilities cannot anticipate every
+    /// device, and the cost of it being wrong is Roblox believing a controller
+    /// is plugged in.
+    ///
+    /// **No `#[serde(default)]` on this field, deliberately.** The container
+    /// carries one, which fills a missing key from `ShellConfig::default()` --
+    /// `true`, which is what builds before this key existed did. A field-level
+    /// attribute would override that with `bool::default()`, silently reading
+    /// as controllers-off for every existing install. The first draft had it
+    /// and the test below caught it, which is why both the attribute's absence
+    /// and the reason are written down.
+    pub gamepad: bool,
     pub mangohud: bool,
     /// Which audio device Roblox plays through. See [`AudioOutput`], which
     /// carries the whole of the reasoning, including why the stored form is a
@@ -842,6 +866,7 @@ impl Default for ShellConfig {
             graphics: "automatic".to_string(),
             graphics_optimization_mode: GraphicsOptimization::default(),
             present_mode: PresentMode::default(),
+            gamepad: true,
             audio_output: AudioOutput::default(),
             mangohud: false,
             fullscreen_accel: default_fullscreen_accel(),
@@ -1147,6 +1172,23 @@ mod tests {
         for scheme in [AppearanceScheme::Light, AppearanceScheme::Dark, AppearanceScheme::System] {
             assert_eq!(AppearanceScheme::from_index(scheme.index()), scheme);
         }
+    }
+
+    /// Controllers work out of the box, and the switch that turns them off
+    /// survives a round trip through the file.
+    ///
+    /// The default matters enough to pin: `#[serde(default)]` on the container
+    /// means a missing key takes `ShellConfig::default()`'s value, so a plain
+    /// `#[derive(Default)]` on a `bool` field would silently make this `false`
+    /// for every existing install. That is the failure this asserts against.
+    #[test]
+    fn controllers_are_on_unless_the_switch_says_otherwise() {
+        assert!(ShellConfig::default().gamepad, "a fresh install has controllers on");
+        let older = r#"{"gamemode":true,"graphics":"automatic","mangohud":false}"#;
+        let parsed: ShellConfig = serde_json::from_str(older).expect("an older shell.json must load");
+        assert!(parsed.gamepad, "a config predating the key must not read as controllers off");
+        let off: ShellConfig = serde_json::from_str(r#"{"gamepad":false}"#).unwrap();
+        assert!(!off.gamepad, "an explicit false must survive");
     }
 
     /// **A fresh install is responsive, and pays power for it.**
