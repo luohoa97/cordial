@@ -20,6 +20,7 @@ pub mod enablement;
 pub mod events;
 pub mod flag_document;
 pub mod grants;
+pub mod health;
 pub mod host;
 pub mod manifest;
 pub mod marketplace;

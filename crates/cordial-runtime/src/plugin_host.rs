@@ -124,6 +124,11 @@ pub fn start_all() -> usize {
     let profile = crate::profile::active();
     grants::migrate_legacy_into(&profile);
     let grants_path = grants::path_in(&profile);
+    // Where a plugin that will not start says so, for the settings window to
+    // read. See `cordial_plugins::health`: a plugin whose process fails is
+    // otherwise indistinguishable in Settings from one that works and has not
+    // done anything yet.
+    let health_path = cordial_plugins::health::path_in(&profile);
     let approved = grants::load(&grants_path);
     let store = Store::new(&profile);
     // The process-global one rather than a local, because the client's own
@@ -180,6 +185,7 @@ pub fn start_all() -> usize {
             Ok(e) => e,
             Err(e) => {
                 println!("  plugin {id}: {e}");
+                let _ = cordial_plugins::health::record(&health_path, &id, &e.to_string());
                 continue;
             }
         };
@@ -229,8 +235,26 @@ pub fn start_all() -> usize {
                     .ok();
                 started += 1;
                 println!("  plugin {id}: started");
+                // **Clearing matters as much as recording.** A warning left
+                // behind after the thing is fixed teaches people to ignore
+                // warnings, which costs more than the one it was pointing at.
+                // Writes nothing when there was nothing to clear.
+                let _ = cordial_plugins::health::clear(&health_path, &id);
             }
-            Err(e) => println!("  plugin {id}: could not start ({e})"),
+            Err(e) => {
+                println!("  plugin {id}: could not start ({e})");
+                // The message a person sees in Settings. `e` here is the
+                // spawn error -- "No such file or directory" when Deno is not
+                // installed, which is the single most common way a plugin
+                // fails on a machine that has never run one -- so it is
+                // prefixed rather than shown bare, because on its own it
+                // names no file and reads as a Cordial bug.
+                let _ = cordial_plugins::health::record(
+                    &health_path,
+                    &id,
+                    &format!("could not start: {e}"),
+                );
+            }
         }
     }
     started

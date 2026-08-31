@@ -1300,6 +1300,39 @@ fn build_plugin_row(
         .build();
     expander.set_subtitle_lines(2);
 
+    // **A plugin that failed says so on its own row.**
+    //
+    // Without this a plugin whose process will not start looks exactly like
+    // one that works and has not done anything yet: the failure reaches a
+    // `println!` that a packaged launch has no terminal for, and a line in
+    // `plugin.log` that nobody thinks to open.
+    //
+    // **The pattern is libadwaita's, not GNOME Extensions'.** That app marks a
+    // broken extension with an orange gear, which is a coloured version of the
+    // control beside it and means nothing to anyone who has not learned it.
+    // The documented shape is a symbolic icon in the row's suffix carrying the
+    // `error` style class, so it takes the theme's own error colour in both
+    // light and dark and in high contrast.
+    //
+    // **And the message is text, not colour.** The icon says *something* is
+    // wrong; the tooltip says what. Colour alone would be unreadable to anyone
+    // who cannot distinguish it and invisible to a screen reader, so the icon
+    // also carries an accessible label -- `set_tooltip_text` alone is not
+    // announced.
+    if let Some(dir) = profile_dir {
+        let failures = cordial_plugins::health::load(&cordial_plugins::health::path_in(dir));
+        if let Some(failure) = failures.get(&id) {
+            let warning = gtk::Image::from_icon_name("dialog-error-symbolic");
+            warning.add_css_class("error");
+            warning.set_tooltip_text(Some(&failure.message));
+            warning.update_property(&[gtk::accessible::Property::Label(&format!(
+                "Failed: {}",
+                failure.message
+            ))]);
+            expander.add_suffix(&warning);
+        }
+    }
+
     // A freshly installed plugin has never been granted anything (ADR-003's
     // default deny), so this button is reachable — and needed — the moment
     // the row appears, not only after a page reload.
