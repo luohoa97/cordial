@@ -1,0 +1,20 @@
+{
+  "id": "hide-gui",
+  "name": "Hide the interface",
+  "version": "1.0.0",
+  "entry": "main.ts",
+  "capabilities": [
+    "flags.write",
+    "settings.read",
+    "log"
+  ],
+  "preferences": [
+    {
+      "key": "group_id",
+      "title": "Roblox group",
+      "description": "Roblox only unlocks its interface-hiding shortcuts for accounts in a specific group. The default is Bloxstrap's, which is open to join. Blank turns it off.",
+      "type": "text",
+      "default": "32380007"
+    }
+  ]
+}

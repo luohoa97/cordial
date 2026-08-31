@@ -129,16 +129,81 @@ const LAUNCH = "cordial/client.launch";
 const READY = "cordial/client.ready";
 const SHUTDOWN = "cordial/client.shutdown";
 
+// **The presence has to be re-sent, and this is the whole of why.**
+//
+// Reported as "on discord Cordial isnt automatically detected as Rich RPC and
+// added, its broken", and asked precisely: "what if discord isnt open then the
+// user opens discord after a while?"
+//
+// This plugin used to call `presence.set` exactly twice -- once on launch, once
+// on ready -- and then nothing until shutdown. Cordial's broker reconnects to
+// Discord's socket on *every* `presence.set` (see `presence.rs`'s
+// `ensure_connected`, which deliberately has no retry loop of its own because
+// the caller is expected to be the retry). So the retry existed on one side and
+// nobody ever exercised it: if Discord was not running at those two moments,
+// presence never appeared, and no amount of waiting fixed it.
+//
+// The same gap covers Discord restarting mid-session. Discord drops the
+// activity when the IPC connection goes, and nothing here re-established one.
+//
+// Twenty seconds because Discord rate-limits activity updates to roughly one
+// every fifteen, so this is the slowest cadence that is comfortably inside the
+// limit and still picks Discord up within half a minute of it opening.
+const RESEND_MS = 20_000;
+
+// Fixed at the first event rather than recomputed per send, so Discord's
+// "elapsed" counter keeps counting instead of resetting to zero every twenty
+// seconds -- which is what re-sending a fresh `start` would do, and it would
+// look like a bug in Cordial rather than in this line.
+let startedAt: number | null = null;
+let currentState: string | null = null;
+let lastStatus: string | null = null;
+// `ReturnType<typeof setInterval>` rather than `number`: Deno types this as
+// `Timeout`, not the browser's numeric handle, and hardcoding `number` fails
+// `deno check`.
+let heartbeat: ReturnType<typeof setInterval> | null = null;
+
+async function pushPresence(reason: string) {
+  if (currentState === null || startedAt === null) return;
+  const res = await call("presence.set", {
+    client_id: clientId,
+    details: "Using Cordial",
+    state: currentState,
+    start: startedAt,
+  });
+  // Logged only when the answer changes. At one send every twenty seconds an
+  // unconditional line would be three an hour per state and would bury
+  // everything else in the plugin log; a *change* is the interesting event --
+  // Discord appearing, or going away.
+  if (res.status !== lastStatus) {
+    lastStatus = res.status;
+    await log(
+      `presence.set (${reason}) came back: ${res.status}` +
+        (res.status === "ok"
+          ? ""
+          : `. Retrying every ${RESEND_MS / 1000}s -- if Discord is not running yet, ` +
+            `it will be picked up when it is.`),
+    );
+  }
+}
+
 async function onLifecycleEvent(event: string) {
   if (event === LAUNCH || event === READY) {
-    const res = await call("presence.set", {
-      client_id: clientId,
-      details: "Using Cordial",
-      state: event === LAUNCH ? "Starting up" : "In session",
-      start: Math.floor(Date.now() / 1000),
-    });
-    await log(`presence.set on ${event} came back: ${res.status}`);
+    startedAt ??= Math.floor(Date.now() / 1000);
+    currentState = event === LAUNCH ? "Starting up" : "In session";
+    // Forced, because the state just changed and the reader should see it now
+    // rather than up to twenty seconds later.
+    lastStatus = null;
+    await pushPresence(event);
+    heartbeat ??= setInterval(() => {
+      pushPresence("retry").catch(() => {});
+    }, RESEND_MS);
   } else if (event === SHUTDOWN) {
+    if (heartbeat !== null) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+    currentState = null;
     const res = await call("presence.clear");
     await log(`presence.clear on shutdown came back: ${res.status}`);
   } else {
