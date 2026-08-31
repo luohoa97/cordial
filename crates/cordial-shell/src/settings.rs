@@ -2513,7 +2513,7 @@ fn build_fastflags_page(config: Rc<RefCell<ShellConfig>>) -> adw::PreferencesPag
         // where these sit against everything else that sets a flag, that the
         // format they already have works, and that this is not magic.
         .description(
-            "One JSON object of flag names to values, in the same format Bloxstrap uses — paste              a list straight in. These win over anything a plugin sets, and take effect the next              time you press Roblox. A flag Roblox does not have is ignored by the engine, not an              error.",
+            "The same format Bloxstrap uses, so a list pastes straight in. Applies the next time you press Roblox.",
         )
         .build();
 

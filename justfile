@@ -232,6 +232,21 @@ dev *args:
     if [ "$CORDIAL_DEV_CONTROL" != 0 ]; then
         echo "dev control on; attach with: just mcp" >&2
     fi
+    # **Built-in plugins, from the source tree rather than from a package.**
+    #
+    # `manifest::system_plugin_dir` looks in `/usr/share/cordial/plugins` (or
+    # `/app/share/...` in the Flatpak), which only a packaging script ever
+    # populates -- so a built-in plugin could not be run at all without
+    # building a .deb or an .rpm first. Reported as "built in plugins cant be
+    # tested in the just dev --in toolbox versions, it has to be packaged. bad
+    # for development", and it is: the loop for changing one line of a
+    # first-party plugin was a full package build.
+    #
+    # The override already existed for distributions that install elsewhere.
+    # Pointing it at `plugins/` makes `just dev` load exactly what the
+    # packaging scripts would install, from the files being edited.
+    export CORDIAL_SYSTEM_PLUGIN_DIR="${CORDIAL_SYSTEM_PLUGIN_DIR:-$PWD/plugins}"
+    echo "built-in plugins from $CORDIAL_SYSTEM_PLUGIN_DIR" >&2
     exec "./$bindir/cordial-shell" ${extra+"${extra[@]}"}
 
 # Run the engine directly: just client [--in host|distrobox|nix] [--apk PATH] [--run SECS]
@@ -340,6 +355,11 @@ client *args:
     if [ "$CORDIAL_DEV_CONTROL" != 0 ]; then
         echo "dev control on; attach with: just mcp" >&2
     fi
+    # Built-in plugins from the source tree, for the same reason `just dev`
+    # does it -- see the longer comment there. Both recipes, because a plugin
+    # that loads under one and not the other is a difference nobody would think
+    # to suspect.
+    export CORDIAL_SYSTEM_PLUGIN_DIR="${CORDIAL_SYSTEM_PLUGIN_DIR:-$PWD/plugins}"
     # A long default timer on purpose: a run that ends on its own while somebody
     # is still reading the screen looks exactly like a crash, and that has
     # already cost one debugging session here.
