@@ -1,7 +1,7 @@
 # ADR-027: Plugins describe an overlay; Cordial draws it
 
 **Status:** proposed
-**Related:** [ADR-001](ADR-001-in-process-hooking.md), [ADR-003](ADR-003-plugin-isolation.md), [ADR-007](ADR-007-host-resources-are-brokered.md), [ADR-010](ADR-010-plugin-asset-overlays.md), [ADR-011](ADR-011-wayland-and-libadwaita.md), [ADR-026](ADR-026-the-core-event-bus.md)
+**Related:** [ADR-029](ADR-029-overlays-are-three-decisions.md), [ADR-001](ADR-001-in-process-hooking.md), [ADR-003](ADR-003-plugin-isolation.md), [ADR-007](ADR-007-host-resources-are-brokered.md), [ADR-010](ADR-010-plugin-asset-overlays.md), [ADR-011](ADR-011-wayland-and-libadwaita.md), [ADR-026](ADR-026-the-core-event-bus.md)
 
 ## Decision
 
@@ -24,6 +24,17 @@ Three rules.
    coordinate.
 
 ## Why this needs no hooking, and is not a new architecture
+
+> **Corrected by [ADR-029](ADR-029-overlays-are-three-decisions.md).** The
+> paragraph below says a GTK widget placed above the canvas is drawn above it.
+> The second half of that -- no cooperation from the engine -- is true and is
+> the point. The first half is not: the subsurface is placed *above* the parent
+> in the ordinary case, so a widget put on top of it is drawn **underneath**
+> until something lowers the engine, stops GTK painting over the hole, and
+> decides who gets the clicks. An overlay built on the sentence as written
+> would render nothing and look like a GTK bug. ADR-029 has the three pieces of
+> state and the two shapes an overlay may take; a plugin overlay is an Inset or
+> a Modal in its terms.
 
 **The engine's `wl_surface` is already a `wl_subsurface` of Cordial's GTK
 toplevel** — ADR-011 records that and the reasons it had to be. So a GTK widget

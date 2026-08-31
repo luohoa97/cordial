@@ -2512,9 +2512,41 @@ impl WaylandWindow {
         //
         // The engine does not paint a focused TextBox's own text -- established
         // in docs/NEXT.md §1 from the dex and confirmed by experiment -- so if
-        // this returns early the characters are invisible until the box blurs
-        // and the engine finally draws them. Reported exactly that way:
-        // "characters are still invisible till unfocus".
+        // this returns early the characters are invisible while the box has
+        // focus. Reported exactly that way: "characters are still invisible
+        // till unfocus".
+        //
+        // **"and the engine finally draws them" used to be the end of that
+        // sentence, and it is not reliably true.** Reported 2026-08-31: "when
+        // you have a text box, you click off the text box, the text becomes
+        // invisible". On that machine the engine never draws the text at all,
+        // focused or not, so this overlay is the only thing that has ever
+        // shown it and hiding it on blur is the whole of the symptom.
+        //
+        // It is an engine-on-Linux fault rather than one of Cordial's, and the
+        // neighbouring runtime has it too. Sober #1845 -- "TextBox's do not
+        // sink input" on NVIDIA/Wayland/dwl -- is answered by their own
+        // maintainer with "this is a known bug with our text rendering system
+        // ... we had a fix for it last update, but the fix ended up breaking
+        // some setups, so we disabled it by default", behind
+        // `SOBER_FORCE_NEW_TEXT_RENDERER=1`. Sober #1026 narrows the
+        // environment: broken on Sway, DWL, Niri and Hyprland with NVIDIA,
+        // fine on KDE Plasma on the same system, and one reporter pins it to
+        // the surface being at least as large as the output -- "stops when
+        // either is even a pixel below that".
+        //
+        // That last detail is the only actionable lead here and has not been
+        // tested against Cordial: if the failure really is surface-size
+        // dependent, it is a property of a window Cordial owns rather than of
+        // the engine's renderer, and one measurement would say so.
+        //
+        // What Cordial cannot currently do is keep drawing after blur.
+        // `focused_textbox()` is the only handle there is; once the box loses
+        // focus there is no handle, no geometry and no text to draw with. A
+        // fix would need the engine to keep answering for an unfocused box, or
+        // Cordial to remember the last one and guess when it is still on
+        // screen, and guessing that is how a stale editor ends up painted over
+        // a page the user has left.
         //
         // The spec is the geometry Android would style a real EditText with, and
         // it arrives either as `showKeyboard`'s NativeTextBoxInfo or from a
