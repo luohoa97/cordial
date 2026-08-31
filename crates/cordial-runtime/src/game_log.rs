@@ -57,7 +57,15 @@ pub enum Event {
     /// `universe_id` is the one to resolve to a title -- Roblox's
     /// `games?universeIds=` takes universes, not places -- and `place_id` is
     /// the one a `roblox://` deep link uses. Neither is looked up here.
-    Joined { place_id: u64, universe_id: u64 },
+    Joined { place_id: u64, universe_id: u64, user_id: u64 },
+    /// The server instance being joined, from the line before the join.
+    ///
+    /// `job_id` is what a `roblox://experiences/start?...&gameInstanceId=`
+    /// deep link needs to put somebody in *this* server rather than a fresh
+    /// one, which is how Bloxstrap's "Join server" button works -- a plain URL
+    /// button, not Discord's join-secret machinery. Adapted from Bloxstrap
+    /// (MIT, Bloxstrap Labs): the marker and the shape, not its implementation.
+    Joining { job_id: String, place_id: u64 },
     /// The address the client is connected through, from the same join.
     ///
     /// Reported separately from [`Event::Joined`] because it arrives on its own
@@ -95,12 +103,28 @@ pub fn parse_line(line: &str) -> Option<Event> {
         return Some(Event::Left);
     }
     if line.contains("[FLog::GameJoinLoadTime]") && line.contains("game_join_loadtime") {
-        // Both or neither. A join with one id and not the other is a line this
-        // parser does not understand, and reporting half of it as a join would
-        // put a zero in front of somebody as though it were a place.
+        // All three or none. A join with one id and not the others is a line
+        // this parser does not understand, and reporting part of it would put
+        // a zero in front of somebody as though it were a place or a person.
         let place_id = field_u64(line, "placeid:")?;
         let universe_id = field_u64(line, "universeid:")?;
-        return Some(Event::Joined { place_id, universe_id });
+        let user_id = field_u64(line, "userid:")?;
+        return Some(Event::Joined { place_id, universe_id, user_id });
+    }
+    // `! Joining game '<jobid>' place <placeid> at <address>`. The job id is
+    // the only place the server instance is named, and without it a "Join
+    // server" button can only start a *new* server, which is not joining.
+    if line.contains("! Joining game '") {
+        let job_id = field_after(line, "! Joining game '", &['\''])?.to_owned();
+        // A job id is a UUID. Checked rather than trusted because it goes into
+        // a URL handed to another program: 36 characters of hex and dashes is
+        // the same shape Bloxstrap's own pattern requires, and anything else
+        // means this line is not what it looks like.
+        if job_id.len() != 36 || !job_id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
+            return None;
+        }
+        let place_id = field_u64(line, "' place ")?;
+        return Some(Event::Joining { job_id, place_id });
     }
     if line.contains("[FLog::Network] UDMUX Address") {
         // The UDMUX address, not the "RCC Server Address" later on the same
@@ -327,8 +351,13 @@ pub fn poll() {
 
     for event in watcher.poll() {
         match event {
-            Event::Joined { place_id, universe_id } => {
-                println!("[cordial] game: joined place {place_id} (universe {universe_id})");
+            Event::Joined { place_id, universe_id, user_id } => {
+                println!(
+                    "[cordial] game: joined place {place_id} (universe {universe_id}) as {user_id}"
+                );
+            }
+            Event::Joining { job_id, place_id } => {
+                println!("[cordial] game: joining server {job_id} of place {place_id}");
             }
             Event::Server { address, port } => {
                 println!("[cordial] game: server {address}:{port}");
@@ -410,11 +439,46 @@ mod tests {
         "2026-08-31T03:14:53.310Z,194.310760,bd3bd6c0,6 [FLog::SingleSurfaceApp] leaveUGCGameInternal";
 
     #[test]
-    fn a_join_yields_both_ids() {
+    fn a_join_yields_every_id_on_the_line() {
         assert_eq!(
             parse_line(JOIN),
-            Some(Event::Joined { place_id: 17625359962, universe_id: 6035872082 })
+            Some(Event::Joined {
+                place_id: 17625359962,
+                universe_id: 6035872082,
+                user_id: 1826805362,
+            })
         );
+    }
+
+    /// **The server instance, which is what a join link needs.**
+    ///
+    /// Verbatim from the same capture. Without the job id a "Join server"
+    /// button can only start a new server, which is the opposite of joining --
+    /// so this line, not the `GameJoinLoadTime` one, is what makes the button
+    /// possible.
+    #[test]
+    fn joining_yields_the_job_id() {
+        let line = "2026-08-31T03:14:17.000Z,1,a,6 [FLog::Output] ! Joining game \
+                    '3182c122-8e1c-4f50-b0ac-6fb67ba0082f' place 17625359962 at 10.60.2.168";
+        assert_eq!(
+            parse_line(line),
+            Some(Event::Joining {
+                job_id: "3182c122-8e1c-4f50-b0ac-6fb67ba0082f".into(),
+                place_id: 17625359962,
+            })
+        );
+    }
+
+    /// A job id that is not a UUID is refused rather than put into a URL.
+    ///
+    /// This value ends up in a `roblox://` link handed to another program, so
+    /// "it came out of a log line that looked right" is not enough.
+    #[test]
+    fn a_job_id_that_is_not_a_uuid_is_refused() {
+        for bad in ["short", "../../etc/passwd", "3182c122 8e1c 4f50 b0ac 6fb67ba0082f!!"] {
+            let line = format!("[FLog::Output] ! Joining game '{bad}' place 1 at 10.0.0.1");
+            assert_eq!(parse_line(&line), None, "{bad}");
+        }
     }
 
     /// **The public address, not the private one.**
@@ -509,7 +573,11 @@ mod tests {
         // directly rather than waiting a second for a scan that changes nothing.
         assert_eq!(
             w.poll(),
-            vec![Event::Joined { place_id: 17625359962, universe_id: 6035872082 }],
+            vec![Event::Joined {
+                place_id: 17625359962,
+                universe_id: 6035872082,
+                user_id: 1826805362,
+            }],
             "the two halves must join up"
         );
 
@@ -541,9 +609,12 @@ mod tests {
         let (mut joins, mut leaves, mut servers, mut rpc) = (0, 0, 0, 0);
         for line in text.lines() {
             match parse_line(line) {
-                Some(Event::Joined { place_id, universe_id }) => {
+                Some(Event::Joined { place_id, universe_id, user_id }) => {
                     joins += 1;
-                    println!("join   place {place_id} universe {universe_id}");
+                    println!("join   place {place_id} universe {universe_id} user {user_id}");
+                }
+                Some(Event::Joining { job_id, place_id }) => {
+                    println!("server {job_id} place {place_id}");
                 }
                 Some(Event::Server { address, port }) => {
                     servers += 1;
