@@ -31,6 +31,20 @@ pub enum Capability {
     Log,
     /// Observe client lifecycle events — launch, ready, shutdown.
     LifecycleRead,
+    /// Read what the client is doing: which place and server, and who is
+    /// playing.
+    ///
+    /// **Separate from `LifecycleRead`, and the difference is the point.**
+    /// Knowing the client started is nearly nothing; knowing which experience
+    /// somebody is in, on which server, as which user id, is a picture of what
+    /// they are doing with their evening. A plugin granted lifecycle to show a
+    /// Discord status must not acquire the second by having asked for the
+    /// first, which is the argument `core_events` already makes for keeping
+    /// the table per family.
+    ///
+    /// Reading only, and only what the engine's own log already said. See
+    /// [`crate::state::SessionState`] for what is deliberately not in it.
+    StateRead,
     /// Publish Discord Rich Presence.
     ///
     /// The effect, not the channel. Cordial owns the connection to Discord's
@@ -122,6 +136,7 @@ impl Capability {
             Capability::FlagsWriteDynamic => "flags.write.dynamic",
             Capability::Log => "log",
             Capability::LifecycleRead => "lifecycle.read",
+            Capability::StateRead => "state.read",
             Capability::PresenceSet => "presence.set",
             Capability::NotifySend => "notify.send",
             Capability::UrlOpen => "url.open",
@@ -141,6 +156,7 @@ impl Capability {
             "flags.write.dynamic" => Capability::FlagsWriteDynamic,
             "log" => Capability::Log,
             "lifecycle.read" => Capability::LifecycleRead,
+            "state.read" => Capability::StateRead,
             "presence.set" => Capability::PresenceSet,
             "notify.send" => Capability::NotifySend,
             "url.open" => Capability::UrlOpen,
@@ -212,6 +228,14 @@ impl Capability {
             Capability::LifecycleRead => {
                 "Know when the client starts and stops, which of your profiles is running, and \
                  which Roblox build it loaded. Not what you play."
+            }
+            // The sentence above ends "Not what you play", and this is the one
+            // that is. Said in those terms because the honest summary of this
+            // capability is not "read session state" -- it is that the plugin
+            // can see your evening.
+            Capability::StateRead => {
+                "See what you are playing: which experience, which server, and your Roblox user \
+                 id. Reading only, and only while the client is running."
             }
             // ADR-007 calls this out as privacy-relevant and says the UI
             // should state what it publishes rather than merely that it is on.

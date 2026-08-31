@@ -33,6 +33,7 @@ pub mod sandbox;
 pub mod registry;
 pub mod resolve;
 pub mod settings;
+pub mod state;
 pub mod sign;
 pub mod source;
 pub mod unpack;

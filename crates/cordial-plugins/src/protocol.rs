@@ -70,6 +70,9 @@ pub fn required_capability(method: &str) -> Option<Capability> {
         "flags.setDynamic" => Capability::FlagsWriteDynamic,
         "log.write" => Capability::Log,
         "lifecycle.subscribe" => Capability::LifecycleRead,
+        // A snapshot, so a plugin that starts mid-session is not blind until
+        // the next event. See `state::SessionState`.
+        "state.get" => Capability::StateRead,
         "presence.set" => Capability::PresenceSet,
         "presence.clear" => Capability::PresenceSet,
         "notify.send" => Capability::NotifySend,

@@ -344,12 +344,35 @@ fn close_on_leave_for(v: Option<&str>) -> bool {
 static PRESENCE: Mutex<crate::bloxstrap_rpc::Presence> =
     Mutex::new(crate::bloxstrap_rpc::Presence::new());
 
-/// The experience being played: `(place_id, job_id)`.
+/// What the client is doing, as the log has revealed it so far.
 ///
-/// Kept beside the presence because the buttons need it and BloxstrapRPC does
-/// not carry it -- the two facts arrive on different log lines, minutes apart
-/// in a long session, and only Cordial sees both.
-static PLAYING: Mutex<Option<(u64, Option<String>)>> = Mutex::new(None);
+/// **Cordial keeps this so plugins do not each keep their own.** See
+/// `cordial_plugins::state`: the alternative is every plugin folding the same
+/// event stream into a private copy and getting it wrong in its own way. The
+/// core events are published from the same updates that write this, so the
+/// snapshot and the stream are one thing seen twice rather than two things
+/// that can disagree.
+static STATE: Mutex<cordial_plugins::state::SessionState> =
+    Mutex::new(cordial_plugins::state::SessionState {
+        place_id: None,
+        universe_id: None,
+        job_id: None,
+        server_address: None,
+        user_id: None,
+        joined_at: None,
+    });
+
+/// A copy of the session state, for `state.get`.
+pub fn session_state() -> cordial_plugins::state::SessionState {
+    STATE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 /// The presence payload plus what the buttons need.
 ///
@@ -358,11 +381,10 @@ static PLAYING: Mutex<Option<(u64, Option<String>)>> = Mutex::new(None);
 /// sees.
 fn presence_payload() -> serde_json::Value {
     let mut payload = PRESENCE.lock().unwrap_or_else(|e| e.into_inner()).to_payload();
-    if let (Some(map), Some((place, job))) =
-        (payload.as_object_mut(), PLAYING.lock().unwrap_or_else(|e| e.into_inner()).as_ref())
-    {
+    let state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if let (Some(map), Some(place)) = (payload.as_object_mut(), state.place_id) {
         map.insert("place_id".into(), serde_json::json!(place));
-        if let Some(job) = job {
+        if let Some(job) = &state.job_id {
             map.insert("job_id".into(), serde_json::json!(job));
         }
     }
@@ -380,14 +402,24 @@ pub fn poll() {
                 println!(
                     "[cordial] game: joined place {place_id} (universe {universe_id}) as {user_id}"
                 );
-                // The job id, if `! Joining game` was seen for this same place.
-                // Not cleared when it was not: a teleport reports the join line
-                // again and the instance may legitimately be unknown, and an
-                // absent job id costs the join button rather than breaking it.
-                let mut playing = PLAYING.lock().unwrap_or_else(|e| e.into_inner());
-                let job = playing.take().filter(|(p, _)| *p == place_id).and_then(|(_, j)| j);
-                *playing = Some((place_id, job));
-                drop(playing);
+                {
+                    let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    // A job id belongs to the place it was seen for. Keeping
+                    // one across a teleport would name a server the player has
+                    // left, and the join button would send people to it.
+                    if state.place_id != Some(place_id) {
+                        state.job_id = None;
+                    }
+                    state.place_id = Some(place_id);
+                    state.universe_id = Some(universe_id);
+                    state.user_id = Some(user_id);
+                    // Set here rather than at `Joining`, because this is the
+                    // line that means the join finished. `joined_at` is a
+                    // timestamp and not a duration on purpose -- see
+                    // `SessionState` -- so two plugins asking a second apart
+                    // agree.
+                    state.joined_at = Some(now_secs());
+                }
                 crate::plugin_host::publish_core(
                     cordial_plugins::core_events::GAME_PRESENCE,
                     presence_payload(),
@@ -395,10 +427,19 @@ pub fn poll() {
             }
             Event::Joining { job_id, place_id } => {
                 println!("[cordial] game: joining server {job_id} of place {place_id}");
-                *PLAYING.lock().unwrap_or_else(|e| e.into_inner()) = Some((place_id, Some(job_id)));
+                let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+                // A different place means a different visit, so nothing from
+                // the last one carries over. Same place is a rejoin of the
+                // server we were told about, and the rest is still true.
+                if state.place_id != Some(place_id) {
+                    state.left();
+                }
+                state.place_id = Some(place_id);
+                state.job_id = Some(job_id);
             }
             Event::Server { address, port } => {
                 println!("[cordial] game: server {address}:{port}");
+                STATE.lock().unwrap_or_else(|e| e.into_inner()).server_address = Some(address);
             }
             Event::Left => {
                 println!("[cordial] game: left");
@@ -408,7 +449,7 @@ pub fn poll() {
                 // them -- and on the home screen that is simply wrong.
                 *PRESENCE.lock().unwrap_or_else(|e| e.into_inner()) =
                     crate::bloxstrap_rpc::Presence::new();
-                *PLAYING.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                STATE.lock().unwrap_or_else(|e| e.into_inner()).left();
                 crate::plugin_host::publish_core(
                     cordial_plugins::core_events::GAME_PRESENCE,
                     serde_json::json!({}),

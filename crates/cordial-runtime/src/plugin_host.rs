@@ -569,6 +569,18 @@ fn dispatch(
         // events arrive, and then wonder why one that never subscribed still
         // hears them.
         "lifecycle.subscribe" => Response::Ok { id: req.id, result: serde_json::Value::Null },
+        // **A snapshot, so a plugin that starts mid-session is not blind.**
+        // The core events say what changed; this says what is true now, and
+        // both come from the same updates in `game_log` -- see
+        // `cordial_plugins::state`, which argues why Cordial keeps this rather
+        // than every plugin folding the event stream into a private copy.
+        //
+        // Cheap enough to poll: one lock and a clone of six `Option`s.
+        "state.get" => Response::Ok {
+            id: req.id,
+            result: serde_json::to_value(crate::game_log::session_state())
+                .unwrap_or(serde_json::Value::Null),
+        },
         "flags.list" => {
             let resolved = crate::flags::resolve(crate::flags::collect());
             let list: Vec<_> = resolved
