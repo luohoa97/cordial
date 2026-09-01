@@ -807,6 +807,23 @@ pub struct ShellConfig {
     /// disconnect; see `cordial_runtime::game_log`, which has the capture and
     /// the reason those are different questions.
     pub close_on_leave: bool,
+    /// Plugin folders being worked on, loaded from where they live.
+    ///
+    /// **Each entry is one plugin's own folder** -- the one with `plugin.json`
+    /// in it -- and not a folder that plugins are kept in. That is what "load
+    /// unpacked" means: you point at the thing you are editing, in the
+    /// checkout where you are editing it, and it loads without being packaged
+    /// or copied anywhere.
+    ///
+    /// Empty is the ordinary state, and an empty list is what turns developer
+    /// mode off -- there is no separate switch, because a switch that was on
+    /// with nothing loaded would be a setting that does nothing. Adding a
+    /// folder is turning it on.
+    ///
+    /// Passed to the client as `CORDIAL_UNPACKED_PLUGINS`, and unpacked
+    /// plugins reload as they are edited (`sandbox::command`'s `--watch`).
+    #[serde(default)]
+    pub unpacked_plugins: Vec<String>,
     pub mangohud: bool,
     /// Which audio device Roblox plays through. See [`AudioOutput`], which
     /// carries the whole of the reasoning, including why the stored form is a
@@ -881,6 +898,7 @@ impl Default for ShellConfig {
             present_mode: PresentMode::default(),
             gamepad: true,
             close_on_leave: false,
+            unpacked_plugins: Vec::new(),
             audio_output: AudioOutput::default(),
             mangohud: false,
             fullscreen_accel: default_fullscreen_accel(),

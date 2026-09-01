@@ -236,6 +236,16 @@ impl Plugin {
     /// nobody to ask. With it, an attempt to touch the filesystem fails
     /// immediately instead of hanging on a prompt nothing will answer.
     pub fn spawn(id: &str, entry: &Path) -> std::io::Result<Self> {
+        Self::spawn_with(id, entry, false)
+    }
+
+    /// As [`Plugin::spawn`], with Deno's `--watch` when `reload` is set.
+    ///
+    /// Only unpacked plugins get it -- see `manifest::unpacked_dirs`. An
+    /// installed one does not change under a running client, so watching it is
+    /// a thread doing nothing, and a `.tar.zst` being replaced mid-session is
+    /// an install rather than an edit.
+    pub fn spawn_with(id: &str, entry: &Path, reload: bool) -> std::io::Result<Self> {
         // A third layer under the two above, when the host can enforce one. It
         // does not replace either: a sub-sandbox only ever subtracts from what
         // Cordial holds, so every effect is still performed by the broker. See
@@ -248,7 +258,12 @@ impl Plugin {
         // can tell is missing is one nobody notices went away.
         let sandbox = crate::sandbox::available();
         println!("[plugin] {id}: {}", sandbox.describe());
-        let mut child = crate::sandbox::command(sandbox, entry)
+        if reload {
+            // Said, because a plugin restarting on its own is behaviour
+            // somebody will otherwise attribute to a crash.
+            println!("[plugin] {id}: reloading on change (Deno --watch)");
+        }
+        let mut child = crate::sandbox::command(sandbox, entry, reload)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

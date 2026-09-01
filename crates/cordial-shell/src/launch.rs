@@ -443,6 +443,16 @@ pub fn spawn(
         command.env("CORDIAL_CLOSE_ON_LEAVE", "1");
     }
 
+    // Plugin folders being worked on, in the shape of `PATH`. Only when there
+    // are some: an empty variable and an absent one mean the same thing to
+    // `manifest::unpacked_dirs`, and sending an empty one would put a
+    // developer-mode marker in the environment of every ordinary launch.
+    if !config.unpacked_plugins.is_empty() {
+        let joined = config.unpacked_plugins.join(":");
+        command.env("CORDIAL_UNPACKED_PLUGINS", &joined);
+        println!("shell: loading {} unpacked plugin(s)", config.unpacked_plugins.len());
+    }
+
     // The Graphics optimisation row, and **only for the parameters the chosen
     // mode actually asks for** -- exactly the rule the Renderer row above
     // follows, for exactly the same reason. `CordialDeviceProfile` is a

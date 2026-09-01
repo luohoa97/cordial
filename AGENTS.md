@@ -227,6 +227,15 @@ and matching it is not optional.
 - British-ish prose. No emoji in code or comments. No bullet-list comment blocks.
 - **Commit messages say what you measured**, not only what you changed. They are
   long here on purpose.
+- **Do not paste the conversation into them.** A commit that quotes what
+  somebody typed in chat -- "reported as \"its stuck on starting up\"" -- turns
+  a private exchange into a permanent public record, and it reads as though the
+  transcript were the evidence. It is not: the evidence is the measurement.
+  Write the *fact*: which symptom, on what, and what the run showed. "The status
+  never advanced past the launch event, because `client.ready` does not always
+  arrive" says everything the quote did and stands on its own to somebody
+  reading the log in a year. Same for screenshots, chat handles and anything
+  else that only exists because of how the work happened to be requested.
 - Prefer correcting a stale comment over leaving it. A comment that lies costs
   more than no comment.
 

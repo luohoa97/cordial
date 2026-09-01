@@ -195,8 +195,30 @@ pub fn available() -> Sandbox {
 ///
 /// `--die-with-parent` is not decoration: without it a sandboxed plugin outlives
 /// a Cordial that crashed, holding a pipe nothing reads.
-pub fn command(sandbox: Sandbox, entry: &Path) -> Command {
-    let deno_args = ["run", "--no-prompt", "--quiet"];
+/// Build the command that runs `entry`, optionally reloading it as it changes.
+///
+/// **`reload` is Deno's own `--watch`, not a watcher of Cordial's.** Deno
+/// already restarts the module when its files change and has done since 1.x;
+/// writing a second one here would mean a thread, a poll interval, and a
+/// restart path to get wrong, to reimplement something the interpreter does
+/// better. `--watch` rather than `--watch-hmr` because a plugin is a stdio
+/// process rather than a module graph with hot-swappable state: its whole
+/// contract is the handshake it performs on startup, so re-running it is the
+/// correct reload, and `--watch-hmr` falls back to exactly that when
+/// replacement fails anyway.
+///
+/// `--no-clear-screen` because Deno otherwise wipes the terminal Cordial is
+/// logging to on every reload, taking the client's own output with it.
+///
+/// Only set for unpacked plugins in Developer mode -- see
+/// `manifest::unpacked_dirs`. An installed plugin does not change under a
+/// running client, so watching one is a thread doing nothing.
+pub fn command(sandbox: Sandbox, entry: &Path, reload: bool) -> Command {
+    let mut deno_args: Vec<&str> = vec!["run", "--no-prompt", "--quiet"];
+    if reload {
+        deno_args.push("--watch");
+        deno_args.push("--no-clear-screen");
+    }
     match sandbox {
         Sandbox::Bubblewrap => {
             let mut c = Command::new("bwrap");
@@ -227,18 +249,38 @@ pub fn command(sandbox: Sandbox, entry: &Path) -> Command {
             // the host and out of the user's real `DENO_DIR`, at the cost of a
             // cold cache per launch, which for a single local module is nothing.
             c.args(["--setenv", "HOME", "/tmp"])
-                .args(["--setenv", "DENO_DIR", "/tmp/deno"])
-                // The one thing from the user's world, read-only.
-                .args(["--ro-bind", &entry.display().to_string(), "/plugin/entry.ts"])
-                .args(["--chdir", "/"])
-                .arg(deno)
-                .args(deno_args)
-                .arg("/plugin/entry.ts");
+                .args(["--setenv", "DENO_DIR", "/tmp/deno"]);
+
+            // The one thing from the user's world, read-only.
+            //
+            // **The directory, not the file, when watching.** A bind mount of
+            // a single file follows that inode, and every editor worth using
+            // writes a temporary and renames over the original -- so the
+            // sandbox would go on showing the old contents and `--watch` would
+            // see nothing. Binding the plugin's own directory means the rename
+            // is visible, and it is also the only arrangement in which a
+            // plugin can have more than one module at all.
+            //
+            // Still read-only, still nothing else from the user's world.
+            let inside = if reload {
+                let dir = entry.parent().unwrap_or(Path::new("/"));
+                let name = entry
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("entry.ts")
+                    .to_string();
+                c.args(["--ro-bind", &dir.display().to_string(), "/plugin"]);
+                format!("/plugin/{name}")
+            } else {
+                c.args(["--ro-bind", &entry.display().to_string(), "/plugin/entry.ts"]);
+                "/plugin/entry.ts".to_string()
+            };
+            c.args(["--chdir", "/"]).arg(deno).args(&deno_args).arg(inside);
             c
         }
         Sandbox::None => {
             let mut c = Command::new("deno");
-            c.args(deno_args).arg(entry);
+            c.args(&deno_args).arg(entry);
             c
         }
     }
@@ -265,7 +307,7 @@ mod tests {
         // with `--no-prompt` and no `--allow-*`; a sandbox that also handed the
         // plugin a permission would be a downgrade wearing the word "sandbox".
         for s in [Sandbox::Bubblewrap, Sandbox::None] {
-            let c = command(s, Path::new("/plugins/x/main.ts"));
+            let c = command(s, Path::new("/plugins/x/main.ts"), false);
             let args: Vec<String> =
                 c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
             assert!(args.contains(&"--no-prompt".to_string()), "{s:?}: {args:?}");
@@ -278,7 +320,7 @@ mod tests {
 
     #[test]
     fn the_sandbox_shares_nothing_and_dies_with_cordial() {
-        let args: Vec<String> = command(Sandbox::Bubblewrap, Path::new("/p/main.ts"))
+        let args: Vec<String> = command(Sandbox::Bubblewrap, Path::new("/p/main.ts"), false)
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
@@ -291,6 +333,42 @@ mod tests {
         // plugin rewrite its own entry point.
         let ro = args.windows(3).any(|w| w[0] == "--ro-bind" && w[2] == "/plugin/entry.ts");
         assert!(ro, "the entry module is not bound read-only: {args:?}");
+    }
+
+    /// **Reload binds the plugin's directory, and only when reloading.**
+    ///
+    /// A bind mount of a single file follows that inode, so an editor writing
+    /// a temporary and renaming over the original leaves the sandbox showing
+    /// the old contents -- `--watch` would see nothing and the whole feature
+    /// would appear to work and never reload. The directory bind is what makes
+    /// it work, and it is confined to the reloading case because it widens
+    /// what the plugin can read.
+    #[test]
+    fn reloading_binds_the_directory_and_watches() {
+        let on: Vec<String> = command(Sandbox::Bubblewrap, Path::new("/p/main.ts"), true)
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(on.contains(&"--watch".to_string()), "{on:?}");
+        // Deno otherwise wipes the terminal Cordial is logging to.
+        assert!(on.contains(&"--no-clear-screen".to_string()), "{on:?}");
+        assert!(
+            on.windows(3).any(|w| w[0] == "--ro-bind" && w[1] == "/p" && w[2] == "/plugin"),
+            "the plugin directory is not bound: {on:?}"
+        );
+        assert!(on.contains(&"/plugin/main.ts".to_string()), "{on:?}");
+
+        // And an installed plugin gets neither: watching one is a thread doing
+        // nothing, and the wider bind would be reach it has no use for.
+        let off: Vec<String> = command(Sandbox::Bubblewrap, Path::new("/p/main.ts"), false)
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(!off.contains(&"--watch".to_string()), "{off:?}");
+        assert!(
+            !off.windows(3).any(|w| w[0] == "--ro-bind" && w[2] == "/plugin"),
+            "an installed plugin must not get the directory: {off:?}"
+        );
     }
 
     #[test]

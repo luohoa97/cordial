@@ -250,7 +250,13 @@ pub fn start_all() -> usize {
                 continue;
             }
         };
-        match PluginProc::spawn(&id, &entry) {
+        // **Unpacked plugins reload as they are edited; installed ones do
+        // not.** An installed plugin does not change under a running client,
+        // so watching one is a thread doing nothing; an unpacked one is by
+        // definition the thing somebody is working on. Deno's own `--watch`
+        // does the reloading -- see `sandbox::command`.
+        let unpacked = manifest::unpacked_dirs().iter().any(|d| *d == plugin.dir);
+        match PluginProc::spawn_with(&id, &entry, unpacked) {
             Ok(mut proc) => {
                 // The handshake, before the plugin has asked for anything, so
                 // that reading its own configuration — the first thing most

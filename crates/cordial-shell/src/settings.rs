@@ -2456,6 +2456,113 @@ fn build_plugins_page(
 /// "Get Plugins" was a separate page rather than a button on the first. They
 /// are one page now, in the order the task happens -- what you have, then how
 /// to get more.
+/// "Developing a plugin" — load one from where it is being written.
+///
+/// **There is no separate "developer mode" switch, and that is deliberate.** A
+/// switch that was on with no folders loaded would be a setting that does
+/// nothing, which is the shape AGENTS.md rules out; adding a folder *is*
+/// turning it on, and removing the last one turns it off. The group says so
+/// rather than leaving somebody hunting for the toggle.
+///
+/// Each entry is one plugin's own folder -- the one with `plugin.json` in it --
+/// not a folder that plugins are kept in. That is the distinction "load
+/// unpacked" turns on elsewhere too, and getting it backwards would mean
+/// making a containing directory to hold your one plugin, which is the
+/// packaging step this removes.
+fn add_developer_group(
+    parent: &impl IsA<gtk::Window>,
+    config: Rc<RefCell<ShellConfig>>,
+    config_path: Rc<PathBuf>,
+    page: &adw::PreferencesPage,
+) {
+    let group = adw::PreferencesGroup::builder()
+        .title("Developing a plugin")
+        .description(
+            "Load a plugin from the folder you are writing it in. It reloads as you edit, and              is granted nothing until you grant it, like any other.",
+        )
+        .build();
+
+    for dir in config.borrow().unpacked_plugins.clone() {
+        let row = adw::ActionRow::builder().title(&dir).build();
+        row.set_subtitle_lines(2);
+        let remove = gtk::Button::from_icon_name("list-remove-symbolic");
+        remove.set_tooltip_text(Some("Stop loading this folder"));
+        remove.set_valign(gtk::Align::Center);
+        remove.add_css_class("flat");
+        {
+            let config = config.clone();
+            let config_path = config_path.clone();
+            let dir = dir.clone();
+            let row = row.clone();
+            remove.connect_clicked(move |_| {
+                config.borrow_mut().unpacked_plugins.retain(|d| *d != dir);
+                persist(&config, &config_path);
+                // Insensitive rather than removed from the list: rebuilding
+                // the page from here would mean rebuilding the whole dialog,
+                // and a row that visibly stops applying says the same thing.
+                row.set_sensitive(false);
+                row.set_subtitle("Removed. Takes effect the next time you press Roblox.");
+            });
+        }
+        row.add_suffix(&remove);
+        group.add(&row);
+    }
+
+    let add = adw::ActionRow::builder()
+        .title("Add a plugin folder…")
+        .subtitle("Choose the folder containing that plugin's plugin.json")
+        .activatable(true)
+        .build();
+    {
+        let config = config.clone();
+        let config_path = config_path.clone();
+        let parent = parent.as_ref().clone();
+        let group = group.clone();
+        let add_row = add.clone();
+        add.connect_activated(move |_| {
+            let dialog = gtk::FileDialog::builder().title("Plugin folder").build();
+            let config = config.clone();
+            let config_path = config_path.clone();
+            let group = group.clone();
+            let add_row = add_row.clone();
+            dialog.select_folder(Some(&parent), gtk::gio::Cancellable::NONE, move |result| {
+                let Ok(file) = result else { return };
+                let Some(path) = file.path() else { return };
+                // Refused here rather than at launch, because a folder with no
+                // manifest is a mistake somebody can fix while the picker is
+                // still in mind -- and `discover_unpacked` would otherwise
+                // report it to a log nobody is reading.
+                if !path.join("plugin.json").is_file() {
+                    add_row.set_subtitle(&format!(
+                        "{} has no plugin.json in it. Choose the plugin's own folder.",
+                        path.display()
+                    ));
+                    add_row.set_subtitle_lines(3);
+                    return;
+                }
+                let text = path.display().to_string();
+                {
+                    let mut cfg = config.borrow_mut();
+                    if cfg.unpacked_plugins.contains(&text) {
+                        return;
+                    }
+                    cfg.unpacked_plugins.push(text.clone());
+                }
+                persist(&config, &config_path);
+                let row = adw::ActionRow::builder()
+                    .title(&text)
+                    .subtitle("Loads the next time you press Roblox.")
+                    .build();
+                row.set_subtitle_lines(2);
+                group.add(&row);
+                add_row.set_subtitle("Choose the folder containing that plugin's plugin.json");
+            });
+        });
+    }
+    group.add(&add);
+    page.add(&group);
+}
+
 fn add_get_plugins_groups(
     parent: &impl IsA<gtk::Window>,
     dialog: &adw::PreferencesDialog,
@@ -2522,9 +2629,10 @@ pub fn build_preferences_window(
     window.add(&general);
     let config_for_flags = config.clone();
     let (plugins, installed) = build_plugins_page(&window, config.clone());
-    add_get_plugins_groups(parent, &window, config, config_path, &installed, &plugins);
+    add_get_plugins_groups(parent, &window, config.clone(), config_path.clone(), &installed, &plugins);
+    add_developer_group(parent, config, config_path, &plugins);
     window.add(&plugins);
-    window.add(&build_fastflags_page(config_for_flags));
+    window.add(&build_fastflags_page(config_for_flags, &window));
     window.add(&build_report_page(parent));
 
     window
@@ -2550,7 +2658,10 @@ pub fn build_preferences_window(
 /// `flags::read_layer` has always taken a flat object of name to value. That is
 /// asserted in `flags::tests::a_bloxstrap_style_document_parses` rather than
 /// claimed here.
-fn build_fastflags_page(config: Rc<RefCell<ShellConfig>>) -> adw::PreferencesPage {
+fn build_fastflags_page(
+    config: Rc<RefCell<ShellConfig>>,
+    dialog: &adw::PreferencesDialog,
+) -> adw::PreferencesPage {
     use gtk::prelude::TextBufferExt;
     use gtk::prelude::TextViewExt;
 
@@ -2560,109 +2671,120 @@ fn build_fastflags_page(config: Rc<RefCell<ShellConfig>>) -> adw::PreferencesPag
         .icon_name("preferences-system-symbolic")
         .build();
 
-    let group = adw::PreferencesGroup::builder()
-        .title("Engine flag overrides")
-        // Three facts, and each one is something a user gets wrong otherwise:
-        // where these sit against everything else that sets a flag, that the
-        // format they already have works, and that this is not magic.
-        .description(
-            "The same format Bloxstrap uses, so a list pastes straight in. Applies the next time you press Roblox.",
-        )
-        .build();
-
     let profile = config.borrow().profile.clone();
     let profile_dir = cordial_shell::profile::dir(&profile).ok();
     let path = profile_dir.as_ref().map(|d| cordial_plugins::flag_document::path_in(d));
 
+    // **The actions live in the group's header, which is where libadwaita puts
+    // actions that belong to a group rather than to a row.** They were a
+    // floating button box under the editor, with a bare label beside them for
+    // status, and the result had no structure at all -- three things loose at
+    // the bottom of a page.
+    let group = adw::PreferencesGroup::builder()
+        .title("Engine flag overrides")
+        .description(
+            "The same format Bloxstrap uses, so a list pastes straight in. Applies the next \
+             time you press Roblox.",
+        )
+        .build();
+
+    let actions = gtk::Box::builder().spacing(6).build();
+    let clear = gtk::Button::with_label("Clear all");
+    let apply = gtk::Button::with_label("Apply");
+    apply.add_css_class("suggested-action");
+    actions.append(&clear);
+    actions.append(&apply);
+    group.set_header_suffix(Some(&actions));
+
     let view = gtk::TextView::builder()
         .monospace(true)
-        .top_margin(8)
-        .bottom_margin(8)
-        .left_margin(8)
-        .right_margin(8)
+        .top_margin(10)
+        .bottom_margin(10)
+        .left_margin(12)
+        .right_margin(12)
         .build();
-    // Read what is on disk rather than what this window last wrote: the file is
-    // editable by hand and by `cordial-run`, and showing a stale copy would
-    // make Apply silently discard somebody else's edit.
     let existing = path
         .as_ref()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_else(|| "{}\n".to_string());
     view.buffer().set_text(&existing);
 
+    // A framed scroller and nothing else in the card. The path used to sit in
+    // an `AdwActionRow` above the text inside the same card, which read as a
+    // header welded to the editor rather than as the note it is; it is a
+    // caption under the box now.
     let scroller = gtk::ScrolledWindow::builder()
         .child(&view)
-        .min_content_height(320)
+        .min_content_height(280)
         .vexpand(true)
         .build();
     scroller.add_css_class("card");
     group.add(&scroller);
 
-    // Where the file is, because a person who breaks it needs to find it, and
-    // because "which profile am I editing" is a real question in a client that
-    // has profiles.
-    let where_row = adw::ActionRow::builder()
-        .title("Saved in")
-        .subtitle(match &path {
-            Some(p) => p.display().to_string(),
-            None => format!("no profile directory for {profile:?}; nothing can be saved"),
+    let where_label = gtk::Label::builder()
+        .label(match &path {
+            Some(p) => format!("Saved in {}", p.display()),
+            None => format!("No profile directory for {profile:?}, so nothing can be saved."),
         })
+        .wrap(true)
+        .xalign(0.0)
+        .margin_top(6)
         .build();
-    where_row.set_subtitle_lines(2);
-    group.add(&where_row);
+    where_label.add_css_class("dim-label");
+    where_label.add_css_class("caption");
+    group.add(&where_label);
     page.add(&group);
-
-    // **The status line is the whole safety of this page.** A refusal has to
-    // name the flag it choked on -- see `flags::parse_user_text` -- and it has
-    // to be visible without a dialog, because the fix is in the box directly
-    // above it.
-    let status = gtk::Label::builder().wrap(true).xalign(0.0).build();
-    status.add_css_class("dim-label");
-
-    let buttons = gtk::Box::builder().spacing(8).halign(gtk::Align::End).build();
-    let clear = gtk::Button::with_label("Clear all");
-    clear.add_css_class("destructive-action");
-    let apply = gtk::Button::with_label("Apply");
-    apply.add_css_class("suggested-action");
-    buttons.append(&clear);
-    buttons.append(&apply);
-
-    let actions = adw::PreferencesGroup::new();
-    actions.add(&status);
-    actions.add(&buttons);
-    page.add(&actions);
 
     {
         let view = view.clone();
         clear.connect_clicked(move |_| {
             // Only the box. Nothing is written until Apply, so a mis-click is
-            // one Ctrl+Z away rather than a file that is already gone.
+            // one undo away rather than a file that is already gone.
             view.buffer().set_text("{}\n");
         });
     }
     {
         let view = view.clone();
-        let status = status.clone();
+        let dialog = dialog.clone();
         apply.connect_clicked(move |_| {
             let buffer = view.buffer();
             let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
             let Some(dir) = profile_dir.clone() else {
-                status.set_text("There is no profile directory to save into.");
+                dialog.add_toast(adw::Toast::new("There is no profile directory to save into."));
                 return;
             };
             match cordial_plugins::flag_document::parse(&text) {
-                Err(e) => status.set_text(&format!("Not saved — {e}")),
-                Ok(values) => match cordial_plugins::flag_document::write(&cordial_plugins::flag_document::path_in(&dir), &values) {
-                    // Counted, because "saved" alone does not tell somebody
-                    // whose paste half-failed that only three of their forty
-                    // flags are there.
-                    Ok(()) => status.set_text(&format!(
-                        "Saved {} flag{}. Takes effect the next time you press Roblox.",
-                        values.len(),
-                        if values.len() == 1 { "" } else { "s" }
-                    )),
-                    Err(e) => status.set_text(&format!("Could not save: {e}")),
-                },
+                // Named, because "invalid JSON" against a long paste makes
+                // somebody bisect their own document by hand.
+                Err(e) => dialog.add_toast(adw::Toast::new(&format!("Not saved — {e}"))),
+                Ok(values) => {
+                    let target = cordial_plugins::flag_document::path_in(&dir);
+                    match cordial_plugins::flag_document::write(&target, &values) {
+                        Err(e) => {
+                            dialog.add_toast(adw::Toast::new(&format!("Could not save: {e}")))
+                        }
+                        Ok(()) => {
+                            // **Show back what was written, not what was
+                            // typed.** A paste arrives with whatever
+                            // indentation its author used, tabs included, and
+                            // the file is written two-space pretty-printed
+                            // regardless -- so leaving the box as typed means
+                            // the editor and the file disagree the moment you
+                            // save. Rewriting it is also the whole of "make
+                            // the whitespace apply automatically": no
+                            // formatter to configure, because the canonical
+                            // form is whatever the loader will read back.
+                            if let Ok(pretty) = serde_json::to_string_pretty(&values) {
+                                buffer.set_text(&format!("{pretty}\n"));
+                            }
+                            dialog.add_toast(adw::Toast::new(&format!(
+                                "Saved {} flag{}. Applies at the next launch.",
+                                values.len(),
+                                if values.len() == 1 { "" } else { "s" }
+                            )));
+                        }
+                    }
+                }
             }
         });
     }
