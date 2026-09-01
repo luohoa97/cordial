@@ -40,10 +40,42 @@
 //! `placelauncherurl`, and carries the `placeId` out of that launcher query into
 //! `roblox://experiences/start?placeId=<id>`, which is the exact string measured
 //! to work. `CORDIAL_DEEPLINK_NO_TRANSLATE=1` is the control. Nothing else is
-//! carried: the desktop link's `gameinfo` is a one-time ticket the desktop
-//! client redeems and the Android client has no use for, and a launcher query
-//! that names a *particular server* rather than an experience is refused
-//! outright rather than flattened into a join somewhere else.
+//! carried: the desktop link's `gameinfo` is a one-time authentication ticket,
+//! and a launcher query that names a *particular server* rather than an
+//! experience is refused outright rather than flattened into a join somewhere
+//! else.
+//!
+//! **This used to say the Android client "has no use for" that ticket, and
+//! that was asserted without a citation.** It is what makes browser launches
+//! sign you in on Windows -- Bloxstrap hands the desktop client a `gameinfo`
+//! and the client redeems it -- so whether Cordial can do the same is a fair
+//! question and the answer here was a guess.
+//!
+//! What is actually known, and it is less than the old sentence claimed:
+//!
+//! - This build's `libroblox.so` contains `AuthTicket`, `redeem`, `ticket=`
+//!   and `/v1/authentication-ticket`. The Android client is not innocent of
+//!   ticket machinery.
+//! - **That proves the strings exist and nothing else.** The endpoint is also
+//!   the one that *issues* a ticket, which is what the mobile client's own
+//!   quick sign-in needs, so finding it says nothing about whether a *desktop*
+//!   ticket arriving in a deeplink would be redeemed. AGENTS.md's first rule
+//!   is about exactly this inference, and nine consecutive conclusions drawn
+//!   from this binary have been wrong.
+//! - Sober faces the same question, runs the same Android client, and does not
+//!   do it: its sign-in paths are a password, Quick Sign-in by device code,
+//!   and a browser-login window (their issues #1243, #1434, #1619). No ticket
+//!   redemption appears anywhere in their tracker.
+//!
+//! So the honest state is *unverified*, not *impossible*. The experiment that
+//! would settle it: carry `gameinfo` through the translation, click a play
+//! button on roblox.com while signed out in Cordial, and see whether the
+//! client ends up signed in. It needs an account and a real browser click,
+//! which is why it has not been run rather than why it cannot be.
+//!
+//! Until then the ticket is dropped, which is also the conservative choice: it
+//! is a live credential, and forwarding one into an engine that may ignore it
+//! buys nothing and widens where it has been.
 //!
 //! When the translation refuses, the behaviour is what it was before it existed:
 //! Cordial says which parameter stopped it and warns that the link is not going
