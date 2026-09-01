@@ -2699,11 +2699,32 @@ fn build_fastflags_page(
     let profile_dir = cordial_shell::profile::dir(&profile).ok();
     let path = profile_dir.as_ref().map(|d| cordial_plugins::flag_document::path_in(d));
 
-    // **The actions live in the group's header, which is where libadwaita puts
-    // actions that belong to a group rather than to a row.** They were a
-    // floating button box under the editor, with a bare label beside them for
-    // status, and the result had no structure at all -- three things loose at
-    // the bottom of a page.
+    // **The actions sit under the editor, in a row with the path, and this is
+    // the third arrangement.** They started as a floating button box below the
+    // editor with a bare status label beside them, which had no structure --
+    // three things loose at the bottom of a page. That was read as "the bottom
+    // is wrong" and they moved into the group's header suffix, which was the
+    // wrong lesson: the problem was that nothing was grouped, not where the
+    // group was.
+    //
+    // The header made it worse in a way only a screenshot shows. A suffix
+    // shares its row with the title *and* the description, so a two-line
+    // description squeezes into a narrow column while the buttons take a third
+    // of the width, and a suffix box with no `valign` stretches to the height
+    // of all of it -- two slabs the height of a paragraph. libadwaita means a
+    // suffix for one small control, a switch or a single button, not a
+    // destructive action and a suggested one side by side.
+    //
+    // So: back to the bottom, but as one row rather than three loose widgets.
+    // The path and the actions share it, which is the structure that was
+    // missing the first time. It also puts them in reading order -- what this
+    // is, then the thing you edit, then where it goes and what to press --
+    // where the header put "Apply" above the box it applies.
+    //
+    // Not a pinned `GtkActionBar`: an `AdwPreferencesPage` scrolls its own
+    // content and the dialog's view switcher already owns the real bottom of
+    // the window, so a second pinned bar would stack two bars for one page.
+    // This page fits without scrolling anyway.
     let group = adw::PreferencesGroup::builder()
         .title("Engine flag overrides")
         .description(
@@ -2712,13 +2733,9 @@ fn build_fastflags_page(
         )
         .build();
 
-    let actions = gtk::Box::builder().spacing(6).build();
     let clear = gtk::Button::with_label("Clear all");
     let apply = gtk::Button::with_label("Apply");
     apply.add_css_class("suggested-action");
-    actions.append(&clear);
-    actions.append(&apply);
-    group.set_header_suffix(Some(&actions));
 
     let view = gtk::TextView::builder()
         .monospace(true)
@@ -2752,11 +2769,26 @@ fn build_fastflags_page(
         })
         .wrap(true)
         .xalign(0.0)
-        .margin_top(6)
+        .hexpand(true)
         .build();
     where_label.add_css_class("dim-label");
     where_label.add_css_class("caption");
-    group.add(&where_label);
+
+    // The one row. `valign: Center` on the buttons is what stops them growing
+    // to the height of a wrapped path, which is the same mistake the header
+    // suffix made one paragraph up.
+    let actions = gtk::Box::builder().spacing(6).valign(gtk::Align::Center).build();
+    actions.append(&clear);
+    actions.append(&apply);
+
+    let footer = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(12)
+        .margin_top(12)
+        .build();
+    footer.append(&where_label);
+    footer.append(&actions);
+    group.add(&footer);
     page.add(&group);
 
     {
