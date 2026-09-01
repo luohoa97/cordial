@@ -62,8 +62,83 @@ const MAX_RUN: usize = 20;
 const MIN_RUN: usize = 9;
 
 /// The version of the engine extracted into `lib_dir`, if it can be read.
+///
+/// **Answered from a stamp file when the engine has not changed, because the
+/// scan is 8.8% of Cordial's startup CPU.** Measured with `perf` on
+/// 2026-09-01: `version_of` and `version_in_run` together were the largest
+/// named cost in Cordial's own code during startup, larger than the looper,
+/// and more than half of everything attributed to `cordial-run`. The client
+/// calls this once per launch through `load.rs`'s `engine_version` to tell the
+/// server which build it is, so every launch walked 118 MB looking for a
+/// string that only changes when the APK does.
+///
+/// The scan has no early exit by design -- it must reach EOF to notice a
+/// second differing candidate -- so it cannot be made cheap, only skipped.
+/// `diagnostics.rs` already declined to show an `Engine` line for this reason,
+/// on the grounds that "a diagnostics command that takes several seconds is
+/// one people stop running"; the cost was understood there and unmeasured
+/// here.
+///
+/// Keyed on the library's length and modification time. That is the pair every
+/// build tool uses for the same job, and the failure it admits -- a file
+/// replaced within the same timestamp granularity and at exactly the same
+/// length -- would be a Roblox build byte-identical in size to the one it
+/// replaced, extracted inside the same nanosecond. A wrong answer there is a
+/// stale version string, which is the bug this function's caller was written
+/// to fix, so [`version_of`] stays available for anything that must not guess.
 pub fn installed_version(lib_dir: &Path) -> Option<String> {
-    version_of(&lib_dir.join(LIBRARY))
+    let library = lib_dir.join(LIBRARY);
+    let stamp = stamp_of(&library);
+    if let Some(stamp) = &stamp {
+        if let Some(cached) = cached_version(lib_dir, stamp) {
+            // An empty record is a remembered "the shape was not unique here".
+            // Kept, because rescanning 118 MB every launch to reach the same
+            // answer is the case this exists to avoid.
+            return if cached.is_empty() { None } else { Some(cached) };
+        }
+    }
+    let found = version_of(&library);
+    if let Some(stamp) = &stamp {
+        remember(lib_dir, stamp, found.as_deref().unwrap_or(""));
+    }
+    found
+}
+
+/// The stamp file's name. Beside the engine, because that is the directory
+/// that is rewritten whenever the engine is.
+const VERSION_STAMP: &str = ".cordial-engine-version";
+
+/// `<len> <mtime_nanos>` for the library, or `None` if it cannot be read.
+fn stamp_of(library: &Path) -> Option<String> {
+    let meta = std::fs::metadata(library).ok()?;
+    let modified = meta.modified().ok()?;
+    let nanos = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    Some(format!("{} {}", meta.len(), nanos))
+}
+
+/// The remembered version for this stamp, if the stamp still matches.
+fn cached_version(lib_dir: &Path, stamp: &str) -> Option<String> {
+    let text = std::fs::read_to_string(lib_dir.join(VERSION_STAMP)).ok()?;
+    // `<stamp>\n<version>`, and the version may be empty.
+    let (recorded, version) = text.split_once('\n')?;
+    (recorded == stamp).then(|| version.trim_end().to_string())
+}
+
+/// Record the answer. Best effort: a read-only lib directory is a slow launch,
+/// not a broken one, so a failure here is not reported and not an error.
+fn remember(lib_dir: &Path, stamp: &str, version: &str) {
+    let path = lib_dir.join(VERSION_STAMP);
+    let tmp = path.with_extension("new");
+    // Written and renamed like every other document this project keeps, so a
+    // process killed mid-write leaves the old stamp rather than a torn one
+    // that would be read back as a version.
+    if std::fs::write(&tmp, format!("{stamp}\n{version}\n")).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
 }
 
 /// Whether there is an engine in `lib_dir` at all.
@@ -177,6 +252,57 @@ pub fn major_of(version: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+
+    /// **The stamp answers, and a changed engine invalidates it.**
+    ///
+    /// Both halves matter: without the cache the client walks 118 MB at every
+    /// launch, and without the invalidation it would report the previous
+    /// build's version after an APK update -- which is exactly the bug
+    /// `load.rs`'s `engine_version` was written to fix, reintroduced.
+    #[test]
+    fn the_version_is_remembered_until_the_engine_changes() {
+        let dir = std::env::temp_dir().join(format!("cordial-engine-stamp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let library = dir.join(super::LIBRARY);
+
+        // A fixture this crate wrote itself: ADR-015 forbids a Roblox byte here.
+        std::fs::write(&library, b"noise 2.736.0.1408 noise").unwrap();
+        assert_eq!(super::installed_version(&dir).as_deref(), Some("2.736.0.1408"));
+        assert!(dir.join(super::VERSION_STAMP).is_file(), "the answer must be recorded");
+
+        // The stamp is what is read now: corrupt the library and the recorded
+        // answer still stands, which is what proves the scan was skipped.
+        std::fs::write(&library, b"noise 2.736.0.1408 noise").unwrap();
+        let stamp = super::stamp_of(&library).unwrap();
+        super::remember(&dir, &stamp, "9.9.9.9");
+        assert_eq!(super::installed_version(&dir).as_deref(), Some("9.9.9.9"));
+
+        // A different engine has a different length, so the stamp misses and
+        // the real scan runs again.
+        std::fs::write(&library, b"noise 2.800.0.1 and more bytes than before").unwrap();
+        assert_eq!(super::installed_version(&dir).as_deref(), Some("2.800.0.1"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An ambiguous build is remembered as ambiguous rather than rescanned.
+    #[test]
+    fn not_knowing_is_cached_too() {
+        let dir = std::env::temp_dir().join(format!("cordial-engine-ambig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let library = dir.join(super::LIBRARY);
+        // Two different four-part candidates: the scan answers None.
+        std::fs::write(&library, b"a 2.736.0.1408 b 2.800.0.1409 c").unwrap();
+        assert_eq!(super::installed_version(&dir), None);
+
+        let recorded = std::fs::read_to_string(dir.join(super::VERSION_STAMP)).unwrap();
+        assert!(recorded.ends_with("\n\n"), "an empty version is the record: {recorded:?}");
+        assert_eq!(super::installed_version(&dir), None, "and it is answered from the stamp");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
 
     /// Not a Roblox byte anywhere near this file: the fixture is a version
