@@ -71,6 +71,32 @@
     first version this project gave itself was 0.2.0.
   -->
   <releases>
+    <!--
+      **This list is eight releases stale below, and 0.13.0 is the first entry
+      added since 0.5.2.** The comment above asks for it to be kept in step and
+      it was not; backfilling 0.6 through 0.12 from their notes is worth doing
+      and is not this change. AppStream shows the newest entry as "what's new",
+      so the important one is the top.
+    -->
+    <release version="0.13.0" date="2026-09-01">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.13.0</url>
+      <description>
+        <p>
+          Built-in plugins are started. They never were: Cordial looked in the
+          user plugin directory and not the system one, so every plugin it
+          ships was listed, granted and switched on without its process ever
+          being spawned. Discord Rich Presence works as a result, recovers if
+          Discord opens later, carries a game's own presence through
+          BloxstrapRPC, and shows a join button.
+        </p>
+        <p>
+          Controllers are on by default, with a switch and a fix for a virtual
+          mouse being reported as a pad. New settings for frame pacing,
+          FastFlags and quitting when you leave a game. Plugins can be loaded
+          unpacked from a folder and reload as they are edited.
+        </p>
+      </description>
+    </release>
     <release version="0.5.2" date="2026-08-05">
       <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.5.2</url>
       <description>
