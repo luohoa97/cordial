@@ -56,6 +56,20 @@
 name: Announce a release on Discord
 
 on:
+  # **This trigger does not fire on its own, and that is measured.** GitHub
+  # does not start a workflow from an event created by the repository's own
+  # `GITHUB_TOKEN`, and the release is created by one: attach-to-release.yml
+  # runs `gh release create` with `github.token`. v0.13.0 published at
+  # 06:37:43 and nothing here ran; the announcement went out by hand from the
+  # dispatch path below.
+  #
+  # It is kept because a release *published by a person* -- through the web
+  # UI, or a `gh release create` run from a laptop -- does fire it, and that
+  # is a real path somebody will take. attach-to-release.yml now dispatches
+  # this workflow explicitly for the automated path, so the two together cover
+  # both without double-posting: only the job that creates the release
+  # dispatches, and a release created by hand was never a `GITHUB_TOKEN`
+  # event in the first place.
   release:
     types: [published]
   # **A hand-run path, because this project has already lost a release to a

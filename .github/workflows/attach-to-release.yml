@@ -91,6 +91,10 @@ jobs:
     permissions:
       contents: write
       id-token: write
+      # For the `gh workflow run` that asks discord-release.yml to announce
+      # a release this job has just created. Dispatching a workflow is an
+      # Actions write; nothing here writes any other Actions state.
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -143,6 +147,30 @@ jobs:
               if [ -f "$notes" ]; then
                   gh release create "$GITHUB_REF_NAME" --verify-tag \
                       --title "Cordial ${GITHUB_REF_NAME#v}" --notes-file "$notes"
+                  # **Announcing has to be asked for here, because publishing
+                  # the release does not ask for it.** discord-release.yml
+                  # listens for `release: published`, and GitHub does not
+                  # start a workflow from an event its own `GITHUB_TOKEN`
+                  # created -- which is the token the line above uses. So the
+                  # announcement never fired for v0.13.0 and had to be sent by
+                  # hand, which is the exact failure discord-release.yml's own
+                  # header describes happening to v0.11.0.
+                  #
+                  # `workflow_dispatch` is the documented exception to that
+                  # rule: events from it do start a run even under
+                  # `GITHUB_TOKEN`. It goes inside this branch rather than
+                  # after it because only the first workflow to arrive creates
+                  # the release, so this fires exactly once however many
+                  # package builds call this file.
+                  #
+                  # Failure to dispatch does not fail the release. The
+                  # packages are attached by then and an unannounced release
+                  # is worth strictly more than no release; the missing
+                  # announcement is visible in this log and re-sendable from
+                  # the Actions tab.
+                  gh workflow run discord-release.yml \
+                      --ref "$GITHUB_REF_NAME" -f tag="$GITHUB_REF_NAME" \
+                      || echo "warning: could not dispatch the Discord announcement; send it by hand" >&2
               else
                   # No notes written is worth failing over rather than
                   # publishing a release with a generated changelog: this

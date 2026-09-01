@@ -631,6 +631,10 @@ jobs:
     permissions:
       contents: write
       id-token: write
+      # `attach-to-release.yml` dispatches the Discord announcement when it
+      # is the job that created the release, and a reusable workflow cannot
+      # hold a permission its caller did not grant.
+      actions: write
     uses: ./.github/workflows/attach-to-release.yml
     with:
       artifact_pattern: cordial-flatpak-bundle
