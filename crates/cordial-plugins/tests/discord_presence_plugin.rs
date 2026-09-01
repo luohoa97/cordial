@@ -91,8 +91,24 @@ fn discord_presence_follows_lifecycle_events_all_the_way_to_the_wire() {
     let mut logs: Vec<String> = Vec::new();
     let mut sent_launch = false;
     let mut sent_shutdown = false;
+
+    // **A deadline, because without one a drifted log line hangs rather than
+    // fails.** This loop ends when the plugin says it cleared its presence,
+    // and it matches that on the text of a log message. When the plugin's
+    // wording changed the match stopped firing -- and the plugin now re-sends
+    // its presence every twenty seconds, so it never falls silent and
+    // `next_request` never returns `None`. The suite sat on this one test for
+    // nearly three hours before anyone looked. A test that fails is a result;
+    // a test that hangs stops the run that would have told you.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+
     while let Some(req) = session.plugin_mut("discord-presence").unwrap().next_request() {
         let Ok(req) = req else { break };
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the plugin never reported clearing its presence within 60s. Its log said:\n{}",
+            logs.join("\n")
+        );
 
         if req.method == "log.write" {
             let message = req.params["message"].as_str().unwrap_or_default().to_string();
@@ -106,7 +122,7 @@ fn discord_presence_follows_lifecycle_events_all_the_way_to_the_wire() {
                 sent_launch = true;
                 session.push_lifecycle("launch");
             }
-            if message.contains("presence.set on cordial/client.launch came back: ok") && !sent_shutdown {
+            if message.contains("presence.set (cordial/client.launch) came back: ok") && !sent_shutdown {
                 sent_shutdown = true;
                 session.push_lifecycle("shutdown");
                 // Delivery is asynchronous (ADR-026), so the shutdown event
@@ -128,7 +144,7 @@ fn discord_presence_follows_lifecycle_events_all_the_way_to_the_wire() {
 
     let joined = logs.join("\n");
     assert!(joined.contains("lifecycle.subscribe came back: ok"), "got:\n{joined}");
-    assert!(joined.contains("presence.set on cordial/client.launch came back: ok"), "got:\n{joined}");
+    assert!(joined.contains("presence.set (cordial/client.launch) came back: ok"), "got:\n{joined}");
     assert!(joined.contains("presence.clear on shutdown came back: ok"), "got:\n{joined}");
 
     // And the wire: the fake Discord actually received a well-formed
@@ -148,8 +164,31 @@ fn discord_presence_follows_lifecycle_events_all_the_way_to_the_wire() {
     let (op, set_activity) = rx.recv().unwrap();
     assert_eq!(op, 1);
     assert_eq!(set_activity["cmd"], "SET_ACTIVITY");
-    assert_eq!(set_activity["args"]["activity"]["details"], "Using Cordial");
-    assert_eq!(set_activity["args"]["activity"]["state"], "Starting up");
+    let activity = &set_activity["args"]["activity"];
+
+    // **No `details` and no `state`, and that is the assertion.** This test
+    // used to require "Using Cordial" / "Starting up", and both are gone: the
+    // state only ever advanced on `client.ready`, an event that does not
+    // always arrive, so the presence could sit on "Starting up" for a whole
+    // session. Discord renders "Playing Cordial" from the application itself,
+    // which is the same claim without a way to be wrong. Asserting their
+    // absence keeps a well-meaning re-add from putting a staleable line back.
+    assert!(activity["details"].is_null(), "no details outside a game: {activity}");
+    assert!(activity["state"].is_null(), "no state outside a game: {activity}");
+
+    // The elapsed timer is what is left, and it is the whole presence.
+    assert!(
+        activity["timestamps"]["start"].is_u64(),
+        "an elapsed timer is the one thing Cordial's own presence shows: {activity}"
+    );
+
+    // Cordial's own link rides on every activity, in a game or not. Outside
+    // one there is no place id, so it is the only button.
+    assert_eq!(
+        activity["buttons"],
+        serde_json::json!([{ "label": "Cordial on GitHub", "url": "https://github.com/luohoa97/cordial" }]),
+        "got: {activity}"
+    );
 
     let (op, clear_activity) = rx.recv().unwrap();
     assert_eq!(op, 1);
