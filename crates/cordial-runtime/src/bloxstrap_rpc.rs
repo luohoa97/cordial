@@ -205,11 +205,18 @@ impl Presence {
     /// the game had asked for it. `Slot::Empty` is the opposite and *is* sent,
     /// as an empty string, because the game explicitly cleared it.
     ///
-    /// Images are deliberately not carried. They are Discord asset keys
-    /// belonging to whichever application the presence is published under, and
-    /// a key from a game's own Bloxstrap application means nothing under
-    /// Cordial's -- Discord renders a missing key as no image at all, so
-    /// forwarding them would silently blank the icon rather than improve it.
+    /// **Images are carried as Roblox asset ids, not as URLs.** This used to
+    /// drop them, on the reasoning that they were "Discord asset keys
+    /// belonging to whichever application the presence is published under".
+    /// That was wrong, and [`Image`] one screen up says so in its own doc: the
+    /// protocol's `assetId` is a *Roblox* asset id. The two comments
+    /// contradicted each other and the code followed the wrong one, so a game
+    /// that set a picture got Cordial's icon instead.
+    ///
+    /// The id is passed on rather than resolved here for the same reason
+    /// `place_id` is: turning an identifier into a URL is the broker's job, so
+    /// that a plugin cannot publish an arbitrary image under Cordial's name
+    /// and icon. See `presence::to_activity`.
     pub fn to_payload(&self) -> serde_json::Value {
         let mut map = serde_json::Map::new();
         if let Some(v) = self.details.as_text() {
@@ -223,6 +230,27 @@ impl Presence {
         }
         if let Slot::Value(t) = &self.time_end {
             map.insert("end".into(), serde_json::json!(t));
+        }
+        // `Slot::Empty` on an image means the game cleared it, which is not
+        // the same as never setting one -- so it is sent, as an empty asset
+        // id, and the broker reads that as "no picture" rather than "Cordial
+        // decides". Same distinction the text fields make one block up.
+        for (slot, id_key, text_key) in [
+            (&self.large_image, "large_asset_id", "large_text"),
+            (&self.small_image, "small_asset_id", "small_text"),
+        ] {
+            match slot {
+                Slot::Default => {}
+                Slot::Empty => {
+                    map.insert(id_key.into(), serde_json::json!(""));
+                }
+                Slot::Value(image) => {
+                    map.insert(id_key.into(), serde_json::json!(image.asset_id));
+                    if let Some(hover) = &image.hover_text {
+                        map.insert(text_key.into(), serde_json::json!(hover));
+                    }
+                }
+            }
         }
         serde_json::Value::Object(map)
     }

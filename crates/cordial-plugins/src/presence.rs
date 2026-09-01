@@ -48,12 +48,25 @@ pub struct PresencePayload {
     pub start: Option<i64>,
     #[serde(default)]
     pub end: Option<i64>,
+    /// The big picture beside the activity, as a **Roblox asset id**.
+    ///
+    /// These were free strings passed straight into Discord's `large_image`,
+    /// which is the same hole `buttons` is closed against: a plugin could put
+    /// an arbitrary external URL under Cordial's name and icon. Nothing ever
+    /// set them, so they now mean an asset id and Cordial builds the URL --
+    /// one way to do it, and no way to smuggle a link.
+    ///
+    /// An empty string is "the game cleared this", which is a different
+    /// statement from absent and renders as no picture rather than Cordial's
+    /// own. See `bloxstrap_rpc::Presence::to_payload`.
     #[serde(default)]
-    pub large_image: Option<String>,
+    pub large_asset_id: Option<String>,
     #[serde(default)]
     pub large_text: Option<String>,
+    /// The small badge in the corner, as a Roblox asset id. See
+    /// [`PresencePayload::large_asset_id`].
     #[serde(default)]
-    pub small_image: Option<String>,
+    pub small_asset_id: Option<String>,
     #[serde(default)]
     pub small_text: Option<String>,
     /// The experience being played, for the buttons Cordial adds.
@@ -99,6 +112,19 @@ impl PresencePayload {
                 return Err("job_id must be a server instance UUID".into());
             }
         }
+        // An asset id becomes a path component in a URL handed to Discord, so
+        // it is checked here rather than trusted -- the same rule `job_id`
+        // above and `client_id` before it are held to. Empty is allowed and
+        // means cleared.
+        for (name, id) in
+            [("large_asset_id", &payload.large_asset_id), ("small_asset_id", &payload.small_asset_id)]
+        {
+            if let Some(id) = id {
+                if !id.is_empty() && !id.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(format!("{name} must be a Roblox asset id (digits only)"));
+                }
+            }
+        }
         Ok(payload)
     }
 
@@ -120,16 +146,16 @@ impl PresencePayload {
             }
             activity.insert("timestamps".into(), Value::Object(ts));
         }
-        if self.large_image.is_some() || self.large_text.is_some() || self.small_image.is_some() || self.small_text.is_some() {
+        if self.large_asset_id.is_some() || self.large_text.is_some() || self.small_asset_id.is_some() || self.small_text.is_some() {
             let mut assets = serde_json::Map::new();
-            if let Some(v) = &self.large_image {
-                assets.insert("large_image".into(), json!(v));
+            if let Some(url) = asset_url(self.large_asset_id.as_deref()) {
+                assets.insert("large_image".into(), json!(url));
             }
             if let Some(v) = &self.large_text {
                 assets.insert("large_text".into(), json!(v));
             }
-            if let Some(v) = &self.small_image {
-                assets.insert("small_image".into(), json!(v));
+            if let Some(url) = asset_url(self.small_asset_id.as_deref()) {
+                assets.insert("small_image".into(), json!(url));
             }
             if let Some(v) = &self.small_text {
                 assets.insert("small_text".into(), json!(v));
@@ -165,6 +191,35 @@ impl PresencePayload {
 /// `https`, which Discord requires -- it rejects the whole activity otherwise,
 /// silently, which is the failure mode this comment exists to stop somebody
 /// reintroducing with a nicer label.
+/// A Roblox asset id as a URL Discord will render, or `None` for no picture.
+///
+/// **Discord fetches this itself and Cordial makes no request.** That is worth
+/// stating because the obvious alternative -- resolving the id through
+/// `thumbnails.roblox.com` here -- would have Cordial calling a third party on
+/// a game's behalf, which is the objection that kept usernames out of
+/// `SessionState`. Handing Discord a URL moves no data Cordial holds: the user
+/// already chose to publish a presence, and Discord's own image proxy does the
+/// fetching.
+///
+/// Measured against the real client: Discord accepts this URL and rewrites it
+/// to `mp:external/<hash>/.../https/www.roblox.com/asset-thumbnail/image`,
+/// which is its proxy form and means it took it. `assetdelivery.roblox.com`
+/// is accepted too and is the wrong endpoint -- it returns the asset's own
+/// bytes, which for a Decal is XML rather than a picture.
+///
+/// An empty id is the game clearing the slot, and answers `None` so no image
+/// key is written at all -- Discord renders an absent key as no picture, which
+/// is what "cleared" should look like.
+fn asset_url(asset_id: Option<&str>) -> Option<String> {
+    let id = asset_id?;
+    if id.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "https://www.roblox.com/asset-thumbnail/image?assetId={id}&width=420&height=420&format=png"
+    ))
+}
+
 fn cordial_button() -> Value {
     json!({ "label": "Cordial on GitHub", "url": "https://github.com/luohoa97/cordial" })
 }
@@ -531,11 +586,58 @@ mod tests {
             "details": "Playing Baseplate",
             "state": "In a server",
             "start": 1_700_000_000,
-            "large_image": "roblox-logo",
+            "large_asset_id": "13913198647",
         });
         let p = PresencePayload::parse(&ok).unwrap();
         assert_eq!(p.client_id, snowflake());
         assert_eq!(p.details.as_deref(), Some("Playing Baseplate"));
+    }
+
+    /// **A game's asset id becomes a URL Discord will fetch.**
+    ///
+    /// The bug this guards: `to_payload` dropped images entirely, on a comment
+    /// claiming they were Discord asset keys, so a game that set cover art got
+    /// Cordial's own icon. They are Roblox asset ids, and this is the shape
+    /// the real client was measured accepting.
+    #[test]
+    fn a_games_asset_id_becomes_a_roblox_thumbnail_url() {
+        let payload = PresencePayload::parse(&json!({
+            "client_id": snowflake(),
+            "large_asset_id": "13913198647",
+            "large_text": "Game: Crossroads",
+        }))
+        .unwrap();
+        let assets = &payload.to_activity()["assets"];
+        assert_eq!(
+            assets["large_image"],
+            "https://www.roblox.com/asset-thumbnail/image?assetId=13913198647&width=420&height=420&format=png"
+        );
+        assert_eq!(assets["large_text"], "Game: Crossroads");
+    }
+
+    /// An asset id is a path component, so it is checked like every other one.
+    #[test]
+    fn an_asset_id_cannot_smuggle_a_url() {
+        for bad in ["../../evil", "1&x=2", "http://example.com/x.png", "13913198647 "] {
+            let e = PresencePayload::parse(&json!({"client_id": snowflake(), "large_asset_id": bad}))
+                .unwrap_err();
+            assert!(e.contains("asset id"), "{bad:?} gave: {e}");
+        }
+    }
+
+    /// **Cleared is not the same as never set.** A game that clears its image
+    /// must get no picture, not Cordial's icon back -- so an empty id writes
+    /// no key at all rather than falling through to the application default.
+    #[test]
+    fn a_cleared_image_writes_no_key() {
+        let payload =
+            PresencePayload::parse(&json!({"client_id": snowflake(), "large_asset_id": ""}))
+                .unwrap();
+        let activity = payload.to_activity();
+        assert!(
+            activity["assets"]["large_image"].is_null(),
+            "a cleared image must not become a URL: {activity}"
+        );
     }
 
     /// Stands in for Discord: accepts one connection, reads a handshake

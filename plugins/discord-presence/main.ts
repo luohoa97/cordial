@@ -39,6 +39,13 @@ let fromGame: {
   end?: number;
   place_id?: number;
   job_id?: string;
+  // Roblox asset ids as text. An empty string is the game clearing the slot,
+  // which is not the same as never setting one -- Cordial's broker reads the
+  // difference, so this must not collapse them into `undefined`.
+  large_asset_id?: string;
+  large_text?: string;
+  small_asset_id?: string;
+  small_text?: string;
 } = {};
 
 const enc = new TextEncoder();
@@ -215,6 +222,15 @@ async function pushPresence(reason: string) {
     // Cordial's name and icon, which is not what `presence.set` grants.
     ...(fromGame.place_id !== undefined ? { place_id: fromGame.place_id } : {}),
     ...(fromGame.job_id !== undefined ? { job_id: fromGame.job_id } : {}),
+    // **The game's picture instead of Cordial's icon, when it set one.** With
+    // no assets on the activity Discord falls back to the application's own
+    // icon, so a game that asked for cover art got Cordial's logo -- which is
+    // the same "the game wins where it said something" rule the text fields
+    // already follow, applied to the one field that was not carrying it.
+    ...(fromGame.large_asset_id !== undefined ? { large_asset_id: fromGame.large_asset_id } : {}),
+    ...(fromGame.large_text !== undefined ? { large_text: fromGame.large_text } : {}),
+    ...(fromGame.small_asset_id !== undefined ? { small_asset_id: fromGame.small_asset_id } : {}),
+    ...(fromGame.small_text !== undefined ? { small_text: fromGame.small_text } : {}),
     start: fromGame.start ?? startedAt,
   });
   // Logged only when the answer changes. At one send every twenty seconds an
@@ -242,6 +258,14 @@ async function onGamePresence(payload: unknown) {
     end: typeof p.end === "number" ? p.end : undefined,
     place_id: typeof p.place_id === "number" ? p.place_id : undefined,
     job_id: typeof p.job_id === "string" ? p.job_id : undefined,
+    // Roblox asset ids, not URLs. Cordial turns them into something Discord
+    // will fetch; a plugin that built the URL itself would be publishing an
+    // arbitrary link under Cordial's name, which is the same reason the
+    // buttons are the broker's and not this file's.
+    large_asset_id: typeof p.large_asset_id === "string" ? p.large_asset_id : undefined,
+    large_text: typeof p.large_text === "string" ? p.large_text : undefined,
+    small_asset_id: typeof p.small_asset_id === "string" ? p.small_asset_id : undefined,
+    small_text: typeof p.small_text === "string" ? p.small_text : undefined,
   };
   // Forced rather than left to the heartbeat: a game setting its presence and
   // Discord showing it up to twenty seconds later would read as broken.
