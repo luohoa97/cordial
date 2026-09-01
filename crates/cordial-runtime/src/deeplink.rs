@@ -377,6 +377,45 @@ pub enum Translated {
     Refused(String),
 }
 
+/// `CORDIAL_DEEPLINK_CARRY_TICKET=1` — pass the browser's sign-in ticket on.
+///
+/// **Off unless asked for, and the reason is that it moves a live credential.**
+/// A desktop launch link's `gameinfo` is a one-time authentication ticket, and
+/// it is what makes a browser launch sign you in on Windows. Whether this
+/// engine takes one is unverified -- the module comment has what is known and
+/// the experiment that would settle it -- so the default is the behaviour
+/// Cordial has always had: drop it, and let the user sign in themselves.
+///
+/// Somebody turning it on is choosing to hand a credential to the engine in
+/// exchange for not typing a password. That is a reasonable trade to offer and
+/// not one to make for them, which is why there is a switch in Settings rather
+/// than a better default.
+pub fn carry_ticket() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        matches!(std::env::var("CORDIAL_DEEPLINK_CARRY_TICKET").ok().as_deref(), Some("1"))
+    })
+}
+
+/// Whether a ticket is shaped like one, and so may be formatted into a URL.
+///
+/// **The same rule the place id has: nothing from a browser may add a
+/// parameter to this URL.** A Roblox authentication ticket is URL-safe
+/// base64-ish, so the permitted set is alphanumerics and `-._~` and nothing
+/// else -- no `&`, no `?`, no `#`, no space. A value that fails this drops the
+/// ticket and keeps the link, because a join without a sign-in is what Cordial
+/// has always done and is a better failure than refusing to launch.
+///
+/// A named function rather than a closure at the one call site, so that the
+/// test exercises the check the code uses instead of a copy of it.
+fn ticket_shaped(ticket: &str) -> bool {
+    !ticket.is_empty()
+        && ticket.len() <= 2048
+        && ticket
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'))
+}
+
 /// Rewrite roblox.com's desktop launch link into the mobile one the engine
 /// matches, or say why not.
 ///
@@ -400,14 +439,19 @@ pub enum Translated {
 /// launcher query is named in the log and dropped; nothing is guessed at, and
 /// [`SERVER_SELECTING`] is the set whose presence stops the translation instead.
 ///
-/// **`gameinfo` is deliberately dropped, and that is the open question.** It is
-/// a one-time authentication ticket the desktop client redeems, and the Android
-/// client this engine came from has no such thing — its authentication is the
-/// session the client already holds. So dropping it is consistent with what the
-/// engine is, and it is **not established** that a join succeeds without it,
-/// because verifying a join needs a signed-in account and none was used. What is
-/// established is that the translated link reaches the engine and the app shell
-/// asks for the place; see `docs/analysis/deep-links.md`.
+/// **`gameinfo` is dropped unless [`carry_ticket`] says otherwise, and that is
+/// still the open question.** It is a one-time authentication ticket the
+/// desktop client redeems. This doc used to add that the Android client "has
+/// no such thing"; that was asserted without a citation and does not survive
+/// contact with the binary, which carries `AuthTicket`, `redeem`,
+/// `/v1/authentication-ticket/redeem` and `WebLoginProtocolHandleAuthTicket`.
+/// Those strings prove the names exist and nothing about whether a launch link
+/// can use one, so the default is unchanged and the claim is withdrawn rather
+/// than replaced with a better guess. It remains **not established** that a
+/// join succeeds either with the ticket or without it, because verifying a
+/// join needs a signed-in account and none was used. What is established is
+/// that the translated link reaches the engine and the app shell asks for the
+/// place; see `docs/analysis/deep-links.md`.
 pub fn translate(url: &JoinUrl) -> Translated {
     let Some(payload) = url.desktop_payload() else {
         return Translated::AsIs;
@@ -415,6 +459,7 @@ pub fn translate(url: &JoinUrl) -> Translated {
 
     let mut launch_mode = None;
     let mut launcher = None;
+    let mut ticket = None;
     for token in payload.split('+') {
         // A token with no colon is the leading version number, or a fragment of
         // a value that contained a `+`. Neither is a parameter, and guessing
@@ -425,6 +470,9 @@ pub fn translate(url: &JoinUrl) -> Translated {
         match key.to_ascii_lowercase().as_str() {
             "launchmode" => launch_mode = Some(value),
             "placelauncherurl" => launcher = Some(value),
+            // Kept only if the setting says so, and never printed. See
+            // `carry_ticket`.
+            "gameinfo" => ticket = Some(value),
             _ => {}
         }
     }
@@ -503,7 +551,21 @@ pub fn translate(url: &JoinUrl) -> Translated {
     // `roblox://experiences/start?placeId=<id>` rather than any of the shorter
     // forms the engine's pattern also admits, because this is the exact string
     // that was measured to produce a `Game.launch` naming the place.
-    match validate(&format!("roblox://experiences/start?placeId={place}")) {
+    // The ticket, when the setting is on and the link carried a usable one.
+    // See `ticket_shaped` for why anything else is dropped rather than refused.
+    let carried = ticket.filter(|_| carry_ticket()).filter(|t| ticket_shaped(t));
+    let suffix = match carried {
+        // `ticket` because that is the key this build knows: it appears as a
+        // bare query key in `libroblox.so` beside `accessCode`, `linkCode`,
+        // `gameInstanceId` and `launchData`, and the engine's own deeplink
+        // pattern admits arbitrary `\w+=value` pairs. **A guess with evidence
+        // rather than a measurement** -- see the module comment for the
+        // experiment that would settle it.
+        Some(t) => format!("&ticket={t}"),
+        None => String::new(),
+    };
+
+    match validate(&format!("roblox://experiences/start?placeId={place}{suffix}")) {
         Ok(url) => Translated::To { url, dropped },
         // Unreachable as long as the digit check above holds, and reported
         // rather than unwrapped because a panic here would be a browser click
@@ -915,6 +977,36 @@ fn probe(lib: linker::Library) {
 
 #[cfg(test)]
 mod tests {
+    /// **The ticket is dropped unless the setting says otherwise.**
+    ///
+    /// The default matters more than the feature: `gameinfo` is a live
+    /// one-time credential, and a browser click must not move one because
+    /// nobody thought about it.
+    #[test]
+    fn the_ticket_is_not_carried_by_default() {
+        // `carry_ticket` caches a `OnceLock`, so this asserts the shape of the
+        // decision rather than setting the variable -- a test that set it
+        // would decide the answer for every other test in this binary.
+        assert!(!super::carry_ticket(), "no variable set, so nothing is carried");
+    }
+
+    /// A ticket that is not ticket-shaped is dropped, and the link still works.
+    ///
+    /// **This calls [`ticket_shaped`] rather than restating it.** The first
+    /// version of this test re-implemented the byte check inline, which would
+    /// have passed just as happily with the production check deleted -- the
+    /// broken instrument AGENTS.md opens on, in a test.
+    #[test]
+    fn a_ticket_with_url_syntax_in_it_cannot_add_a_parameter() {
+        for bad in ["a&b=c", "x?y", "has space", "semi;colon", "hash#frag", "", "sla/sh"] {
+            assert!(!super::ticket_shaped(bad), "{bad:?} must not pass the shape check");
+        }
+        for good in ["AbC123", "with-dash", "with.dot", "with_under", "with~tilde"] {
+            assert!(super::ticket_shaped(good), "{good:?} is ticket-shaped and must pass");
+        }
+        assert!(!super::ticket_shaped(&"a".repeat(2049)), "a ticket has a length bound");
+    }
+
     use super::*;
 
     /// A link of the shape the web site emits, with a place that belongs to

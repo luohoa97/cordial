@@ -615,6 +615,30 @@ fn build_session_group(
         });
     }
     group.add(&close_on_leave);
+
+    // **In Session rather than anywhere else**, because it is about what
+    // happens when a launch arrives rather than about graphics or plugins.
+    let ticket = adw::SwitchRow::builder()
+        .title("Sign in from browser launches")
+        // Honest on both counts, and both matter. It moves a credential, which
+        // is the reason somebody might say no; and it is unverified, which is
+        // the reason it might do nothing. A row that promised the feature and
+        // silently failed would be the stub-that-lies shape in an interface.
+        .subtitle(
+            "Pass the sign-in ticket Roblox puts in a play link, so clicking play on the website              does not ask you to sign in again. Off by default: it hands a one-time credential to              the engine, and it is not yet confirmed that this engine accepts one.",
+        )
+        .active(config.borrow().carry_launch_ticket)
+        .build();
+    ticket.set_subtitle_lines(4);
+    {
+        let config = config.clone();
+        let config_path = config_path.clone();
+        ticket.connect_active_notify(move |row| {
+            config.borrow_mut().carry_launch_ticket = row.is_active();
+            persist(&config, &config_path);
+        });
+    }
+    group.add(&ticket);
     group
 }
 

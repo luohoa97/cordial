@@ -824,6 +824,20 @@ pub struct ShellConfig {
     /// plugins reload as they are edited (`sandbox::command`'s `--watch`).
     #[serde(default)]
     pub unpacked_plugins: Vec<String>,
+    /// Pass the browser's sign-in ticket to the engine when launching from a
+    /// link on roblox.com.
+    ///
+    /// **Off by default, because it moves a live credential.** A desktop launch
+    /// link carries a one-time authentication ticket, which is what makes
+    /// clicking play on the website sign you in on Windows. Whether this engine
+    /// takes one is unverified -- see `cordial_runtime::deeplink` -- so the
+    /// default is what Cordial has always done: drop it and let you sign in.
+    ///
+    /// Turning it on is choosing to hand a credential to the engine in exchange
+    /// for not typing a password. A reasonable trade to offer, and not one to
+    /// make on somebody's behalf.
+    #[serde(default)]
+    pub carry_launch_ticket: bool,
     pub mangohud: bool,
     /// Which audio device Roblox plays through. See [`AudioOutput`], which
     /// carries the whole of the reasoning, including why the stored form is a
@@ -899,6 +913,7 @@ impl Default for ShellConfig {
             gamepad: true,
             close_on_leave: false,
             unpacked_plugins: Vec::new(),
+            carry_launch_ticket: false,
             audio_output: AudioOutput::default(),
             mangohud: false,
             fullscreen_accel: default_fullscreen_accel(),

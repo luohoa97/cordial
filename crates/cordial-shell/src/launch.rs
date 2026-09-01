@@ -447,6 +447,14 @@ pub fn spawn(
     // are some: an empty variable and an absent one mean the same thing to
     // `manifest::unpacked_dirs`, and sending an empty one would put a
     // developer-mode marker in the environment of every ordinary launch.
+    // The browser's sign-in ticket, and only when asked for. Absent is the
+    // client's own default, so an off switch sends nothing rather than sending
+    // a "no" -- and a live credential does not move because a variable was set
+    // to the wrong string.
+    if config.carry_launch_ticket {
+        command.env("CORDIAL_DEEPLINK_CARRY_TICKET", "1");
+    }
+
     if !config.unpacked_plugins.is_empty() {
         let joined = config.unpacked_plugins.join(":");
         command.env("CORDIAL_UNPACKED_PLUGINS", &joined);
