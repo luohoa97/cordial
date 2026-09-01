@@ -1506,6 +1506,91 @@ only ever immediately before one.
 Neither of the first two is a theory yet. They are things that were true of
 these runs and have never been true of a measured one.
 
+## 0-gdb. The frozen thread is parked on an empty pipe, holds no lock, and two
+## things this file says about it are wrong, 2026-09-01
+
+Three frozen clients caught and photographed under gdb on `CordialTest`
+(roughly three freezes in eleven launches). §0 below ends by asking for exactly
+this -- "look for what the engine's app thread holds while it sits in
+`ALooper_pollOnce`" -- and the answer is **nothing**.
+
+**It is parked, not spinning, and that is measurable rather than inferred.**
+`cordial_loopers` twice, ten seconds apart, on a frozen client:
+
+```
+engine thread  polls 7,083,545 -> 7,083,744   199 in 10s = 20/s
+pump           polls       721 ->       920   199 in 10s = 20/s
+process CPU    2.60s -> 2.76s                 1.6% of one core
+events=9 unchanged   wakes=0   since_event 35430 -> 45430ms
+```
+
+Twenty a second is exactly `BLOCK_CEILING_MS = 50`. The seven million polls are
+accumulated from startup and are not still being spent -- reading the total
+without a second sample is what makes this look like a spin. **`BLOCK_CEILING_MS`
+is working precisely as designed and the client is frozen anyway**, because the
+thread wakes twenty times a second, finds nothing, and goes back. That is the
+strongest confirmation yet of this file's own line: the work item is not late,
+it is never created.
+
+**The stack says `timeout_millis=-1`, and §0 below says it is 0.**
+
+```
+#3  epoll_wait () from /lib64/libc.so.6
+#4  cordial_runtime::android::looper::looper_poll_once (timeout_millis=-1, ...)
+#5  0x00007f273f30152b in ?? ()          <- libroblox, stripped
+```
+
+§0 dismisses the lost-wakeup theory on the grounds that "both threads in a
+frozen client are polling with a timeout -- the pump at 50 ms, the engine's own
+thread at 0". The engine's own thread is asking to block forever; the 50 ms it
+actually gets is Cordial's ceiling, not the engine's request. The reason given
+for ruling the theory out is therefore not a fact about this bug.
+
+**No thread is blocked on a lock. Not one.** 73 threads in the capture, every
+frame 0 in `syscall` or `__syscall_cancel_arch` -- futex waits and `epoll_wait`
+-- and **zero** in `pthread_mutex_lock` or `lll_lock_wait`. So "this is a lock
+and not a lost message", which §0 concludes from the `CORDIAL_STARTUP_RETRY`
+call blocking, is not what a frozen client looks like. `looper.rs`'s own note
+above `BLOCK_CEILING_MS` already said the same thing from an earlier capture --
+"nothing else in either process was holding a lock" -- and the two documents
+have been contradicting each other since. This capture agrees with `looper.rs`.
+
+### What it is waiting on
+
+A pipe, and both ends are inside the process:
+
+```
+fd 29 -> pipe:[92904650]   fd 30 -> pipe:[92904650]   pump's looper, ident=-2, callback
+fd 31 -> pipe:[92904651]   fd 32 -> pipe:[92904651]   engine's looper, ident=1, no callback
+```
+
+The engine's app thread holds the read end of `92904651` and waits. Nothing
+ever writes fd 32, and `wakes=0` says `ALooper_wake` has never been called on
+that looper either -- so neither of the two ways it can return is ever taken.
+**Cordial does not create these pipes**: `pipe(`/`pipe2(` appear nowhere in
+`native/` or `src/android/`, so the engine made both ends and is failing to
+post to its own queue.
+
+### Where that leaves the search
+
+The looper is exonerated. It registers what it is asked to register, blocks
+when asked, wakes on the ceiling, and reports honestly; a producer inside the
+engine never runs. So the cause is upstream of anything in `looper.rs`, which
+is where several sessions of this file have been looking.
+
+That agrees with the two sharpest clues already here and previously unconnected
+to it: `~UgcExperienceController()` present in every healthy engine log and no
+frozen one, and the second-hand report of Roblox's settings menu losing a row
+immediately before a freeze. Both point at the app shell failing to do work
+*before* anything stops being drawn, which is exactly what an unposted command
+would look like from outside.
+
+**The next measurement**, and it is now a narrow one: find what the engine
+posts into that pipe in a healthy run and what precedes the first post. A
+`strace -e write -f` filtered to the pipe's fd across a healthy and a frozen
+launch would name the producer and the last thing that ran before it should
+have fired.
+
 ## 0. The freeze has a reliable reproduction, 2026-08-24
 
 **It stalls at `StartupController stage = 2`, immediately after `sync cookies
