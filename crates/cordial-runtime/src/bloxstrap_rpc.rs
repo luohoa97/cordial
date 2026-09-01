@@ -213,10 +213,10 @@ impl Presence {
     /// contradicted each other and the code followed the wrong one, so a game
     /// that set a picture got Cordial's icon instead.
     ///
-    /// The id is passed on rather than resolved here for the same reason
-    /// `place_id` is: turning an identifier into a URL is the broker's job, so
-    /// that a plugin cannot publish an arbitrary image under Cordial's name
-    /// and icon. See `presence::to_activity`.
+    /// What travels is Cordial's own key for the picture, not the id and not
+    /// a URL, for the same reason `place_id` does not travel as a link: a
+    /// plugin that could compose the string could publish an arbitrary image
+    /// under Cordial's name and icon. See `presence::resolved_image`.
     pub fn to_payload(&self) -> serde_json::Value {
         let mut map = serde_json::Map::new();
         if let Some(v) = self.details.as_text() {
@@ -236,8 +236,8 @@ impl Presence {
         // id, and the broker reads that as "no picture" rather than "Cordial
         // decides". Same distinction the text fields make one block up.
         for (slot, id_key, text_key) in [
-            (&self.large_image, "large_asset_id", "large_text"),
-            (&self.small_image, "small_asset_id", "small_text"),
+            (&self.large_image, "large_image_key", "large_text"),
+            (&self.small_image, "small_image_key", "small_text"),
         ] {
             match slot {
                 Slot::Default => {}
@@ -245,7 +245,10 @@ impl Presence {
                     map.insert(id_key.into(), serde_json::json!(""));
                 }
                 Slot::Value(image) => {
-                    map.insert(id_key.into(), serde_json::json!(image.asset_id));
+                    // The key, not the id: `presence` looks pictures up by a
+                    // token Cordial issued rather than accepting anything a
+                    // plugin composes. `crate::roblox_api::asset_key` mints it.
+                    map.insert(id_key.into(), serde_json::json!(crate::roblox_api::asset_key(&image.asset_id)));
                     if let Some(hover) = &image.hover_text {
                         map.insert(text_key.into(), serde_json::json!(hover));
                     }

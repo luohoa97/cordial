@@ -39,12 +39,12 @@ let fromGame: {
   end?: number;
   place_id?: number;
   job_id?: string;
-  // Roblox asset ids as text. An empty string is the game clearing the slot,
-  // which is not the same as never setting one -- Cordial's broker reads the
+  // Cordial's own image keys. An empty string is the game clearing the slot,
+  // which is not the same as never setting one -- the broker reads the
   // difference, so this must not collapse them into `undefined`.
-  large_asset_id?: string;
+  large_image_key?: string;
   large_text?: string;
-  small_asset_id?: string;
+  small_image_key?: string;
   small_text?: string;
 } = {};
 
@@ -227,9 +227,9 @@ async function pushPresence(reason: string) {
     // icon, so a game that asked for cover art got Cordial's logo -- which is
     // the same "the game wins where it said something" rule the text fields
     // already follow, applied to the one field that was not carrying it.
-    ...(fromGame.large_asset_id !== undefined ? { large_asset_id: fromGame.large_asset_id } : {}),
+    ...(fromGame.large_image_key !== undefined ? { large_image_key: fromGame.large_image_key } : {}),
     ...(fromGame.large_text !== undefined ? { large_text: fromGame.large_text } : {}),
-    ...(fromGame.small_asset_id !== undefined ? { small_asset_id: fromGame.small_asset_id } : {}),
+    ...(fromGame.small_image_key !== undefined ? { small_image_key: fromGame.small_image_key } : {}),
     ...(fromGame.small_text !== undefined ? { small_text: fromGame.small_text } : {}),
     start: fromGame.start ?? startedAt,
   });
@@ -258,13 +258,13 @@ async function onGamePresence(payload: unknown) {
     end: typeof p.end === "number" ? p.end : undefined,
     place_id: typeof p.place_id === "number" ? p.place_id : undefined,
     job_id: typeof p.job_id === "string" ? p.job_id : undefined,
-    // Roblox asset ids, not URLs. Cordial turns them into something Discord
-    // will fetch; a plugin that built the URL itself would be publishing an
-    // arbitrary link under Cordial's name, which is the same reason the
-    // buttons are the broker's and not this file's.
-    large_asset_id: typeof p.large_asset_id === "string" ? p.large_asset_id : undefined,
+    // Opaque keys Cordial issued, not ids and not URLs. It resolves the
+    // picture itself and this only echoes the key back; a plugin that could
+    // compose the string would be publishing an arbitrary link under Cordial's
+    // name, which is the same reason the buttons are the broker's job.
+    large_image_key: typeof p.large_image_key === "string" ? p.large_image_key : undefined,
     large_text: typeof p.large_text === "string" ? p.large_text : undefined,
-    small_asset_id: typeof p.small_asset_id === "string" ? p.small_asset_id : undefined,
+    small_image_key: typeof p.small_image_key === "string" ? p.small_image_key : undefined,
     small_text: typeof p.small_text === "string" ? p.small_text : undefined,
   };
   // Forced rather than left to the heartbeat: a game setting its presence and

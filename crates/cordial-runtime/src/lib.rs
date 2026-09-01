@@ -33,6 +33,7 @@ pub mod linking;
 pub mod plugin_host;
 pub mod profile;
 pub mod refresh;
+pub mod roblox_api;
 pub mod secrets;
 pub mod bionic;
 pub mod mimalloc_lib;

@@ -379,13 +379,92 @@ fn now_secs() -> u64 {
 /// Merged here rather than in `Presence::to_payload`, which is the parsed
 /// BloxstrapRPC protocol and has no business knowing about a job id it never
 /// sees.
+/// The name of the Roblox badge asset in Cordial's Discord application.
+///
+/// Bloxstrap uses the literal key `roblox` for the same badge, and a Discord
+/// asset key is a plain name rather than a URL -- so this renders only once an
+/// image called `roblox` has been uploaded to the application's Rich Presence
+/// assets in Discord's developer portal. That is a one-off manual step nobody
+/// but the application's owner can take, and until it is taken Discord simply
+/// draws no badge; nothing else about the presence changes.
+const ROBLOX_BADGE_KEY: &str = "roblox";
+
+/// What Cordial shows for a game that says nothing of its own.
+///
+/// Resolved once per experience by [`resolve_game_in_background`].
+static DEFAULTS: Mutex<Option<crate::roblox_api::GameDetails>> = Mutex::new(None);
+
+/// Look up the experience and republish, off the poll thread.
+///
+/// **Spawned rather than called inline.** These are HTTP requests on the house
+/// client's twenty-second worst case, and the log watcher's poll loop is not a
+/// place to spend that -- a stalled watcher stops noticing BloxstrapRPC lines,
+/// which is the one thing it exists to notice.
+fn resolve_game_in_background(universe_id: u64) {
+    std::thread::spawn(move || {
+        let details = crate::roblox_api::resolve_game(universe_id);
+        if let Some(d) = &details {
+            println!("[cordial] game: {} by {}", d.name, d.creator);
+        }
+        *DEFAULTS.lock().unwrap_or_else(|e| e.into_inner()) = details;
+        // The join already published a presence without any of this; this is
+        // the second one, with the name and the icon filled in.
+        crate::plugin_host::publish_core(
+            cordial_plugins::core_events::GAME_PRESENCE,
+            presence_payload(),
+        );
+    });
+}
+
+/// The presence to publish: what the game asked for, over Cordial's defaults.
+///
+/// **The default set is Bloxstrap's, field for field**, because a user moving
+/// between the two should not find the presence means something different --
+/// the experience's name as `details`, `by <creator>` as `state`, the game's
+/// icon as the large image with the name as its hover text, and the Roblox
+/// badge as the small image. Read from `DiscordRichPresence.cs` (MIT,
+/// Bloxstrap Labs); the shape adapted, not the code.
+///
+/// A game's own BloxstrapRPC wins wherever it said something, which is what
+/// `Slot::Default` already means -- so this fills only the keys `to_payload`
+/// left out, and never overwrites one it wrote.
 fn presence_payload() -> serde_json::Value {
     let mut payload = PRESENCE.lock().unwrap_or_else(|e| e.into_inner()).to_payload();
     let state = STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if let (Some(map), Some(place)) = (payload.as_object_mut(), state.place_id) {
-        map.insert("place_id".into(), serde_json::json!(place));
-        if let Some(job) = &state.job_id {
-            map.insert("job_id".into(), serde_json::json!(job));
+    let Some(map) = payload.as_object_mut() else {
+        return payload;
+    };
+    let Some(place) = state.place_id else {
+        return payload;
+    };
+
+    map.insert("place_id".into(), serde_json::json!(place));
+    if let Some(job) = &state.job_id {
+        map.insert("job_id".into(), serde_json::json!(job));
+    }
+    if let Some(joined) = state.joined_at {
+        map.entry("start").or_insert_with(|| serde_json::json!(joined));
+    }
+
+    if let Some(universe) = state.universe_id {
+        // The icon is only a default: a game that set its own large image has
+        // already written the key, and `or_insert_with` leaves it alone.
+        map.entry("large_image_key")
+            .or_insert_with(|| serde_json::json!(crate::roblox_api::universe_key(universe)));
+    }
+    // **The small image is a Discord application asset, not a URL**, which is
+    // what Bloxstrap does too -- its `SmallImageKey` is the literal string
+    // `roblox`. It renders only if an asset by that name has been uploaded to
+    // the Discord application the presence is published under; if it has not,
+    // Discord shows no badge and everything else is unaffected.
+    map.entry("small_image_key").or_insert_with(|| serde_json::json!(ROBLOX_BADGE_KEY));
+    map.entry("small_text").or_insert_with(|| serde_json::json!("Roblox"));
+
+    if let Some(details) = DEFAULTS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        map.entry("details").or_insert_with(|| serde_json::json!(details.name));
+        map.entry("large_text").or_insert_with(|| serde_json::json!(details.name));
+        if !details.creator.is_empty() {
+            map.entry("state").or_insert_with(|| serde_json::json!(format!("by {}", details.creator)));
         }
     }
     payload
@@ -424,6 +503,7 @@ pub fn poll() {
                     cordial_plugins::core_events::GAME_PRESENCE,
                     presence_payload(),
                 );
+                resolve_game_in_background(universe_id);
             }
             Event::Joining { job_id, place_id } => {
                 println!("[cordial] game: joining server {job_id} of place {place_id}");
@@ -449,6 +529,8 @@ pub fn poll() {
                 // them -- and on the home screen that is simply wrong.
                 *PRESENCE.lock().unwrap_or_else(|e| e.into_inner()) =
                     crate::bloxstrap_rpc::Presence::new();
+                // The experience's name and creator go with the experience too.
+                *DEFAULTS.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 STATE.lock().unwrap_or_else(|e| e.into_inner()).left();
                 crate::plugin_host::publish_core(
                     cordial_plugins::core_events::GAME_PRESENCE,
@@ -489,11 +571,33 @@ pub fn poll() {
                         // has not been asked for.
                         println!("[cordial] game: BloxstrapRPC launch data ({} bytes)", launch.len());
                     } else {
+                        // Whatever pictures the game is now asking for have to
+                        // be resolved before they can be shown, and that is
+                        // HTTP -- so it happens on its own thread and the
+                        // presence is published again when it lands. The first
+                        // publish below carries the text immediately, which is
+                        // the part a game changes often.
+                        let wanted: Vec<String> = [merged.large_image.value(), merged.small_image.value()]
+                            .into_iter()
+                            .flatten()
+                            .map(|image| image.asset_id.clone())
+                            .collect();
                         drop(merged);
                         crate::plugin_host::publish_core(
                             cordial_plugins::core_events::GAME_PRESENCE,
                             presence_payload(),
                         );
+                        if !wanted.is_empty() {
+                            std::thread::spawn(move || {
+                                for asset in &wanted {
+                                    crate::roblox_api::resolve_asset(asset);
+                                }
+                                crate::plugin_host::publish_core(
+                                    cordial_plugins::core_events::GAME_PRESENCE,
+                                    presence_payload(),
+                                );
+                            });
+                        }
                     }
                 }
                 Ok(None) => {}
