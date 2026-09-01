@@ -642,3 +642,66 @@ returning success exists to prevent.
 with the frame rate correctly following the output down to 50 Hz -- so
 presentation *is* pacing the outer loop, and the core is burned between frames
 rather than by unpaced drawing.
+
+---
+
+## Re-measured 2026-09-01, on 0.13.0
+
+Two things above are out of date. Both were checked before writing this, and
+the second is the one that matters for what to do next.
+
+### The bimodal idle burn did not reproduce, 0 runs in 9
+
+Nine sequential clients, each given 22 s to reach a steady state, then measured
+over a fixed 8 s window. Same host. Every run settled:
+
+```
+run 1  4.4%    run 4  5.6%    run 7  5.0%
+run 2  5.0%    run 5  4.5%    run 8  4.9%
+run 3  3.9%    run 6  4.5%    run 9  5.1%
+```
+
+Mean 4.7% of one core, against the 6.3% recorded above for the good runs and
+mocktail's 8.7%. **No run burned a core.** If the rate were still the 3-in-9
+this document reports, the chance of seeing none in nine runs is about 2.6%, so
+this is evidence the fault is gone or much rarer at 0.13.0 rather than proof it
+never happens.
+
+**Not a like-for-like refutation, and the differences are worth stating.**
+These runs used a throwaway profile that was not signed in, a 1280x721 window
+rather than 3440x1359, and `cordial-run` alone rather than the whole process
+set. Peak startup CPU came out at **186% at t=1.1 s** here against the 342%
+above, which is a large enough gap that the conditions plainly differ. Somebody
+should repeat this signed in and full-size before the row at the top is
+rewritten; what is established is that the everyday case no longer shows it.
+
+### mocktail's ALooper is no longer a stub, so the reason not to look at it has gone
+
+The section above declines to copy mocktail's looper because "`ALooper_pollOnce`
+returns a constant and its `ALooper_addFd` registers nothing... a looper which
+answers without listening cannot deliver an input event, a wake or a surface
+change". That was true when it was written and is not true now. mocktail's
+current `android_stubs` carries a real `epoll` + `eventfd` implementation:
+`ALooper_addFd` performs `epoll_ctl`, registrations are kept by generation
+token so a removed-and-re-added descriptor cannot surface a stale event,
+callbacks are dispatched and a zero return removes the fd, and `ALooper_wake`
+writes an eventfd.
+
+That matters because the **111% of a core at 60 fps while animating** measured
+above is still unexplained and is not the same condition as the idle figures
+here -- the nine runs are idle, not animating. The looper comparison is
+therefore the one piece of mocktail worth reading for performance, and the
+recorded objection to it no longer applies.
+
+### What the profiling could not answer
+
+Attributing the startup burst to a library failed three times. `perf` is not
+installed and `perf_event_paranoid` is 2; `eu-stack` sampling put 87.5% of leaf
+frames in `libc` at `__syscall_cancel_arch`, which is precisely the zero-size
+symbol AGENTS.md documents the unwinder giving up on. Counting every frame of
+every thread, which the first attempt did, measures stack depth rather than CPU
+and should not be repeated.
+
+So **there is currently no measured bottleneck to port a fix for**, and the
+startup case cannot be attributed without either installing `perf` or adding a
+counter to the JNI dispatch path.
