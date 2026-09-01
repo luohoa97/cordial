@@ -424,7 +424,51 @@ fn data_dir() -> PathBuf {
 ///
 /// The flag itself still works through the ordinary layers — a user or plugin
 /// can set it in `flags.json` — so nothing is lost except the default.
-const BUILTIN: &[(&str, &str)] = &[];
+///
+/// ## The one entry, and why it is Cordial's rather than a plugin's
+///
+/// `FFlagUserLaunchedWithBloxstrap` is how a game finds out that the launcher
+/// it is running under implements BloxstrapRPC. An experience reads it with
+/// `UserSettings():IsUserFeatureEnabled("UserLaunchedWithBloxstrap")` and
+/// decides whether to bother printing presence at all, so without it a game
+/// that gates on it stays silent and Cordial's whole BloxstrapRPC reader has
+/// nothing to read.
+///
+/// **It is not an engine flag.** `LaunchedWithBloxstrap` does not appear
+/// anywhere in `libroblox.so`; it is a name the launcher injects and the game
+/// asks about. That it can be injected at all is established rather than
+/// assumed — `client_settings`'s own call table records
+/// `{"applicationSettings":{"FFlagNotARealFlag":"True"}}` returning `0`, so
+/// the engine takes names it does not define.
+///
+/// **This belongs to Cordial and not to `discord-presence`.** The claim is
+/// about the launcher, and it is Cordial's runtime that makes it true:
+/// `bloxstrap_rpc` parses the protocol and `game_log` publishes
+/// `cordial/game.presence` to whatever is listening, with no presence plugin
+/// involved. Putting it in a plugin would mean a capability of the runtime
+/// switching off when an unrelated plugin was disabled, two presence plugins
+/// each setting it, and `discord-presence` needing `flags.write` for something
+/// outside what it does -- ADR-007 brokers *effects*, and "tell games this
+/// launcher speaks a protocol" is not a presence effect. `hide-gui` sets a
+/// flag because that flag is its entire feature; this one is not.
+///
+/// **The name is a small lie and worth saying so.** Cordial is not Bloxstrap.
+/// The flag is a de-facto protocol handshake that happens to be named after
+/// the launcher that invented it, in the way a User-Agent claims Mozilla
+/// compatibility, and no other name exists to send. The trade is that a game
+/// can now tell it is running under a third-party launcher; that is a
+/// fingerprinting signal and the reason this is worth a sentence rather than
+/// a silent default. It is the lowest-precedence layer, so
+/// `"FFlagUserLaunchedWithBloxstrap": "False"` in `flags.json` turns it off.
+///
+/// **INFERRED that it takes effect.** What is established is that the flag is
+/// not the engine's, that the engine accepts unknown names, and that games ask
+/// for it. That a game's `IsUserFeatureEnabled` then answers true has not been
+/// seen here. Bloxstrap's own RPC test place reports it on a board and is the
+/// instrument; until somebody stands in it and reads YES, this entry is a
+/// reasoned guess and the paragraph above about measured-not-inferred applies
+/// to it as much as to anything else.
+const BUILTIN: &[(&str, &str)] = &[("FFlagUserLaunchedWithBloxstrap", "True")];
 
 /// How hard to push the engine's own worker pools, as a choice rather than a
 /// default.
@@ -872,6 +916,34 @@ pub fn report(resolved: &BTreeMap<String, Resolved>) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    /// **Cordial tells games it speaks BloxstrapRPC, and the user can retract
+    /// it.** Both halves matter. Without the flag a game that gates its
+    /// presence output on it prints nothing and the whole BloxstrapRPC reader
+    /// idles; and because the claim is a fingerprinting signal -- a game can
+    /// tell it is under a third-party launcher -- somebody who does not want
+    /// to make it must be able to say so, which works only if this sits in the
+    /// lowest-precedence layer.
+    #[test]
+    fn the_bloxstrap_protocol_flag_is_a_default_the_user_can_overrule() {
+        let builtin = super::builtin_layer();
+        assert_eq!(
+            builtin.values.get("FFlagUserLaunchedWithBloxstrap").map(String::as_str),
+            Some("True"),
+            "games gate their presence output on this"
+        );
+
+        let mut mine = std::collections::BTreeMap::new();
+        mine.insert("FFlagUserLaunchedWithBloxstrap".to_string(), "False".to_string());
+        let resolved = super::resolve(vec![
+            builtin,
+            super::Layer { source: super::Source::User, values: mine },
+        ]);
+        assert_eq!(
+            resolved["FFlagUserLaunchedWithBloxstrap"].value, "False",
+            "the user layer must win, or the default is not opt-out"
+        );
+    }
     use super::*;
 
     /// **What the editor writes, the loader reads back identically.**
