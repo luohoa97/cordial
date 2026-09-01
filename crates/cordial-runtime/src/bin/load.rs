@@ -656,6 +656,40 @@ extern "C" fn run_bootstrap() {
         plan.settings.len(),
         plan.settings_source
     );
+    // **A native that did not resolve is announced, not skipped in silence.**
+    //
+    // `settings_native` is `symbol(...).map_or(0, ...)`, so a name this build
+    // does not export becomes zero and the `if` below simply does not run. The
+    // engine is then never given its flags and aborts a few milliseconds later
+    // with `Can't initialize the TaskScheduler before flags have been loaded`
+    // -- and nothing in the log says why, because the one line that would have
+    // said so is inside the branch that did not execute.
+    //
+    // That is what a user's Linux Mint log looks like, reported 2026-09-01: the
+    // `client settings: 1290012 bytes (cache)` line above is present, the
+    // `nativeInitClientSettings -> 0` line below is absent, and the next thing
+    // in the file is the abort. There is no other path between those two lines,
+    // so the symbol was missing on that machine; stdout could not have eaten it
+    // either, because flag-init §52 established Rust's `Stdout` is a
+    // `LineWriter` unconditionally and the lines *after* this point all
+    // survived.
+    //
+    // The comment above already records this exact blindness being hit once --
+    // issue #21's reporter A, "no way to tell whether the document ... was a
+    // bad path, a fetch that never connected, or a fetch that connected and
+    // was refused" -- and the fix then was to print the byte count. This is the
+    // other half of it. AGENTS.md's rule about stubs applies to an `if` with no
+    // `else` just as much as to a function returning success: the engine
+    // proceeds on an answer that is not true.
+    if plan.settings_native == 0 {
+        println!(
+            "  nativeInitClientSettings is NOT EXPORTED by this libroblox.so, so its \
+             flags cannot be delivered and the engine will abort with \"Can't initialize \
+             the TaskScheduler before flags have been loaded\". This is a Roblox build \
+             Cordial does not know how to start; please report it with this line and \
+             the engine version above."
+        );
+    }
     if plan.settings_native != 0 {
         match linker::game_activity::init_client_settings(
             plan.settings_native as *mut std::ffi::c_void,
@@ -760,6 +794,13 @@ extern "C" fn run_bootstrap() {
             Ok(()) => println!("    postClientSettingsLoadedInitialization3 ok"),
             Err(e) => println!("    postClientSettingsLoadedInitialization3 failed: {e}"),
         }
+    }
+    if plan.flags_native == 0 {
+        // Not fatal on its own -- the settings call above is what the engine
+        // asserts on -- but a build missing this exports a different flag
+        // surface than the one Cordial was written against, and knowing that
+        // costs one line.
+        println!("  nativeInitializeNativeFlags is not exported by this build; no flag names sent");
     }
     if plan.flags_native != 0 {
         match linker::game_activity::init_flags(

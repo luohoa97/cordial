@@ -6121,3 +6121,83 @@ Cordial's own diagnostic output) — and AGENTS.md is explicit that a claim
 without a measurement behind it does not get shipped as though it had one.
 The `legacy_stdio.cpp` question above is left as a named, untested gap rather
 than either fixed speculatively or dropped silently.
+
+## §53. A third reporter, on Mint with two cores; the parallelism theory did not
+## reproduce, and the log says a native was missing and Cordial said nothing
+
+2026-09-01. A user's log, same crash as §50:
+
+    RBXCRASH: FatalRuntimeError (Can't initialize the TaskScheduler before flags have been loaded)
+
+**What is new about it.** §50's two reporters are both CachyOS; this is **Linux
+Mint**, on **X11**, from the Flatpak, on engine **2.734.0.917**. So the distro
+is not the variable. It is also the first report from a machine with **2
+physical cores** -- `flags: performance mode latency sets 2 flag(s) for 2
+physical core(s)` -- which matters because §50's mechanism is a race, and a
+race resolves differently with two cores than with the sixteen every
+measurement here is taken on.
+
+**That theory was tested and did not reproduce.** `taskset`, same binary, same
+profile, `CORDIAL_PERFORMANCE=latency` to match, latency mode setting the same
+two flags at any core count so scheduling is the only thing that changes:
+
+```
+all 16 CPUs                       0/8 crashed
+2 physical cores (-c 0,1,2,3)     0/8 crashed
+```
+
+Not a refutation of the race -- eight runs cannot refute an intermittent fault
+-- but the easy version of the idea is dead, and starving the scheduler is not
+a reproduction.
+
+### What the log actually says, and it is not a race
+
+In every healthy run on this machine, `client settings: N bytes (...)` is
+followed immediately by:
+
+```
+[roblox] flags: engine reported onFlagsFailed ...
+    nativeInitClientSettings -> 0
+    nativeInitializeNativeFlags: Registered Flag Provider ID from Java: 0
+```
+
+**The Mint log has the first line and none of the rest.** It prints `client
+settings: 1290012 bytes (cache)` and proceeds to the next stage of setup.
+
+There is exactly one path between those two points. The call site is
+
+```rust
+if plan.settings_native != 0 { ... println!("    nativeInitClientSettings -> {code}") }
+```
+
+and `settings_native` is `symbol(...).map_or(0, |p| p as usize)`. Both arms of
+the inner `match` print, so if the branch had been taken the log would show it.
+**Therefore `plan.settings_native == 0` on that machine: the engine build does
+not export `nativeInitClientSettings` under the name Cordial looks for.** The
+settings are then never delivered and the engine aborts milliseconds later.
+
+Buffering cannot explain the gap: §52 established Rust's `Stdout` is a
+`LineWriter` unconditionally, and every line *after* the missing one survived
+in the same capture.
+
+### The bug in Cordial, which is the silence rather than the symbol
+
+An `if` with no `else` is the same defect as a stub returning success -- the
+engine proceeds on an answer that is not true -- and the whole of §50 was spent
+inferring where two users' clients died from what their logs stopped saying.
+The comment above that call site already records this blindness being hit once,
+for issue #21's reporter A, and the fix then was to print the byte count. This
+is the other half.
+
+A missing native is now announced by name, saying plainly that flags cannot be
+delivered and that the engine will abort with this exact message. Verified
+against two controls in one session: a normal launch still prints
+`nativeInitClientSettings -> 0` and no warning, and `CORDIAL_LATE_SETTINGS=1`
+-- which reproduces the identical crash by the *ordering* mechanism rather than
+a missing symbol -- produces **zero** false alarms, so the new line accuses only
+the thing it can actually see.
+
+**What this does not settle.** Whether 2.734.0.917 really lacks that export, or
+exports it under another name, is unverified here -- nobody in this project has
+that build. The next report will say so in one line instead of costing a
+session, which is what §51 concluded the fix should be: visibility, not a wait.
