@@ -25,6 +25,7 @@
 
 pub mod branding;
 pub mod host_window;
+pub mod json_highlight;
 pub mod network;
 pub mod plugin_preferences;
 pub mod profile;

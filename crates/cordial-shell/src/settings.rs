@@ -2682,6 +2682,79 @@ pub fn build_preferences_window(
 /// `flags::read_layer` has always taken a flat object of name to value. That is
 /// asserted in `flags::tests::a_bloxstrap_style_document_parses` rather than
 /// claimed here.
+/// The colour tags the FastFlags editor paints with, in scanner order.
+///
+/// Kept as a list rather than five named fields because every user of them
+/// walks the whole set; there is no code that wants only the string colour.
+type HighlightTags = std::rc::Rc<Vec<(cordial_shell::json_highlight::Token, gtk::TextTag)>>;
+
+fn highlight_tags(buffer: &gtk::TextBuffer) -> HighlightTags {
+    use cordial_shell::json_highlight::Token;
+    let table = buffer.tag_table();
+    let tags: Vec<_> = [Token::Key, Token::Str, Token::Number, Token::Keyword, Token::Punct]
+        .into_iter()
+        .map(|token| {
+            let tag = gtk::TextTag::new(None);
+            table.add(&tag);
+            (token, tag)
+        })
+        .collect();
+    std::rc::Rc::new(tags)
+}
+
+/// Repaint the tags for the current theme.
+///
+/// **Two palettes rather than one clever set.** A single colour that is legible
+/// on both a near-white and a near-black background is a colour that is drab on
+/// both, and the point of colouring a flag list is to pick the names out at a
+/// glance. These are GNOME's own palette values -- the blues, greens and
+/// purples from the Adwaita colour sheet -- with the darker end used on light
+/// backgrounds and the lighter end on dark ones.
+fn recolour(tags: &HighlightTags, dark: bool) {
+    use cordial_shell::json_highlight::Token;
+    for (token, tag) in tags.iter() {
+        let colour = match (token, dark) {
+            // The flag name, and the one thing somebody is scanning for.
+            (Token::Key, false) => "#1a5fb4",
+            (Token::Key, true) => "#99c1f1",
+            (Token::Str, false) => "#26a269",
+            (Token::Str, true) => "#8ff0a4",
+            (Token::Number, false) => "#c64600",
+            (Token::Number, true) => "#ffbe6f",
+            (Token::Keyword, false) => "#813d9c",
+            (Token::Keyword, true) => "#dc8add",
+            // Structure recedes: braces and commas carry no information once
+            // you can see the shape, so they are dimmed rather than coloured.
+            (Token::Punct, false) => "#9a9996",
+            (Token::Punct, true) => "#77767b",
+        };
+        tag.set_foreground(Some(colour));
+    }
+}
+
+/// Recolour the whole buffer.
+///
+/// Every pass clears and re-tags the lot. That is the naive approach and it is
+/// the right one at this size: a FastFlags document is a flat object of a few
+/// hundred lines, and the alternative -- tracking which lines changed -- is
+/// where highlighters grow their stale-colour bugs.
+fn apply_highlight(buffer: &gtk::TextBuffer, tags: &HighlightTags) {
+    let (start, end) = buffer.bounds();
+    for (_, tag) in tags.iter() {
+        buffer.remove_tag(tag, &start, &end);
+    }
+    let text = buffer.text(&start, &end, false).to_string();
+    for (from, to, token) in cordial_shell::json_highlight::spans(&text) {
+        if let Some((_, tag)) = tags.iter().find(|(t, _)| *t == token) {
+            buffer.apply_tag(
+                tag,
+                &buffer.iter_at_offset(from as i32),
+                &buffer.iter_at_offset(to as i32),
+            );
+        }
+    }
+}
+
 fn build_fastflags_page(
     config: Rc<RefCell<ShellConfig>>,
     dialog: &adw::PreferencesDialog,
@@ -2774,6 +2847,24 @@ fn build_fastflags_page(
     where_label.add_css_class("dim-label");
     where_label.add_css_class("caption");
 
+    // **What the document says right now, said as you type.** Applying used to
+    // be the only way to find out whether a paste was valid, which meant the
+    // feedback for a misplaced comma was a toast after a save that did not
+    // happen. A long list pasted from somewhere else is the normal case here,
+    // and it is exactly the case where "somewhere there is a syntax error" is
+    // least useful.
+    let status_label = gtk::Label::builder().wrap(true).xalign(0.0).build();
+    status_label.add_css_class("caption");
+
+    let status_column = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .hexpand(true)
+        .valign(gtk::Align::Center)
+        .build();
+    status_column.append(&status_label);
+    status_column.append(&where_label);
+
     // The one row. `valign: Center` on the buttons is what stops them growing
     // to the height of a wrapped path, which is the same mistake the header
     // suffix made one paragraph up.
@@ -2786,10 +2877,65 @@ fn build_fastflags_page(
         .spacing(12)
         .margin_top(12)
         .build();
-    footer.append(&where_label);
+    footer.append(&status_column);
     footer.append(&actions);
     group.add(&footer);
     page.add(&group);
+
+    // Colour tags, made once and recoloured when the theme flips. A `TextTag`
+    // holds a literal colour, so unlike a CSS class it does not follow the
+    // palette on its own -- a page that looked right in dark mode would be
+    // unreadable the moment somebody switched to light.
+    let tags = highlight_tags(&view.buffer());
+    {
+        let buffer = view.buffer();
+        let tags = tags.clone();
+        adw::StyleManager::default().connect_dark_notify(move |manager| {
+            recolour(&tags, manager.is_dark());
+            apply_highlight(&buffer, &tags);
+        });
+    }
+    recolour(&tags, adw::StyleManager::default().is_dark());
+
+    // One handler for both jobs, because they answer the same question about
+    // the same text and running them apart would let the colours and the
+    // status disagree for a keystroke.
+    let refresh = {
+        let tags = tags.clone();
+        let status_label = status_label.clone();
+        let apply = apply.clone();
+        move |buffer: &gtk::TextBuffer| {
+            apply_highlight(buffer, &tags);
+            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+            status_label.remove_css_class("error");
+            match cordial_plugins::flag_document::parse(&text) {
+                Ok(values) => {
+                    status_label.add_css_class("dim-label");
+                    status_label.set_label(&match values.len() {
+                        0 => "No overrides. The engine's own defaults apply.".to_string(),
+                        1 => "1 override.".to_string(),
+                        n => format!("{n} overrides."),
+                    });
+                    apply.set_sensitive(true);
+                }
+                Err(e) => {
+                    status_label.remove_css_class("dim-label");
+                    status_label.add_css_class("error");
+                    status_label.set_label(&e);
+                    // **Insensitive rather than allowed-and-refused.** Nothing
+                    // is written when the document does not parse either way,
+                    // so the only difference is whether pressing the button
+                    // teaches you that.
+                    apply.set_sensitive(false);
+                }
+            }
+        }
+    };
+    view.buffer().connect_changed({
+        let refresh = refresh.clone();
+        move |buffer| refresh(buffer)
+    });
+    refresh(&view.buffer());
 
     {
         let view = view.clone();
