@@ -273,6 +273,16 @@ fn handshake(stream: &mut UnixStream, client_id: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// `CORDIAL_TRACE_PRESENCE=1` — print what Discord answers to each activity.
+///
+/// Off by default because the reply echoes the whole stored activity, which
+/// on a game presence names the place and the server instance; that belongs
+/// in a developer's terminal on request and not in every user's log.
+fn trace_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("CORDIAL_TRACE_PRESENCE").as_deref() == Ok("1"))
+}
+
 static NONCE: AtomicU64 = AtomicU64::new(1);
 
 fn next_nonce() -> String {
@@ -349,17 +359,44 @@ impl DiscordPresence {
             "nonce": next_nonce(),
         });
         let result = write_frame(stream, OP_FRAME, &frame).and_then(|()| read_frame(stream));
-        match result {
-            Ok(_) => Ok(()),
+        let (_, body) = match result {
+            Ok(frame) => frame,
             Err(e) => {
                 // The connection is no good any more; drop it so the next
                 // call starts a fresh handshake instead of writing into a
                 // socket we already know is broken.
                 self.connected = None;
                 self.log_unavailable_once("Discord's IPC socket stopped answering");
-                Err(format!("presence update failed: {e}"))
+                return Err(format!("presence update failed: {e}"));
             }
+        };
+
+        // **Discord's answer is read and then judged, which it was not.** This
+        // used to be `Ok(_) => Ok(())`: any well-formed frame back counted as
+        // success. Discord replies to a `SET_ACTIVITY` it *rejects* with an
+        // equally well-formed frame carrying `evt: "ERROR"`, so a refused
+        // activity was reported to the plugin as `ok` and written to the
+        // plugin log as `ok`. That is the shape AGENTS.md calls a stub that
+        // lies -- the caller proceeds on an answer that is not true -- and it
+        // made the log useless as evidence for the one question anybody asks
+        // of it, which is whether the presence actually landed.
+        //
+        // Found while trying to verify a real game's presence end to end: the
+        // log said `ok` and there was no way to tell from inside Cordial
+        // whether Discord had stored anything.
+        let reply: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        if trace_enabled() {
+            eprintln!("[presence] discord replied: {reply}");
         }
+        if reply["evt"] == json!("ERROR") {
+            // Not a dead socket, so the connection is kept: Discord is
+            // answering, it just did not like this payload. Dropping it here
+            // would turn one bad activity into a reconnect on every retry.
+            let code = &reply["data"]["code"];
+            let message = reply["data"]["message"].as_str().unwrap_or("no message");
+            return Err(format!("Discord refused the activity ({code}): {message}"));
+        }
+        Ok(())
     }
 
     /// Publish a presence payload. Fails cleanly, without panicking or
@@ -563,6 +600,70 @@ mod tests {
         assert_eq!(activity_frame["cmd"], "SET_ACTIVITY");
         assert_eq!(activity_frame["args"]["activity"]["details"], "Playing Baseplate");
         assert_eq!(activity_frame["args"]["activity"]["state"], "In a server");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fake Discord that refuses the activity the way the real one does.
+    fn spawn_refusing_discord(path: PathBuf) -> std::sync::mpsc::Receiver<Value> {
+        let listener = UnixListener::bind(&path).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_frame(&mut stream).unwrap();
+            write_frame(&mut stream, OP_FRAME, &json!({"evt": "READY"})).unwrap();
+
+            let (_, body) = read_frame(&mut stream).unwrap();
+            tx.send(serde_json::from_slice(&body).unwrap()).unwrap();
+            // The shape Discord answers with when it will not store the
+            // activity: a perfectly well-formed frame that happens to say no.
+            write_frame(
+                &mut stream,
+                OP_FRAME,
+                &json!({
+                    "cmd": "SET_ACTIVITY",
+                    "evt": "ERROR",
+                    "data": {"code": 4000, "message": "Invalid activity"},
+                }),
+            )
+            .unwrap();
+        });
+        rx
+    }
+
+    /// **A refused activity is an error, not an `ok`.**
+    ///
+    /// This is the bug the test exists for: `send_activity` used to treat any
+    /// well-formed reply as success, and Discord refuses an activity with a
+    /// well-formed reply. So a rejected presence was reported to the plugin as
+    /// `ok` and written to the plugin log as `ok`, which made the log useless
+    /// as evidence for the only question anybody asks of it. AGENTS.md: never
+    /// make a stub lie -- reporting failure keeps the gap where somebody can
+    /// find it.
+    #[test]
+    fn a_refused_activity_is_reported_as_a_failure() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("cordial-discord-refuse-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XDG_RUNTIME_DIR", &dir);
+
+        let rx = spawn_refusing_discord(dir.join("discord-ipc-0"));
+
+        let mut presence = DiscordPresence::new();
+        let payload = PresencePayload::parse(&json!({"client_id": snowflake()})).unwrap();
+        let err = presence
+            .set(&payload)
+            .expect_err("Discord said ERROR, so this must not report success");
+
+        // The message carries Discord's own words, because "it failed" without
+        // them sends the reader back to a packet capture.
+        assert!(err.contains("refused"), "got: {err}");
+        assert!(err.contains("4000"), "Discord's code must survive: {err}");
+        assert!(err.contains("Invalid activity"), "Discord's message must survive: {err}");
+
+        // And the activity really was sent -- this is a refusal, not a
+        // failure to transmit.
+        assert_eq!(rx.recv().unwrap()["cmd"], "SET_ACTIVITY");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
