@@ -6201,3 +6201,31 @@ the thing it can actually see.
 exports it under another name, is unverified here -- nobody in this project has
 that build. The next report will say so in one line instead of costing a
 session, which is what §51 concluded the fix should be: visibility, not a wait.
+
+### §53.1. A fourth reporter, on Arch, and what the diagnostic now asks for
+
+2026-09-02. Reported second-hand, no log yet: the same crash on **Arch**. That
+makes four -- CachyOS twice (§50), Mint (§53), Arch -- across three
+distributions, two of them Arch-family and one not, on both the AppImage and
+the Flatpak. **The distribution is not the variable**, and neither is the
+packaging format. Recorded as a report rather than an observation, because
+nothing here has seen their output.
+
+The strongest thing the Mint log offers that has not been tested is the engine
+build: **2.734.0.917**, where every measurement in this file is taken on
+2.736.0.1408. A JNI method renamed or moved between builds is the ordinary
+reason `symbol()` stops resolving, and it would explain a crash that only
+happens to users. It cannot be tested here -- this host has only 2.736, and
+Roblox does not publish old APKs -- so it stays a hypothesis.
+
+What *can* be done is make one report settle it, and that is what the missing
+native diagnostic now does. Besides naming the symbol it prints the command
+whose output is the answer, with the reporter's own path already in it:
+
+    readelf --dyn-syms -W <their libroblox.so> | grep -i initclientsettings
+
+On 2.736 that lists four exports -- `nativeInitClientSettings`, `...Cached`,
+`...CachedCompressed`, `...Signed` -- so a build that renamed or dropped the
+plain one shows it immediately, and a build that still has it rules the whole
+theory out just as fast. Verified against a healthy launch in the same session:
+the warning does not fire, and `nativeInitClientSettings -> 0` still prints.

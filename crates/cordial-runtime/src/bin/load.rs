@@ -481,6 +481,13 @@ struct BootstrapPlan {
     /// see `client_settings::Source` for why that gap mattered.
     settings_source: String,
     flag_names: String,
+    /// The engine object this plan resolved its natives against.
+    ///
+    /// Only used by the missing-native diagnostic, so that the command which
+    /// would name the real export can be printed with the reporter's own path
+    /// already in it. A report that has to be answered with "now run this" has
+    /// cost a round trip, and these arrive from Discord days apart.
+    library: String,
 }
 
 static BOOTSTRAP: std::sync::OnceLock<BootstrapPlan> = std::sync::OnceLock::new();
@@ -686,8 +693,18 @@ extern "C" fn run_bootstrap() {
             "  nativeInitClientSettings is NOT EXPORTED by this libroblox.so, so its \
              flags cannot be delivered and the engine will abort with \"Can't initialize \
              the TaskScheduler before flags have been loaded\". This is a Roblox build \
-             Cordial does not know how to start; please report it with this line and \
-             the engine version above."
+             Cordial does not know how to start."
+        );
+        // The one command whose output says what the export is called on this
+        // build, with the path already filled in. Roblox renaming a JNI method
+        // or moving it to another class is the ordinary reason a name stops
+        // resolving, and `readelf` is what AGENTS.md already prescribes for a
+        // missing symbol -- the only thing added here is not making somebody
+        // work out which file to point it at.
+        println!(
+            "  please report this line, the engine version above, and the output of:\n\
+             \x20   readelf --dyn-syms -W {} | grep -i initclientsettings",
+            plan.library
         );
     }
     if plan.settings_native != 0 {
@@ -2395,6 +2412,11 @@ fn main() -> ExitCode {
                                 cached_native: lib
                                     .symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativeInitClientSettingsCachedCompressed")
                                     .map_or(0, |p| p as usize),
+                                library: cordial_update::engine::library_in(
+                                    std::path::Path::new(&opt.lib_dir),
+                                )
+                                .display()
+                                .to_string(),
                                 cache_file: format!("{cache}/cache/flag_cache.dat"),
                                 settings: settings_body.unwrap_or_default(),
                                 settings_source: settings_source.to_string(),
