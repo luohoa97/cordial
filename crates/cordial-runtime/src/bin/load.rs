@@ -666,6 +666,61 @@ extern "C" fn run_bootstrap() {
             Ok(code) => println!("    nativeInitClientSettings -> {code}"),
             Err(e) => println!("    nativeInitClientSettings failed: {e}"),
         }
+
+        // `CORDIAL_EXPERIMENT_RESETTLE_MS=30000` — re-call
+        // `nativeInitClientSettings` that many milliseconds into the run, with
+        // the flag document re-read from disk.
+        //
+        // **This exists to answer one question and is not a feature.** A
+        // FastFlags page that applied to the running client is the obvious
+        // thing to want, and whether the engine will take a second settings
+        // document at all has never been tested here -- so the honest order is
+        // to find out before building a button that claims to do it.
+        //
+        // The question is narrower than it looks, because `client_settings`
+        // already measured what happens to the two families over a run:
+        // Roblox's own reloader lands at 1.6-2.3 s and reapplies Roblox's
+        // document over the top, so a `DF*` key Roblox ships is reverted
+        // within seconds however it was set, while `FFlag`/`FInt`/`FString`
+        // are read once at startup and are *not* reverted. Whichever way this
+        // experiment comes out, "dynamic flags apply live" is the wrong shape:
+        // the dynamic family is the one that does not stick.
+        //
+        // Off by default and deliberately not wired to anything a user can
+        // press. Shipping an inference as a default is a mistake this file has
+        // made before.
+        if let Some(ms) = std::env::var("CORDIAL_EXPERIMENT_RESETTLE_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            // Crossed as an integer because a raw pointer is not `Send`. It
+            // points at an exported symbol in a library that stays loaded for
+            // the life of the process, so it is valid for as long as anything
+            // here could use it.
+            let native = plan.settings_native as usize;
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+                // Re-read from disk: `load` goes through `apply_overrides`,
+                // which calls `flags::collect`, which reads the profile's
+                // `flags.json` afresh. That is what makes this a test of
+                // applying an edit made *while the client was running*.
+                let settings = cordial_runtime::client_settings::load(None).unwrap_or_default();
+                println!(
+                    "  [experiment] re-calling nativeInitClientSettings after {ms} ms \
+                     ({} bytes)",
+                    settings.len()
+                );
+                match linker::game_activity::init_client_settings(
+                    native as *mut std::ffi::c_void,
+                    &settings,
+                    "",
+                    "",
+                ) {
+                    Ok(code) => println!("  [experiment] second nativeInitClientSettings -> {code}"),
+                    Err(e) => println!("  [experiment] second nativeInitClientSettings failed: {e}"),
+                }
+            });
+        }
     }
     // `post` immediately after `settings`, and the flag names last.
     //

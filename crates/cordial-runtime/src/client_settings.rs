@@ -245,6 +245,40 @@ fn is_roblox_flag(key: &str) -> bool {
 /// reverted — the family this file's own module doc, and [`crate::flags`],
 /// present as the harder one to influence is in fact the durable one.
 ///
+/// **A second call mid-run works, measured 2026-09-01.** The engine takes
+/// another `nativeInitClientSettings` while it is running, answers `0`, and
+/// the new values take effect -- so a flag edited on disk *while the client is
+/// open* can reach the engine, which had never been tested here.
+///
+/// Three arms, `DFLogHttpTrace`/`DFLogHttpTraceLight` as the probe, counting
+/// the engine's own HTTP trace lines per ten seconds of a 75 s run:
+///
+/// ```text
+/// arm                                    lines   after t=35s
+/// A  flags present at launch, no re-call   2050   the instrument works at all
+/// B  flags written at 35 s, re-call at 45 s 338   ~330
+/// C  flags written at 35 s, no re-call       16   ~6
+/// ```
+///
+/// A is the arm that makes the other two mean anything: without it a null
+/// result in B is indistinguishable from a probe that does nothing. B and C
+/// differ *only* in whether the re-call happened -- same document, same write,
+/// same moment -- and B logged some fifty times as much after it. Both were
+/// repeated and reproduced to the line, bucket for bucket.
+///
+/// Two things this does **not** establish. The probe is a `DFLog*` flag, and
+/// whether `FFlag`/`FInt`/`FString` -- the durable family -- also update on a
+/// second call is untested; the startup path reads them once, and a re-call
+/// may or may not be the same path. And it changes nothing about the reverting
+/// above: a `DF*` key Roblox's own document contains still goes back to
+/// Roblox's value at the next fetch, whenever it was set. So "apply dynamic
+/// flags to the running client" remains the wrong shape for a feature even
+/// though the mechanism works -- the family that survives a run is the static
+/// one, and the family that can be pushed live is the one that gets reverted.
+///
+/// `CORDIAL_EXPERIMENT_RESETTLE_MS` in `bin/load.rs` is the hook this was run
+/// with. It is deliberately not wired to anything a user can press.
+///
 /// **Not established:** whether the reloader merges or replaces, and whether a
 /// later fetch (one was seen at 120.1 s) reverts an override a second time
 /// after something else had changed it. Neither was tested.
