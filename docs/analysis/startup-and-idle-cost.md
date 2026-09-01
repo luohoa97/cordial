@@ -705,3 +705,63 @@ and should not be repeated.
 So **there is currently no measured bottleneck to port a fix for**, and the
 startup case cannot be attributed without either installing `perf` or adding a
 counter to the JNI dispatch path.
+
+### Profiled properly, 2026-09-01: nothing of mocktail's is worth porting
+
+`perf` is installed now, so the questions above are answerable. Two notes on
+using it here: this is a hybrid part, and perf defaults to the `cpu_atom` PMU
+alone — a busy loop returned **one sample** until the event was named. Use
+`-e cpu-clock` for attribution, or `-e cpu_core/cycles/u --call-graph lbr` when
+callers matter, because dwarf does not unwind through libc on this host.
+
+**Where startup CPU goes**, `cpu-clock`, dwarf, 15 s run:
+
+```
+50.95%  libroblox.so     the engine; not ours to optimise
+22.86%  libc.so.6
+16.49%  cordial-run      ours
+ 4.27%  libvulkan_intel.so
+
+ 6.51%  looper_poll_once
+ 5.22%  cordial_update::engine::version_of      } 8.82%
+ 3.60%  cordial_update::engine::version_in_run  }
+```
+
+The version scan was the largest named cost in Cordial's own code and is fixed
+separately. What remains is the poll loop.
+
+**The lock traffic is the engine's own.** `pthread_mutex_lock` and its unlock
+are 4.7% together, which looked like a candidate for mocktail's lock-free JNI
+object resolution. LBR call stacks put **177 of 179 caller frames inside
+`libroblox.so`**. It is the engine locking against itself, not jnivm, so there
+is nothing on our side of that boundary to make lock-free.
+
+**mocktail's looper has no idle backoff.** Its `ALooper_pollOnce` passes the
+caller's timeout straight to `epoll_wait`, so a zero-timeout poll returns
+immediately and the loop free-runs — which is what Cordial did before
+`ZERO_TIMEOUT_COALESCE_US_DEFAULT` existed, and is consistent with mocktail
+idling at 8.7% against our 6.3%. Their implementation is a competent one and
+we are ahead of it on the only axis that was in question.
+
+**And the 111% at 60 fps above no longer reproduces.** Measured today through
+the client's own input entry points, on the landing page, with pointer motion
+driven at about 120 Hz:
+
+```
+idle, no input        7.5% of one core
+animating (input)    11.7% of one core   median_fps=60, p50 frame 16.7ms
+```
+
+Eleven point seven, not a hundred and eleven. The backoff landed after that
+section was written and is the obvious explanation; its own note records 9.0%
+process with the gate on against 108.7% with it off, which is the same story.
+**Not strictly like-for-like** — that measurement may have been in an
+experience and was at 3440x1359, where this is the landing page at 1280x721 —
+so the row is corrected rather than deleted, and somebody in a real game should
+confirm it.
+
+So every candidate for porting died on measurement, and the one real bottleneck
+was ours. The remaining poll-loop cost is the startup spin, which is
+deliberately ungated below `BACKOFF_AFTER_PRESENTS` frames as a precaution
+around the startup freeze; at roughly 0.3 s of CPU that is not worth trading
+for a precaution against a bug that is still open.
