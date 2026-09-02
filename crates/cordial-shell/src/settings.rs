@@ -2398,6 +2398,78 @@ fn build_plugins_page(
     master_group.add(&master);
     page.add(&master_group);
 
+    // ---- the interpreter, when the host has none ---------------------------
+    //
+    // **Shown only when it is missing**, because a row that is always there
+    // asking you to download something is noise on every other machine. Arch
+    // packages `deno` and Cordial depends on it there; Fedora and Debian have
+    // no such package, and inside the Flatpak there is no host to install one
+    // on at all -- so for most installs this row is the only route a plugin
+    // has to ever run. See `cordial_update::deno`.
+    if !cordial_plugins::sandbox::interpreter_present() {
+        let group = adw::PreferencesGroup::builder().title("Plugin runtime").build();
+        let row = adw::ActionRow::builder()
+            .title("Deno is not installed")
+            .subtitle("Plugins are Deno programs. Cordial can fetch it, about 39 MB, once.")
+            .build();
+        let button = gtk::Button::with_label("Download");
+        button.add_css_class("suggested-action");
+        button.set_valign(gtk::Align::Center);
+        row.add_suffix(&button);
+        group.add(&row);
+        page.add(&group);
+
+        let row_for_click = row.clone();
+        button.connect_clicked(move |button| {
+            let Some(dir) = cordial_plugins::sandbox::managed_deno_dir() else {
+                row_for_click.set_subtitle("There is no data directory to install into.");
+                return;
+            };
+            button.set_sensitive(false);
+            // **On this thread, pumping, rather than on a worker.**
+            // `install.rs` states the house position for the 115 MB engine
+            // extraction: the calling thread is the one GTK draws on, and a
+            // worker plus the two states it needs costs more than the freeze
+            // -- "if that stops being true, this is the place to move". A
+            // network download of 39 MB does cross that line for *progress*,
+            // because it is seconds on this connection and minutes on a bad
+            // one, but not for a worker: pumping the main context from inside
+            // the progress callback keeps the window drawing without a second
+            // state machine to get wrong.
+            let row = row_for_click.clone();
+            let mut progress = move |done: u64, total: Option<u64>| {
+                const MB: u64 = 1024 * 1024;
+                row.set_subtitle(&match total {
+                    Some(t) if t > 0 => format!("Downloading — {} of {} MB", done / MB, t / MB),
+                    _ => format!("Downloading — {} MB", done / MB),
+                });
+                let ctx = glib::MainContext::default();
+                for _ in 0..16 {
+                    if !ctx.iteration(false) {
+                        break;
+                    }
+                }
+            };
+            match cordial_update::deno::install(&dir, &mut progress) {
+                Ok(path) => {
+                    row_for_click.set_title("Deno is installed");
+                    row_for_click.set_subtitle(&format!(
+                        "{}. Plugins start with the client, so this takes effect at the next launch.",
+                        path.display()
+                    ));
+                    button.set_visible(false);
+                }
+                Err(why) => {
+                    // Named, not "download failed": the reasons are a refused
+                    // URL, a hash that did not match and no disk, and they
+                    // want different things done about them.
+                    row_for_click.set_subtitle(&format!("Could not install it — {why}"));
+                    button.set_sensitive(true);
+                }
+            }
+        });
+    }
+
     // ---- built-in ---------------------------------------------------------
     let builtin_group = adw::PreferencesGroup::builder().title("Built-In").build();
     if system.is_empty() {
