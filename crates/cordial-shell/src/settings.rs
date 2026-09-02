@@ -1707,11 +1707,27 @@ fn maybe_prompt_builtin_consent(
             }
             refresh_plugin_subtitle(&expander, &plugin, Some(&dir), enable_row.is_active());
         }
-        if let Err(e) = consent::mark_asked(&seen_path, &id) {
-            eprintln!("shell: could not record that {id} has been asked about: {e}");
-        }
         dialog.close();
     });
+
+    // **Recorded when it is asked, not when it is answered.**
+    //
+    // This used to run inside the response handler, which only fires if the
+    // user actually answers *this* dialog. Every built-in row presents its own
+    // prompt as the page renders, so up to four stack at once; answer the top
+    // one and close Settings, and the rest are torn down with their parent
+    // without a response, nothing is recorded, and every one of them asks
+    // again the next time Settings is opened. Reported as the prompt coming up
+    // every time even after the plugins were enabled -- which it would, since
+    // flipping a capability switch is not an answer to this dialog.
+    //
+    // "Has this profile been asked" is true the moment the question is on
+    // screen, so that is when it is written. ADR-003's default deny is
+    // untouched: grants are still only written by the "allow" branch above, so
+    // a prompt that is dismissed grants nothing and simply does not nag.
+    if let Err(e) = consent::mark_asked(&seen_path, &id) {
+        eprintln!("shell: could not record that {id} has been asked about: {e}");
+    }
     dialog.present(Some(parent));
 }
 

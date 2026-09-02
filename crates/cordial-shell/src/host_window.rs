@@ -1313,7 +1313,57 @@ impl HostWindow {
     /// than not trying.
     pub fn repaint_now(&self) {
         self.window.queue_draw();
-        self.pump();
+
+        // **Wait for the paint, do not merely offer the chance of one.**
+        //
+        // This used to be `queue_draw(); pump();` and the doc above called it
+        // best effort. `pump` runs at most 32 non-blocking main-context
+        // iterations, deliberately, because it is called from inside the
+        // engine's own pump and must return -- so when the context has a
+        // backlog those 32 iterations are spent on *events* and the frame
+        // clock never ticks inside them. `queue_draw` marks the widget dirty;
+        // it does not paint it.
+        //
+        // That is why `set_engine_stacking`'s ordering fix stopped working
+        // while a key was held. Idle, 32 iterations reach a paint easily and
+        // the transparent background is on screen before the restack goes out.
+        // Holding a movement key fills the context with key repeats, the paint
+        // slips past the 32, the subsurface is lowered under a parent buffer
+        // that is still opaque, and the engine disappears for a frame --
+        // reported as the GTK background flashing when `/` opens chat, and only
+        // when a movement key was down.
+        //
+        // Bounded by time rather than by iterations, because the thing being
+        // waited for is a frame and frames are a duration. One frame at 60 Hz
+        // is 16.7 ms; 40 ms allows for a couple of missed ticks and still
+        // returns. This runs on a stacking change -- opening or closing a chat
+        // box -- and not per frame, so the cost is a one-off pause a person
+        // cannot perceive against the flash it removes.
+        let Some(clock) = self.window.frame_clock() else {
+            self.pump();
+            return;
+        };
+        let painted = std::rc::Rc::new(std::cell::Cell::new(false));
+        let handler = {
+            let painted = painted.clone();
+            clock.connect_after_paint(move |_| painted.set(true))
+        };
+        // Without this the clock does not tick at all when nothing else is
+        // animating, and the wait below would spend its whole budget.
+        clock.begin_updating();
+
+        let ctx = glib::MainContext::default();
+        let deadline = Instant::now() + Duration::from_millis(40);
+        while !painted.get() && Instant::now() < deadline {
+            if !ctx.iteration(false) {
+                // Nothing pending this instant; yield rather than spin a core
+                // waiting for a clock tick that is milliseconds away.
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        clock.end_updating();
+        clock.disconnect(handler);
     }
 
     pub fn queue_commit(&self) {
