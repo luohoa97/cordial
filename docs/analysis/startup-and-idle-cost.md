@@ -765,3 +765,56 @@ was ours. The remaining poll-loop cost is the startup spin, which is
 deliberately ungated below `BACKOFF_AFTER_PRESENTS` frames as a precaution
 around the startup freeze; at roughly 0.3 s of CPU that is not worth trading
 for a precaution against a bug that is still open.
+
+## Re-measured against both controls, 2026-09-02
+
+The table at the top is from 2026-08-02 at Cordial `v0.6.0`. Cordial's own
+numbers were re-measured on 2026-09-01; the controls were not, so "we are ahead
+of mocktail" had become an inference from a month-old reading of somebody
+else's client. This is all three again, same method, same host, three passes,
+one client at a time with nothing else launched.
+
+CPU and RSS are summed across each client's whole **process set** -- both
+controls are Flatpaks and spawn a dozen processes each -- found through the
+systemd scope rather than a command-line match, which misses their helpers.
+Peak is the max over 0.5 s windows; idle is the mean from t=25 s. No input is
+driven, so all three choose their own idle state.
+
+```
+                 peak CPU (% of one core)      idle CPU (%)        RSS (MB)
+Cordial          203  210  123   mean 179     6.1 6.1 4.2  5.5    505 501 495   500
+mocktail         148  169  146   mean 154     8.4 8.4 7.5  8.1    913 1036 1041 997
+Sober            183  202  214   mean 200     6.6 8.6 8.0  7.7   1242 1224 1183 1216
+```
+
+**Cordial uses half the memory of either control, and the reading barely
+moves** -- 500 MB against mocktail's 997 and Sober's 1216, with a spread of
+10 MB across three runs where the controls swing by 128 and 59. It also idles
+lowest, 5.5% against 8.1% and 7.7%.
+
+**Peak startup CPU is no longer the outlier it was.** 179% against mocktail's
+154% and Sober's 200%: between the two, where the 2026-08-02 table had Cordial
+at 342% against 142% and 153%. Part of that is the version scan removed on
+2026-09-01, which was worth thirteen points on its own; the rest is not
+attributed. Cordial's peak also arrives earliest every time -- t=1.2 s against
+mocktail's 4.1-7.4 s and Sober's 4.5-6.2 s -- so it is doing its startup work
+sooner and in less wall-clock, which the peak alone hides.
+
+Cordial's peak is the one noisy cell here: 203, 210 and 123. Three runs cannot
+say whether the low one is a different startup path or a sampling artefact, and
+it should not be averaged away in anybody's head.
+
+**Three ways this is not like-for-like, all of which favour Cordial and none of
+which are corrected for:**
+
+- Cordial ran on a **fresh, signed-out** throwaway profile; the controls ran on
+  their existing installs, which are signed in. A signed-in client loads more.
+  This is the big one, and the earlier survey work in this file records that
+  signed-in is a different animal entirely for the freeze.
+- Cordial was **one process**; the controls were twelve and thirteen. Some of
+  the RSS gap is Flatpak's own helpers rather than the client.
+- Cordial was a local `cargo build --release`, the controls are Flatpaks.
+
+So: Cordial is genuinely lighter at rest and much lighter in memory, its
+startup burst is no longer the worst of the three, and a like-for-like signed-in
+comparison has still never been run.
