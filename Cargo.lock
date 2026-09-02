@@ -363,6 +363,7 @@ dependencies = [
 name = "cordial-update"
 version = "0.13.0"
 dependencies = [
+ "cordial-plugins",
  "http",
  "libc",
  "pulldown-cmark",

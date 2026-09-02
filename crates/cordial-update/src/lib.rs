@@ -69,6 +69,7 @@ pub mod apk;
 pub mod apk_signature;
 pub mod cache;
 pub mod changelog;
+pub mod deno;
 pub mod download;
 pub mod engine;
 pub mod install;

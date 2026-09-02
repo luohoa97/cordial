@@ -38,3 +38,10 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 zbus = { version = "5.18.0", features = ["blocking"] }
 pulldown-cmark = { version = "0.13.4", default-features = false }
 libc = "0.2"
+
+[dev-dependencies]
+# Only so one test can pin that the version constant in `deno.rs` and the
+# install path in `sandbox` name the same release. Deliberately a
+# dev-dependency: `deno::install` takes its directory as a parameter precisely
+# so a downloader and a sandbox stay independent at build time.
+cordial-plugins = { path = "../cordial-plugins" }

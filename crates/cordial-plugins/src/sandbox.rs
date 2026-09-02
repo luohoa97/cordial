@@ -155,9 +155,50 @@ pub fn interpreter_present() -> bool {
     which_deno().is_some()
 }
 
+/// The interpreter version Cordial fetches when the host has none.
+///
+/// Pinned rather than tracking latest, so a plugin that works today does not
+/// stop working because somebody else cut a release. Bumping it is a commit.
+pub const MANAGED_DENO_VERSION: &str = "2.9.6";
+
+/// Where Cordial keeps an interpreter it fetched itself.
+///
+/// **The data directory, not the cache.** A cache is a thing a user is
+/// encouraged to delete, and re-downloading 39 MB because somebody cleaned up
+/// is rude. Versioned, so a future bump lands beside the old one rather than
+/// overwriting a binary that a running plugin has open.
+///
+/// Under Flatpak this resolves inside the sandbox to
+/// `~/.var/app/io.github.luohoa97.Cordial/data/...`, which is where it has to
+/// be: the Flatpak deliberately takes no route to the host (see the module
+/// note on `flatpak-spawn`), so an interpreter on the host's `PATH` is
+/// invisible to it and this is the only place one can come from. Measured
+/// 2026-09-02 that the directory is mounted `rw,nosuid,nodev` with **no
+/// `noexec`**, and that a downloaded Deno 2.9.6 runs there against the GNOME
+/// runtime's glibc 2.42 and executes a plugin-shaped module.
+pub fn managed_deno_dir() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+    Some(base.join("cordial").join("deno").join(MANAGED_DENO_VERSION))
+}
+
+/// The managed interpreter, if it has been fetched.
+pub fn managed_deno() -> Option<PathBuf> {
+    managed_deno_dir().map(|d| d.join("deno")).filter(|p| p.is_file())
+}
+
+/// `deno`, from the host first and Cordial's own copy second.
+///
+/// **`PATH` wins deliberately.** A distribution's `deno` is updated by the
+/// distribution and is the one the user chose; Cordial's copy exists for hosts
+/// that have none -- every packaging format but Arch, since `dnf5 list deno`
+/// on Fedora and Debian's own source index both come back empty.
 fn which_deno() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join("deno")).find(|c| c.is_file())
+    let on_path = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path).map(|d| d.join("deno")).find(|c| c.is_file())
+    });
+    on_path.or_else(managed_deno)
 }
 
 fn have(binary: &str) -> bool {
