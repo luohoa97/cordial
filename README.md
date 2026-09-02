@@ -815,9 +815,34 @@ installed package.
 {
   "DFFlagRbxTransportUseRtcioRna": false,
   "FIntTaskSchedulerAutoThreadLimit": 8,
-  "FStringDebugGraphicsPreferredBackend": "Vulkan"
+  "FFlagDebugGraphicsDisableVulkan": false
 }
 ```
+
+**All three of those exist in the Android engine, and this example used to
+carry one that does not.** It offered
+`"FStringDebugGraphicsPreferredBackend": "Vulkan"`, which reads perfectly and
+is not a Roblox flag: `DebugGraphicsPreferredBackend` appears **zero** times in
+`libroblox.so`, and nothing resembling it does either — the real names in that
+family are `DebugGraphicsDisableVulkan`, `DebugGraphicsDisableOpenGL`,
+`DebugGraphicsDisableVulkan11` and so on. Reported by a user, checked against
+the binary, and worth stating plainly because a documented example is the first
+thing anybody copies.
+
+**A name the engine does not know is accepted and ignored**, silently — it goes
+into the settings document like any other key and nothing rejects it, so an
+invented flag looks exactly like a working one. If a flag seems to do nothing,
+check that it is real before assuming it did not help:
+
+```bash
+strings ~/.cache/cordial/lib/x86_64/libroblox.so | grep -x DebugGraphicsDisableVulkan
+```
+
+The name in the file carries the `FFlag`/`FInt`/`FString` prefix; the engine's
+own table stores it without one, which is why the `grep` above drops it.
+
+To choose a graphics backend, use Settings rather than a flag — Cordial decides
+that before the engine starts, and the setting is what it reads.
 
 Values may be written as booleans, numbers or strings — Roblox stores them all
 as strings and Cordial converts. The overrides are merged into the settings

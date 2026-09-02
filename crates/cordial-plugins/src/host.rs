@@ -256,6 +256,16 @@ impl Plugin {
         // has no permissions at all -- so a missing `bwrap` does not stop a
         // plugin running. It is said out loud instead, because a layer nobody
         // can tell is missing is one nobody notices went away.
+        // Nothing below can work without the interpreter, and under `bwrap`
+        // the spawn would succeed anyway -- see `sandbox::interpreter_present`.
+        // Failing here, with the kind the caller checks for, is what makes the
+        // "started" line honest and puts the reason in Settings.
+        if !crate::sandbox::interpreter_present() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "deno is not on PATH",
+            ));
+        }
         let sandbox = crate::sandbox::available();
         println!("[plugin] {id}: {}", sandbox.describe());
         if reload {

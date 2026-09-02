@@ -309,18 +309,25 @@ pub fn start_all() -> usize {
                 let _ = cordial_plugins::health::clear(&health_path, &id);
             }
             Err(e) => {
-                println!("  plugin {id}: could not start ({e})");
-                // The message a person sees in Settings. `e` here is the
-                // spawn error -- "No such file or directory" when Deno is not
-                // installed, which is the single most common way a plugin
-                // fails on a machine that has never run one -- so it is
-                // prefixed rather than shown bare, because on its own it
-                // names no file and reads as a Cordial bug.
-                let _ = cordial_plugins::health::record(
-                    &health_path,
-                    &id,
-                    &format!("could not start: {e}"),
-                );
+                // **Name Deno, because that is nearly always what this is.**
+                // The comment here used to say "No such file or directory"
+                // meant Deno was missing and then printed the bare errno
+                // anyway, so the message a user got named no file and read as
+                // a Cordial bug. It is worse than that: no packaging format
+                // Cordial ships installs Deno -- not the deb, the rpm, either
+                // AUR package, the AppImage or the Flatpak -- so on a normal
+                // install this is not an edge case, it is what happens to
+                // everybody. It went unnoticed because the machine this was
+                // written on has Deno from Homebrew.
+                let missing = e.kind() == std::io::ErrorKind::NotFound;
+                let detail = if missing {
+                    "Deno is not installed; plugins are Deno programs (ADR-008). Install your distribution's `deno` package, or from https://deno.com, then restart Cordial."
+                        .to_string()
+                } else {
+                    format!("could not start: {e}")
+                };
+                println!("  plugin {id}: {detail}");
+                let _ = cordial_plugins::health::record(&health_path, &id, &detail);
             }
         }
     }

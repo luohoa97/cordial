@@ -76,6 +76,17 @@ depends=(
   # there is no sound and nothing says so.
   'pipewire'
   'hicolor-icon-theme'
+  # Plugins are Deno programs (ADR-008) and Cordial bundles no runtime -- it
+  # execs `deno` off PATH. Without it every plugin fails to spawn: the system
+  # installs, lists in Settings, grants permissions and cannot run a line,
+  # which is what an Arch user reported on 2026-09-02.
+  #
+  # A hard dependency because a plugin that cannot start is not a degraded
+  # feature, and three first-party plugins ship enabled. **Arch is the only
+  # format where this line is possible**: `deno` is in `extra` here, and
+  # `dnf5 list deno` on Fedora 44 returns nothing, so the rpm and the deb
+  # cannot name a package that exists and say so in their own comments.
+  'deno'
 )
 makedepends=(
   'git'
@@ -97,6 +108,11 @@ makedepends=(
   'alsa-lib'
 )
 optdepends=(
+  # `bwrap` is genuinely optional: sandbox.rs only ever *subtracts* from what
+  # Cordial already holds, so without it a plugin still runs with zero Deno
+  # permissions and the broker still mediates every effect. Recommended, not
+  # required.
+  'bubblewrap: kernel sandbox under the plugin runtime'
   # ADR-011 makes Wayland the backend Cordial targets. The X11 path still
   # starts and window.rs dlopens these for it; CORDIAL_MONITOR needs Xinerama.
   'libx11: X11 session fallback'

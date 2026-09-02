@@ -119,6 +119,16 @@ Requires:       libGLESv2.so.2()(64bit)
 Requires:       libpipewire-0.3.so.0()(64bit)
 Requires:       hicolor-icon-theme
 
+# **No `deno` dependency, and that is not an oversight.** Plugins are Deno
+# programs (ADR-008) and Cordial bundles no runtime, so without `deno` on PATH
+# every plugin fails to spawn. There is no `deno` package to require:
+# `dnf5 list deno` on Fedora 44 returns nothing, and Debian ships none either,
+# so naming one would make this package uninstallable -- strictly worse than
+# the bug. The client says so itself when a plugin cannot start, and the README
+# tells users to install it. Bundling the runtime is the real fix and is not
+# done yet; see docs/NEXT.md.
+
+
 # Roblox's own build, unpacked by Sober, is the first place Cordial looks.
 # A suggestion rather than a dependency, because a user-supplied APK does just
 # as well and neither one comes from this package. Sober is a Flatpak and has

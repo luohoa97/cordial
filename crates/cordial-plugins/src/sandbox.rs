@@ -138,6 +138,23 @@ fn interpreter() -> Option<(PathBuf, Vec<PathBuf>)> {
     Some((real, binds))
 }
 
+/// Whether `deno` can be found at all.
+///
+/// **Checked before spawning, because otherwise the failure is invisible.**
+/// Under `bwrap` the command Cordial builds is `bwrap ... deno ...`, so
+/// `Command::spawn` succeeds as soon as *bwrap* starts and the missing
+/// interpreter only fails inside the sandbox, asynchronously. Cordial then
+/// printed "started" for a plugin that never ran a line and recorded no health
+/// error, so Settings showed nothing wrong either -- measured on 2026-09-02 by
+/// running with `deno` off `PATH`: three plugins reported started, no
+/// `plugin.log` was created, and no health file was written.
+///
+/// That is the same defect as a stub returning success, and it is why this is
+/// a check rather than a comment.
+pub fn interpreter_present() -> bool {
+    which_deno().is_some()
+}
+
 fn which_deno() -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path).map(|d| d.join("deno")).find(|c| c.is_file())
@@ -288,6 +305,37 @@ pub fn command(sandbox: Sandbox, entry: &Path, reload: bool) -> Command {
 
 #[cfg(test)]
 mod tests {
+
+    /// **The interpreter check must not be skipped when `bwrap` exists.**
+    ///
+    /// The bug: under bubblewrap the command is `bwrap ... deno ...`, so
+    /// `Command::spawn` succeeds the moment bwrap starts and a missing Deno
+    /// fails inside the sandbox, out of sight. Cordial printed "started" for
+    /// three plugins that never ran a line and wrote no health record, so
+    /// Settings showed nothing wrong either -- measured 2026-09-02 with `deno`
+    /// off `PATH`. This pins the predicate the spawn path now checks first.
+    #[test]
+    fn the_interpreter_is_looked_for_on_path_and_nowhere_else() {
+        let dir = std::env::temp_dir().join(format!("cordial-deno-probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // `which_deno` reads the process PATH, which is shared state, so this
+        // restores it rather than leaving the suite in a strange world.
+        let original = std::env::var_os("PATH");
+        std::env::set_var("PATH", &dir);
+        assert!(!super::interpreter_present(), "nothing named deno is in this directory");
+
+        let fake = dir.join("deno");
+        std::fs::write(&fake, b"#!/bin/sh\nexit 0\n").unwrap();
+        assert!(super::interpreter_present(), "a `deno` on PATH must be found");
+
+        match original {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
 
     #[test]
