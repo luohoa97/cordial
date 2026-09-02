@@ -7,20 +7,47 @@
 # Cordial links four things a bare `ldd`-following bundler does not fully
 # reach -- GTK4, libadwaita and WebKitGTK are ordinary DT_NEEDED dependencies
 # that linuxdeploy's ELF walk does find, but WebKitGTK's own helper
-# processes (WebKitWebProcess, WebKitNetworkProcess) are separate executables
-# it spawns rather than links, and GSettings schemas are found by path rather
-# than by symbol. Both are handled below by hand rather than by the bundler,
-# and one of them does not work.
+# processes (WebKitWebProcess, WebKitNetworkProcess, WebKitGPUProcess), its
+# injected bundle, and the bwrap and xdg-dbus-proxy it shells out to for its
+# own sandbox are reached through absolute paths baked into
+# libwebkitgtk-6.0.so, and GSettings schemas are found by path rather than by
+# symbol. All of those are bundled below by hand rather than by the bundler.
+# Making the baked-in paths *resolve* on a host that has never installed
+# WebKitGTK is AppRun's job, and it is a mount namespace rather than an
+# environment variable, because WebKitGTK 2.52 offers no environment variable
+# for them -- AppRun carries the measurement and the offsets.
 #
 # This paragraph used to end "nobody has launched one yet". Somebody has, on
 # 2026-08-27: the shell starts and draws on Fedora 44 (Bluefin, GNOME,
 # Wayland), first-run window, profile row, Roblox button. The schema handling
-# below survived that; WEBKIT_EXEC_PATH did not, and AppRun's comment on it
-# carries the measurement. **The web view does not travel** -- WebKitGTK 2.52
-# ignores that variable and spawns its helpers by absolute path, so on a host
-# with no webkitgtk6.0 installed the sign-in window comes up blank. Still
-# unexercised: any machine that is not this one, and any distro that is not
-# Fedora. Say which of those three states a report is about.
+# below survived that; WEBKIT_EXEC_PATH did not.
+#
+# **And a user hit exactly that on 2026-09-02**, from an AppImage mounted at
+# /tmp/.mount_Cordia...: `Failed to spawn child process
+# "/usr/libexec/webkitgtk-6.0/WebKitNetworkProcess" (No such file or
+# directory)`. Installing WebKitGTK on their host did not help, and could not
+# have: only Fedora and its derivatives put the helpers under /usr/libexec.
+# Debian and Ubuntu ship them at /usr/lib/x86_64-linux-gnu/webkitgtk-6.0 and
+# Arch at /usr/lib/webkitgtk-6.0, so the package installs and the path the
+# bundled Fedora library asks for is still empty.
+#
+# AppRun now makes those paths exist in a mount namespace of its own, and this
+# script bundles what goes in them. Measured on 2026-09-02 against an AppImage
+# built from this recipe, on a host standing in for one that has never
+# installed WebKitGTK -- /usr/libexec an empty tmpfs, /usr/bin a copy of itself
+# with bwrap and xdg-dbus-proxy removed: with the wrap, WebKitNetworkProcess
+# and WebKitWebProcess both ran out of the image, loaded the image's own
+# libwebkitgtk and injected bundle, the sandbox engaged on the planted bwrap,
+# and a page finished loading; with CORDIAL_APPIMAGE_NO_WRAP=1, the same image
+# on the same host produced the reported error verbatim. AppRun carries the
+# full reading.
+#
+# Two caveats on that. The binaries inside the tested image came from the
+# installed cordial rpm rather than from the cargo build below, because the
+# machine it was measured on has no webkitgtk6.0-devel and cannot compile the
+# webview feature; and the probe was a WebKitWebView, not cordial-shell's own
+# sign-in view. Still unexercised: any machine that is not this one, and any
+# distro that is not Fedora. Say which of those states a report is about.
 #
 # Built inside registry.fedoraproject.org/fedora:44 -- the one environment
 # this repository has proven builds gtk4 4.22/libadwaita 1.9 correctly
@@ -219,6 +246,13 @@ install -Dm644 third_party/mcpelauncher-linker/LICENSE "$licdir/mcpelauncher-lin
 install -Dm644 third_party/mcpelauncher-linker/core/NOTICE "$licdir/aosp-NOTICE.txt"
 install -Dm644 third_party/libjnivm/LICENSE "$licdir/libjnivm-MIT.txt"
 install -Dm644 third_party/mocktail-webview/LICENSE "$licdir/mocktail-webview-Apache-2.0.txt"
+# bwrap and xdg-dbus-proxy are whole programs this AppImage now redistributes,
+# not libraries swept up by a dependency walk, so their licences travel with
+# them. Both are LGPL and both ship a COPYING under /usr/share/licenses.
+for pkg in bubblewrap:bwrap-LGPL.txt xdg-dbus-proxy:xdg-dbus-proxy-LGPL.txt; do
+    src=/usr/share/licenses/${pkg%%:*}/COPYING
+    [ -f "$src" ] && install -Dm644 "$src" "$licdir/${pkg##*:}" || true
+done
 
 install -Dm755 packaging/appimage/AppRun "$appdir/AppRun"
 
@@ -249,14 +283,15 @@ echo "==> bundling shared libraries with linuxdeploy"
 # binaries, which that walk cannot see because neither is a DT_NEEDED entry,
 # are handled by hand below instead.
 webkit_libexec=$(rpm -ql webkitgtk6.0 2>/dev/null | grep -m1 '/libexec/webkitgtk-6.0$' || true)
-executables=(--executable "$appdir/usr/bin/cordial-shell" --executable "$appdir/usr/bin/cordial-run")
+webkit_bundle=$(rpm -ql webkitgtk6.0 2>/dev/null | grep -m1 '/webkitgtk-6.0/injected-bundle$' || true)
+deploy_args=(--executable "$appdir/usr/bin/cordial-shell" --executable "$appdir/usr/bin/cordial-run")
 if [ -n "$webkit_libexec" ] && [ -d "$webkit_libexec" ]; then
     # Every helper binary passed as its own --executable, not just copied,
     # so linuxdeploy's dependency walk covers *their* DT_NEEDED entries too
     # -- a WebProcess is a separate executable with its own library needs,
     # not merely a data file sitting next to cordial-run.
     while IFS= read -r -d '' helper; do
-        executables+=(--executable "$helper")
+        deploy_args+=(--executable "$helper")
     done < <(find "$webkit_libexec" -maxdepth 1 -type f -executable -print0)
 else
     # Never make a stub lie: better a loud build failure than an AppImage
@@ -268,37 +303,86 @@ else
     exit 1
 fi
 
+# The injected bundle: a .so the WebProcess dlopens, from a second absolute
+# path baked into libwebkitgtk-6.0.so (/usr/lib64/webkitgtk-6.0/injected-bundle
+# on Fedora, /usr/lib/x86_64-linux-gnu/webkitgtk-6.0/injected-bundle on Debian).
+# --library rather than --executable because it is dlopened, not exec'd, and
+# linuxdeploy's walk still needs to see it or its own dependencies go
+# unbundled.
+if [ -n "$webkit_bundle" ] && [ -d "$webkit_bundle" ]; then
+    while IFS= read -r -d '' so; do
+        deploy_args+=(--library "$so")
+    done < <(find "$webkit_bundle" -maxdepth 1 -name '*.so' -print0)
+else
+    echo "error: could not find webkitgtk-6.0's injected-bundle directory" >&2
+    echo "  the AppImage's web processes would have no bundle to load" >&2
+    exit 1
+fi
+
+# bwrap and xdg-dbus-proxy. WebKitGTK 6.0 has no API to turn its sandbox off
+# -- the 4.x webkit_web_context_set_sandbox_enabled is gone -- and the sandbox
+# is not in-process: the library execs /usr/bin/bwrap, and /usr/bin/xdg-dbus-proxy
+# to filter the session bus, both by absolute path, both baked in beside the
+# helper path above. The webkitgtk6.0 rpm Requires both by name, so a container
+# with the WebKitGTK devel headers has them by construction; a *user's* machine
+# that never installed WebKitGTK has neither, which is the whole case this
+# AppImage is for. Passed as --executable so their own DT_NEEDED entries
+# (libcap, libselinux) are bundled -- a planted binary that cannot start is
+# the same gap one level down.
+for tool in bwrap xdg-dbus-proxy; do
+    tool_path=$(command -v "$tool" 2>/dev/null || true)
+    if [ -z "$tool_path" ]; then
+        echo "error: $tool is not installed" >&2
+        echo "  WebKitGTK execs it by absolute path for its own sandbox, and the" >&2
+        echo "  AppImage would carry no copy to plant on a host that lacks one" >&2
+        exit 1
+    fi
+    deploy_args+=(--executable "$tool_path")
+done
+
 "$tools_dir/linuxdeploy-x86_64.AppImage" \
     --appdir "$appdir" \
-    "${executables[@]}" \
+    "${deploy_args[@]}" \
     --desktop-file "$appdir/io.github.luohoa97.Cordial.desktop" \
     --icon-file "$appdir/io.github.luohoa97.Cordial.png"
 
-echo "==> bundling the WebKitGTK helper binaries themselves"
+echo "==> laying out what WebKitGTK reaches by absolute path"
 # linuxdeploy was just given each helper as an --executable so their own
-# library dependencies land in usr/lib, but linuxdeploy places binaries
-# named as --executable next to usr/bin, not back where WebKitGTK's
-# ProcessLauncher expects to find them. Put the actual helper tree at
-# usr/libexec/webkitgtk-6.0, which is what AppRun's WEBKIT_EXEC_PATH points
-# WebKitGTK back at.
+# library dependencies land in usr/lib, but linuxdeploy places binaries named
+# as --executable next to usr/bin, not back where WebKitGTK's ProcessLauncher
+# expects to find them. The layout below is not decoration: AppRun binds each
+# of these directories over the path baked into libwebkitgtk-6.0.so, in a
+# mount namespace of its own, and it binds them *by these names*. Change one
+# here and change it there.
 #
-# **And WebKitGTK does not read WEBKIT_EXEC_PATH, so this directory is at
-# present dead weight.** Measured on 2026-08-27 against webkitgtk6.0-2.52.5:
-# the string does not occur in libwebkitgtk-6.0.so.4, in
-# libjavascriptcoregtk-6.0.so.1, or in any of the three helper binaries, while
-# WEBKIT_INJECTED_BUNDLE_PATH and thirty other WEBKIT_* names do -- and with
-# the variable exported at this very path, MiniBrowser out of the built AppDir
-# spawned /usr/libexec/webkitgtk-6.0/WebKitWebProcess, the *host's* copy
-# (readlink /proc/PID/exe). Hide that host directory behind an empty tmpfs and
-# the same run dies with `Failed to spawn child process
-# "/usr/libexec/webkitgtk-6.0/WebKitNetworkProcess" (No such file or
-# directory)`, where the identical bwrap namespace without the tmpfs runs fine.
-# Leave the copies here anyway: they cost 0.5 MB, they are what any future
-# override would have to point at, and removing them would make the gap harder
-# to find rather than smaller. See AppRun for what still has to be solved.
+#   usr/libexec/webkitgtk-6.0          -> /usr/libexec/webkitgtk-6.0
+#   usr/lib/webkitgtk-6.0/injected-bundle
+#                                      -> /usr/lib64/webkitgtk-6.0, or, where
+#                                         that cannot be bound, reached by
+#                                         WEBKIT_INJECTED_BUNDLE_PATH
+#   usr/bin/bwrap, usr/bin/xdg-dbus-proxy
+#                                      -> /usr/bin/..., planted only on a host
+#                                         that has none
+#
+# The environment variable that would have made all of this unnecessary,
+# WEBKIT_EXEC_PATH, does not exist in the shipped library at all -- zero
+# occurrences against thirty-odd other WEBKIT_* names -- and exporting it
+# anyway, measured 2026-08-27, left MiniBrowser spawning the *host's*
+# WebKitWebProcess. AppRun carries the full measurement and the byte offsets
+# of each baked-in path.
 install -d "$appdir/usr/libexec/webkitgtk-6.0"
 find "$webkit_libexec" -maxdepth 1 -type f -executable -exec \
     install -m755 {} "$appdir/usr/libexec/webkitgtk-6.0/" \;
+install -d "$appdir/usr/lib/webkitgtk-6.0/injected-bundle"
+find "$webkit_bundle" -maxdepth 1 -name '*.so' -exec \
+    install -m755 {} "$appdir/usr/lib/webkitgtk-6.0/injected-bundle/" \;
+# linuxdeploy puts --executable binaries in usr/bin already, but say so
+# explicitly rather than depending on that: AppRun tests for these two paths
+# by name and silently skips planting them if they are absent, which is
+# exactly the kind of quiet gap this file exists to avoid.
+for tool in bwrap xdg-dbus-proxy; do
+    [ -x "$appdir/usr/bin/$tool" ] || install -m755 "$(command -v "$tool")" "$appdir/usr/bin/$tool"
+done
 # WebKitGTK also reads its own injected bundle and sandbox profile from
 # beside the libexec directory in some layouts; copied best-effort rather
 # than gated on, since an absent one is a narrower loss (likely the GPU
@@ -338,10 +422,18 @@ echo "The shell starts and draws: launched on Fedora 44 (Bluefin, GNOME,"
 echo "Wayland) on 2026-08-27, first-run window titled with CORDIAL_DESCRIBE,"
 echo "profile row and Roblox button, as a wl_surface with the right app id."
 echo
-echo "The WEB VIEW DOES NOT TRAVEL. WebKitGTK 2.52 ignores WEBKIT_EXEC_PATH"
-echo "and spawns /usr/libexec/webkitgtk-6.0/WebKitNetworkProcess by absolute"
-echo "path, so on a host with no webkitgtk6.0 installed the sign-in window has"
-echo "no process to run in -- which is most of the point of shipping an"
-echo "AppImage. /usr/bin/bwrap, /usr/bin/xdg-dbus-proxy and the injected bundle"
-echo "under /usr/lib64/webkitgtk-6.0 are hardcoded the same way and are not"
-echo "bundled either. Do not offer this to users as a working web view."
+echo "The web view now travels. WebKitGTK 2.52 ignores WEBKIT_EXEC_PATH and"
+echo "reaches its three helper processes, its injected bundle, bwrap and"
+echo "xdg-dbus-proxy through absolute paths baked into libwebkitgtk-6.0.so;"
+echo "all five are bundled here and AppRun binds them over those paths in a"
+echo "mount namespace of its own. Measured 2026-09-02 on a host standing in"
+echo "for one with no WebKitGTK, no bwrap and no xdg-dbus-proxy: both helpers"
+echo "ran out of the image, the sandbox engaged, a page finished loading --"
+echo "and the same image with CORDIAL_APPIMAGE_NO_WRAP=1 gave the reported"
+echo "spawn error verbatim. Not yet measured through cordial-shell's own"
+echo "sign-in view, or on any distribution other than Fedora."
+echo
+echo "If bwrap or unprivileged overlayfs is unavailable, AppRun says so on"
+echo "stderr and carries on unwrapped; the web view then needs the host to"
+echo "have WebKitGTK 6.0 at Fedora's /usr/libexec path, which Debian, Ubuntu"
+echo "and Arch do not use."

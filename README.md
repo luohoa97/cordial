@@ -398,13 +398,27 @@ It needs FUSE, which nearly every desktop has. If it refuses to start, run it
 with `--appimage-extract-and-run` and it will unpack to a temporary directory
 instead.
 
-**What is not yet established about it.** The AppImage bundles WebKitGTK's
-helper executables by hand, because `linuxdeploy` follows linked libraries and
-WebKitGTK spawns `WebKitWebProcess` and `WebKitNetworkProcess` as separate
-programs rather than linking them. That bundling is believed correct and has
-not been confirmed on a machine other than the one that built it. **If the
-sign-in window comes up blank, that is the reason**, and the Flatpak is
-unaffected -- please report it rather than assuming Cordial is broken.
+**The web view, and what is still not established.** WebKitGTK does not link
+the processes that draw a page. It spawns `WebKitWebProcess` and
+`WebKitNetworkProcess`, loads an injected bundle, and runs `bwrap` and
+`xdg-dbus-proxy` for its own sandbox -- five things reached through absolute
+paths fixed when WebKitGTK itself was built, `/usr/libexec/webkitgtk-6.0` on
+Fedora and somewhere different on every other distribution. Up to and including
+v0.13.0 the AppImage carried copies of them and nothing made WebKitGTK look at
+the copies, so on a host that had never installed WebKitGTK the sign-in window
+came up blank and the log said `Failed to spawn child process
+".../WebKitNetworkProcess"`. Installing WebKitGTK did not help unless you were
+on Fedora, because nobody else uses that path.
+
+Cordial now makes those paths resolve to its own copies inside a private mount
+namespace, which needs `bwrap` and unprivileged overlay mounts. If your kernel
+or distribution refuses either, the AppImage says so on standard error and
+carries on without them, and the web view then needs WebKitGTK 6.0 installed at
+Fedora's path. **This has been measured on a stand-in for a machine with no
+WebKitGTK, but not yet on a real one, and not on any distribution other than
+Fedora** -- if the sign-in window is blank, please report it with whatever the
+terminal printed rather than assuming Cordial is broken. The Flatpak is
+unaffected either way.
 
 Updates are manual: the AppImage does not update itself, so download a newer
 one when a release appears. The Flatpak does update itself, which is the main
