@@ -38,14 +38,17 @@ const ENV_PATH = `${HERE}.env`;
  * The Rich Presence application, which this must never be pointed at.
  *
  * `plugins/discord-presence/main.ts` publishes every user's "Playing Cordial"
- * under this id, and its icon is the picture they see. `configureApplication`
- * below sets the icon and description of whatever application the token
- * belongs to -- so running setup against this one would replace the Rich
- * Presence artwork with the bot's googly-eyed avatar, for everybody, and the
- * only symptom would be users asking why the logo changed.
+ * under this id. Setup rewrites the application's **description** and sets its
+ * interactions endpoint, and the description is what shows in the app's About
+ * Me -- so running against that one edits, in public, the identity every
+ * Cordial user's presence is published under.
  *
- * Found by opening the developer portal and noticing the existing "Cordial"
- * application was this one. Nothing in the code would have stopped it.
+ * **This used to say the icon was the danger, and that was wrong.** The bot's
+ * face is the bot *user's* avatar and the Rich Presence artwork is the
+ * *application's* icon; they are separate fields and setup no longer touches
+ * the second. The remaining reason to keep them apart is blast radius: one
+ * application carrying both means a problem with the bot is a problem with
+ * every user's presence.
  */
 const RICH_PRESENCE_APPLICATION_ID = "1543200871767212062";
 
@@ -204,9 +207,10 @@ async function validate(values: Record<string, string>): Promise<string[]> {
 
   if (values.DISCORD_APPLICATION_ID === RICH_PRESENCE_APPLICATION_ID) {
     problems.push(
-      "DISCORD_APPLICATION_ID is Cordial's Rich Presence application. The bridge " +
-        "needs its own: setup sets the icon and description, and on that one it " +
-        'would replace the artwork every user sees on "Playing Cordial".',
+      "DISCORD_APPLICATION_ID is Cordial's Rich Presence application. Give the " +
+        "bridge its own: setup rewrites the application description, which is " +
+        "public, and one application carrying both means a problem with the bot " +
+        "is a problem with every user's presence.",
     );
   }
 
@@ -252,18 +256,45 @@ async function validate(values: Record<string, string>): Promise<string[]> {
 }
 
 /**
+ * Give the bot its face.
+ *
+ * **The bot's avatar and the application's icon are different pictures**, and
+ * mixing them up is how this script nearly overwrote Cordial's Rich Presence
+ * artwork. `PATCH /users/@me` with a bot token edits the bot *user*, which is
+ * what appears beside its messages and in the member list. The application's
+ * `icon` is Rich Presence artwork and the app directory listing, and is
+ * deliberately not touched here at all.
+ */
+async function setBotAvatar(token: string): Promise<boolean> {
+  const png = await Deno.readFile(`${HERE}avatar.png`);
+  const response = await fetch("https://discord.com/api/v10/users/@me", {
+    method: "PATCH",
+    headers: { authorization: `Bot ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      avatar: `data:image/png;base64,${btoa(String.fromCharCode(...png))}`,
+    }),
+  });
+  if (!response.ok) {
+    console.error(`  could not set the bot avatar: ${response.status}`);
+    return false;
+  }
+  console.log("  bot avatar set");
+  return true;
+}
+
+/**
  * The part that genuinely is automatic.
  *
  * `PATCH /applications/@me` takes a bot token and sets the interactions
- * endpoint, the icon and the description, so none of that needs the portal.
- * **Discord validates the endpoint before accepting it** by sending a signed
- * ping and requiring a PONG, which means this call failing is usually the
- * bridge not being reachable rather than anything wrong here.
+ * endpoint and the description, so neither needs the portal. **Discord
+ * validates the endpoint before accepting it** by sending a signed ping and
+ * requiring a PONG, which means this call failing is usually the bridge not
+ * being reachable rather than anything wrong here.
+ *
+ * The application's `icon` is deliberately absent from this body: see
+ * `setBotAvatar`.
  */
 async function configureApplication(values: Record<string, string>, publicUrl: string) {
-  const png = await Deno.readFile(`${HERE}avatar.png`);
-  const icon = `data:image/png;base64,${btoa(String.fromCharCode(...png))}`;
-
   const response = await fetch("https://discord.com/api/v10/applications/@me", {
     method: "PATCH",
     headers: {
@@ -272,7 +303,6 @@ async function configureApplication(values: Record<string, string>, publicUrl: s
     },
     body: JSON.stringify({
       description: "Files Cordial issues from Discord. You do not need a GitHub account.",
-      icon,
       interactions_endpoint_url: `${publicUrl.replace(/\/$/, "")}/interactions`,
     }),
   });
@@ -286,7 +316,7 @@ async function configureApplication(values: Record<string, string>, publicUrl: s
     );
     return false;
   }
-  console.log("  interactions endpoint, icon and description set");
+  console.log("  interactions endpoint and description set");
   return true;
 }
 
@@ -371,6 +401,7 @@ Values are not echoed and not printed back. They go to ${ENV_PATH}, created 0600
       console.error("  Discord requires https; skipping.");
     } else {
       console.log("\n\x1b[1mTelling Discord about it…\x1b[0m");
+      await setBotAvatar(values.DISCORD_BOT_TOKEN);
       await configureApplication(values, publicUrl);
     }
   }
