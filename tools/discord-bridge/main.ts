@@ -128,6 +128,16 @@ export async function build() {
   };
 }
 
+const handler = await build();
+
+/**
+ * The handler as a plain `Request -> Response`, which is what every host that
+ * matters speaks: Deno Deploy, Cloudflare Workers and Bun all take a default
+ * export with a `fetch`. Exporting it rather than only calling `Deno.serve`
+ * means there is one file and no per-host shim to keep in step.
+ */
+export default { fetch: handler };
+
 if (import.meta.main) {
-  Deno.serve({ port: Number(Deno.env.get("PORT") ?? 8000) }, await build());
+  Deno.serve({ port: Number(Deno.env.get("PORT") ?? 8000) }, handler);
 }

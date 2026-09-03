@@ -34,3 +34,9 @@ target-*/
 # reports with no license grant to us — see ADR-017. PII-redacted before it
 # ever lands here, but it stays local regardless.
 tools/sober-corpus/data/
+
+# The Discord bridge's configuration. Written 0600 by `deno task setup` and
+# holding a bot token and a GitHub App key in plaintext -- it must never be
+# committed, and the ignore is here rather than in a nested .gitignore so it
+# cannot be removed by deleting that directory's own file.
+tools/discord-bridge/.env

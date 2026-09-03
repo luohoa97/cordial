@@ -38,6 +38,28 @@ deno task test     # 42 tests, no network, no credentials
 redeploy — which moves "this template no longer fits" from CI to a user pressing a button, so the
 runtime keeps serving the last good set and says so, and the check is how you find out first.
 
+## Setting it up
+
+```bash
+cd tools/discord-bridge
+deno task setup
+```
+
+It asks for each value, checks every one against the live API before writing anything, and writes
+`.env` at `0600`. Secrets are read without echo and never printed back. If anything is wrong it
+names the setting and what the API said, and writes nothing.
+
+**Two steps are not automatable and no script can make them so.** Discord has no endpoint that
+creates an application — checked against their resource documentation on 2026-09-03; there is a get
+and an edit and nothing that makes one — and no Dynamic Client Registration either. So creating the
+application and its bot, and copying the token once, are yours. Everything after that the setup
+script does: it sets the interactions endpoint URL, uploads the avatar, sets the description, and
+prints the invite link.
+
+`.env` is gitignored. That is real and it is not complete: it is plaintext, so it is as safe as the
+machine it is on, and the bot token in it is enough to be the bot. Rotate from the portal if it ever
+leaves.
+
 ## What has to exist before it works
 
 Six things, and none of them are optional.
