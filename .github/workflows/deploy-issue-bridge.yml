@@ -1,0 +1,92 @@
+# Deploy the Discord issue bridge when its code reaches main.
+#
+# The bridge is a Cloudflare Worker (ADR-030), and until this existed it was
+# deployed by hand from a laptop -- which is the arrangement where the running
+# bridge and the committed one quietly diverge, and nobody finds out until a
+# fix that was "shipped" turns out never to have been.
+#
+# **It runs the tests first and will not deploy past a failure.** The bridge
+# has no staging and no rollback story beyond redeploying, and its whole job is
+# to file issues on behalf of people who cannot answer for themselves if it
+# breaks. A red suite is a good enough reason to leave the previous version
+# serving.
+name: deploy the issue bridge
+
+on:
+  push:
+    branches: [main]
+    # Only its own files. The client is the overwhelming majority of commits
+    # here and none of them change the Worker; deploying on each would be noise
+    # and would burn a deployment for nothing.
+    paths:
+      - 'tools/discord-bridge/**'
+      - '.github/workflows/deploy-issue-bridge.yml'
+      # The forms are fetched at runtime rather than baked in, so editing one
+      # needs no deploy -- but `deno task check` is how a template that no
+      # longer fits a modal gets caught, and that is worth running here too.
+      - '.github/ISSUE_TEMPLATE/**'
+  # So a deploy can be forced without an empty commit, which is what people do
+  # otherwise.
+  workflow_dispatch:
+
+concurrency:
+  # Two deploys racing would leave whichever finished last serving, which is
+  # not necessarily the newer commit.
+  group: issue-bridge-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Do the issue forms still fit a modal?
+        working-directory: tools/discord-bridge
+        run: deno task check
+
+      - name: deno test
+        working-directory: tools/discord-bridge
+        run: deno task test
+
+      - name: deno lint and fmt
+        working-directory: tools/discord-bridge
+        run: deno lint && deno fmt --check
+
+      # `npm ci` rather than `deno install`: wrangler bundles from
+      # `node_modules` and `package-lock.json` is what pins it there.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install the Worker's dependencies
+        working-directory: tools/discord-bridge
+        run: npm install --no-audit --no-fund
+
+      - name: Deploy
+        working-directory: tools/discord-bridge
+        env:
+          # A scoped API token, not the OAuth login a person uses. It needs
+          # only "Workers Scripts: Edit" on the Cordial account -- it does not
+          # read or write the secrets, which are set once out of band and
+          # survive a deploy untouched.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4 deploy
+
+      # Deploying is not the same as working, and a Worker that boots and then
+      # throws on its first request would otherwise look like a green deploy.
+      - name: Does the deployed bridge answer?
+        run: |
+          for i in $(seq 1 10); do
+            body=$(curl -fsS -m 15 https://cordial-issues.cordial-7d5.workers.dev/health) && {
+              echo "$body"
+              echo "$body" | grep -q '"ok":true' && exit 0
+              echo "health answered but not ok" >&2; exit 1
+            }
+            echo "attempt $i: no answer yet"; sleep 6
+          done
+          echo "the deployed bridge never answered /health" >&2
+          exit 1
