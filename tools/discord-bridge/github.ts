@@ -55,8 +55,20 @@ function pkcs1ToPkcs8(pkcs1: Uint8Array): Uint8Array<ArrayBuffer> {
 }
 
 function pemBody(pem: string): { der: Uint8Array<ArrayBuffer>; pkcs1: boolean } {
-  const pkcs1 = pem.includes("BEGIN RSA PRIVATE KEY");
-  const base64 = pem.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
+  // **A PEM in an environment variable almost always has escaped newlines.**
+  // It is multi-line and env vars are not, so every hosting provider's answer
+  // is `KEY="-----BEGIN...\n...-----END..."` with a literal backslash and n.
+  // Stripping whitespace does not touch those: the backslash goes but the `n`
+  // is a valid base64 character and stays, so it lands *inside* the body and
+  // `atob` fails with "Failed to decode base64" -- an error naming neither the
+  // key nor the escaping.
+  //
+  // Found the hard way. The bridge's first real deployment crashed at startup
+  // on exactly this and served nothing, with no runtime log to say why,
+  // because the isolate died before it could write one.
+  const text = pem.replace(/\\r/g, "").replace(/\\n/g, "\n");
+  const pkcs1 = text.includes("BEGIN RSA PRIVATE KEY");
+  const base64 = text.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
   const binary = atob(base64);
   const der = new Uint8Array(new ArrayBuffer(binary.length));
   for (let i = 0; i < binary.length; i++) der[i] = binary.charCodeAt(i);

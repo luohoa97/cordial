@@ -99,3 +99,43 @@ Deno.test("the JWT says what GitHub requires, and backdates iat", async () => {
   assert(body.exp - now / 1000 <= 10 * 60, `exp is ${body.exp - now / 1000}s away`);
   assert(body.exp > now / 1000);
 });
+
+Deno.test("a PEM that came through an environment variable still imports", async () => {
+  const { pkcs8, pkcs1, publicPem } = await keyPair();
+  const verifier = await crypto.subtle.importKey(
+    "spki",
+    derFromPem(publicPem),
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["verify"],
+  );
+
+  // How a PEM actually arrives from a hosting provider's env: one line, real
+  // newlines replaced by a backslash and an `n`. The `n` is valid base64, so a
+  // whitespace strip leaves it inside the body and `atob` fails -- which is
+  // exactly how the first real deployment of this bridge died, with an error
+  // naming neither the key nor the escaping.
+  for (const [shape, pem] of [["PKCS#8", pkcs8], ["PKCS#1", pkcs1]] as const) {
+    const escaped = pem.replace(/\n/g, "\\n");
+    assert(!escaped.includes("\n"), "the fixture must be single-line to be the real case");
+
+    const jwt = await appJwt("123456", await importAppKey(escaped), 1_700_000_000_000);
+    const [head, body, signature] = jwt.split(".");
+    assert(
+      await crypto.subtle.verify(
+        "RSASSA-PKCS1-v1_5",
+        verifier,
+        unb64url(signature),
+        new TextEncoder().encode(`${head}.${body}`),
+      ),
+      `an escaped ${shape} key must import and sign identically`,
+    );
+  }
+});
+
+Deno.test("CRLF escapes survive too, since Windows-written env files carry them", async () => {
+  const { pkcs8 } = await keyPair();
+  const escaped = pkcs8.replace(/\n/g, "\\r\\n");
+  const jwt = await appJwt("1", await importAppKey(escaped), 1_700_000_000_000);
+  assertEquals(jwt.split(".").length, 3);
+});
