@@ -82,7 +82,31 @@ export async function build(source: Env) {
   const webhookSecret = required("GITHUB_WEBHOOK_SECRET");
   const selfLogin = source.GITHUB_APP_LOGIN ?? `${repo}-bridge`;
 
-  return async function serve(request: Request): Promise<Response> {
+  /**
+   * Hand slow follow-up work to the host.
+   *
+   * **On Cloudflare a promise left running when the handler returns is
+   * cancelled**, so the fire-and-forget below -- which is correct under Deno,
+   * where the process simply keeps going -- silently dropped every deferred
+   * action. The first real bug report filed through the deployed bridge sat on
+   * "Cordial Issues is thinking" for ever and no issue was created, because
+   * `fileIssue` was killed before its first request went out.
+   *
+   * A Worker's `ctx.waitUntil` is the contract for exactly this: keep the
+   * isolate alive until the promise settles. Hosts that need no such promise
+   * pass nothing and get the old behaviour.
+   */
+  return async function serve(
+    request: Request,
+    waitUntil?: (promise: Promise<unknown>) => void,
+  ): Promise<Response> {
+    const background = (promise: Promise<unknown>) => {
+      const guarded = promise.catch((error) => console.error(`follow-up: ${error}`));
+      // Handed over *after* the catch, so an unhandled rejection can never
+      // reach the host and fail the whole request.
+      if (waitUntil) waitUntil(guarded);
+    };
+
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/health") {
@@ -105,12 +129,10 @@ export async function build(source: Env) {
       if (!ok) return new Response("bad signature", { status: 401 });
 
       const { response, after } = await handle(context, JSON.parse(body));
-      if (after) {
-        // Deliberately not awaited: the three-second acknowledgement budget is
-        // the point of deferring, and the follow-up edits the reply when it is
-        // done. A rejection here would otherwise be an unhandled one.
-        after().catch((error) => console.error(`follow-up: ${error}`));
-      }
+      // Not awaited: Discord allows three seconds to acknowledge, which is the
+      // whole point of deferring, and the follow-up edits the reply when it is
+      // done.
+      if (after) background(after());
       return Response.json(response);
     }
 

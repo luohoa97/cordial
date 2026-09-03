@@ -12,10 +12,17 @@
  */
 import { build, ConfigError, type Env } from "./main.ts";
 
-let handler: ((request: Request) => Promise<Response>) | null = null;
+/** The slice of `ExecutionContext` the bridge uses. */
+interface Ctx {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
+let handler:
+  | ((request: Request, waitUntil?: (p: Promise<unknown>) => void) => Promise<Response>)
+  | null = null;
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: Ctx): Promise<Response> {
     try {
       handler ??= await build(env);
     } catch (error) {
@@ -26,6 +33,10 @@ export default {
       console.error(`configuration: ${why}`);
       return new Response(`the bridge is not configured: ${why}\n`, { status: 503 });
     }
-    return await handler(request);
+    // **`ctx.waitUntil` is not optional here.** Without it, everything the
+    // bridge does after acknowledging an interaction -- filing the issue,
+    // opening the thread, editing the reply -- is cancelled the moment this
+    // function returns, and the user is left looking at "is thinking" for ever.
+    return await handler(request, ctx.waitUntil.bind(ctx));
   },
 };
