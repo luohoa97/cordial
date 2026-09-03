@@ -11,6 +11,7 @@
  * is the same either way.
  */
 import { ACTION_ROW, BUTTON, type IssueForm } from "./issue_forms.ts";
+import { container, separator, text, v2 } from "./components.ts";
 
 /** Discord allows five buttons to a row. */
 const PER_ROW = 5;
@@ -37,18 +38,26 @@ export function pickerMessage(forms: IssueForm[], repoUrl: string): unknown {
     }],
   });
 
-  return {
-    embeds: [{
-      title: "Report something",
-      description: "Pick the shape that fits and fill in the form. It becomes an issue " +
-        "on GitHub and a thread here, and replies travel both ways — **you do " +
-        "not need a GitHub account.**\n\n" +
-        "Every form asks for the diagnostics block. Get it from **Settings → " +
-        "Report a Problem → Copy diagnostics**, or run `cordial --diagnostics` " +
-        "— it works even when the client will not start, which is the report " +
-        "that needs it most.",
-      color: 0xFF7A18,
-    }],
-    components: rows,
-  };
+  // Components V2 rather than an embed: a Container gives the accent bar an
+  // embed gave, a Separator lets the diagnostics note sit apart from the pitch
+  // instead of being another paragraph in one description, and the buttons sit
+  // inside the same block rather than floating under it.
+  return v2([
+    container(0xFF7A18, [
+      text(
+        "## Report something\n" +
+          "Pick the shape that fits and fill in the form. It becomes an issue on " +
+          "GitHub and a thread here, and replies travel both ways \u2014 **you do not " +
+          "need a GitHub account.**",
+      ),
+      separator(),
+      text(
+        "Every form asks for the diagnostics block. Get it from **Settings \u2192 " +
+          "Report a Problem \u2192 Copy diagnostics**, or run `cordial --diagnostics` " +
+          "\u2014 it works even when the client will not start, which is the report " +
+          "that needs it most.",
+      ),
+      ...rows,
+    ]),
+  ]);
 }

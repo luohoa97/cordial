@@ -17,6 +17,8 @@
 
 import { send } from "./resilient.ts";
 
+import { IS_COMPONENTS_V2 } from "./components.ts";
+
 const API = "https://discord.com/api/v10";
 
 export const EPHEMERAL = 1 << 6;
@@ -93,16 +95,13 @@ export class Discord {
   async openThread(
     channelId: string,
     name: string,
-    opening: string,
-    components?: unknown[],
+    opening: unknown[],
   ): Promise<string> {
-    // Components ride on the opening message itself in both shapes, so the
-    // controls are in the first post rather than a second one below it -- a
-    // forum post's starter message takes them when it is created with the
-    // thread, and a text-channel thread's is posted here anyway.
-    const message = components
-      ? { content: opening, components, flags: 1 << 15 }
-      : { content: opening };
+    // The opening post is Components V2 and carries the controls itself, so
+    // they are in the first message rather than a second one below it -- a
+    // forum post's starter message takes components when it is created with
+    // the thread, and a text-channel thread's is posted here anyway.
+    const message = { components: opening, flags: IS_COMPONENTS_V2 };
     try {
       const forum = await this.#call("POST", `/channels/${channelId}/threads`, {
         name,
@@ -116,7 +115,7 @@ export class Discord {
         auto_archive_duration: 10080,
       });
       const id = (await thread.json()).id;
-      await this.post(id, opening, components);
+      await this.postComponents(id, opening);
       return id;
     }
   }
@@ -145,10 +144,40 @@ export class Discord {
     await this.#call("PATCH", `/channels/${threadId}`, { archived }, true);
   }
 
-  async post(channelId: string, content: string, components?: unknown[]): Promise<void> {
+  /**
+   * **No `IS_COMPONENTS_V2` flag here, and that is the point.**
+   *
+   * It was set alongside `content`, and Discord refuses the combination
+   * outright:
+   *
+   *     MESSAGE_CANNOT_USE_LEGACY_FIELDS_WITH_COMPONENTS_V2
+   *     The 'content' field cannot be used when using MessageFlags.IS_COMPONENTS_V2
+   *
+   * The flag opts a message *out* of the classic shape entirely -- text has to
+   * become a Text Display component too -- and the bridge wants the classic
+   * shape: some words with a row of buttons under them. The flag sat unnoticed
+   * because nothing passed components until the thread controls did, and then
+   * every thread failed to open while the issue was filed anyway.
+   */
+  /** Plain text, the classic shape. Used where there is nothing to lay out. */
+  async post(channelId: string, content: string): Promise<void> {
     await this.#call("POST", `/channels/${channelId}/messages`, {
       content,
-      ...(components ? { components, flags: 1 << 15 } : {}),
+      allowed_mentions: { parse: [] },
+    });
+  }
+
+  /**
+   * A Components V2 message.
+   *
+   * Separate from {@link post} rather than an optional argument, because the
+   * two are mutually exclusive at the API and a single method that took both
+   * would let a caller build the combination Discord refuses.
+   */
+  async postComponents(channelId: string, components: unknown[]): Promise<void> {
+    await this.#call("POST", `/channels/${channelId}/messages`, {
+      components,
+      flags: IS_COMPONENTS_V2,
       allowed_mentions: { parse: [] },
     });
   }

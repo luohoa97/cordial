@@ -146,10 +146,22 @@ export async function build(source: Env) {
       ) {
         return new Response("bad signature", { status: 401 });
       }
-      const relay = relayFor(JSON.parse(body), selfLogin);
+      // GitHub names the event in a header; the body alone cannot say whether
+      // this is a comment or a state change.
+      const relay = relayFor(
+        JSON.parse(body),
+        selfLogin,
+        request.headers.get("x-github-event") ?? "issue_comment",
+      );
       if (relay) {
         try {
+          // Unarchive before posting: a message cannot go into an archived
+          // thread, so a reopen has to bring it back first.
+          if (relay.archive === false) {
+            await context.discord.setArchived(relay.threadId, false);
+          }
           await context.discord.post(relay.threadId, relay.content);
+          if (relay.archive) await context.discord.setArchived(relay.threadId, true);
         } catch (error) {
           // A deleted thread is the ordinary case and not an error worth
           // retrying: GitHub would redeliver forever against a channel that no

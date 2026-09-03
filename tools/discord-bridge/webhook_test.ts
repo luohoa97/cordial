@@ -69,3 +69,74 @@ Deno.test("a very long comment is trimmed, because the issue is where it lives",
   assert(relay.content.length < 2000, `${relay.content.length} characters`);
   assertStringIncludes(relay.content, "…");
 });
+
+const closedEvent = {
+  action: "closed",
+  issue: {
+    number: 7,
+    body: "text\n<!-- cordial-bridge thread=555 reporter=42 -->",
+    html_url: "https://github.com/o/r/issues/7",
+    state_reason: "completed",
+  },
+  sender: { login: "maintainer" },
+};
+
+Deno.test("a close on GitHub reaches the thread and archives it", () => {
+  const relay = relayFor(closedEvent, "cordial-bridge", "issues");
+  assert(relay);
+  assertEquals(relay.threadId, "555");
+  assertEquals(relay.archive, true, "the thread follows the issue");
+  assertStringIncludes(relay.content, "maintainer");
+  assertStringIncludes(relay.content, "closed as completed");
+});
+
+Deno.test("closing as not planned reads differently from fixing it", () => {
+  // The two are different facts and the thread should not blur them: one
+  // invites "actually it is still happening", the other invites "that is
+  // wrong".
+  const relay = relayFor(
+    { ...closedEvent, issue: { ...closedEvent.issue, state_reason: "not_planned" } },
+    "cordial-bridge",
+    "issues",
+  )!;
+  assertStringIncludes(relay.content, "closed #7");
+  assert(!relay.content.includes("completed"), relay.content);
+});
+
+Deno.test("a reopen brings the thread back rather than archiving it", () => {
+  const relay = relayFor(
+    { ...closedEvent, action: "reopened" },
+    "cordial-bridge",
+    "issues",
+  )!;
+  assertEquals(relay.archive, false);
+  assertStringIncludes(relay.content, "reopened #7");
+});
+
+Deno.test("the bridge's own close does not come back round", () => {
+  // Closing from the Discord button already posts in the thread; relaying the
+  // webhook it causes would say it twice.
+  for (const login of ["cordial-bridge", "cordial-bridge[bot]"]) {
+    assertEquals(
+      relayFor({ ...closedEvent, sender: { login } }, "cordial-bridge", "issues"),
+      null,
+      `${login} must not be relayed`,
+    );
+  }
+});
+
+Deno.test("state changes on an unpaired issue, and other actions, are ignored", () => {
+  assertEquals(
+    relayFor({ ...closedEvent, issue: { number: 7, body: "no marker" } }, "b", "issues"),
+    null,
+  );
+  assertEquals(relayFor({ ...closedEvent, action: "labeled" }, "b", "issues"), null);
+  // And an event the bridge is not subscribed to must not be guessed at.
+  assertEquals(relayFor(closedEvent, "b", "pull_request"), null);
+});
+
+Deno.test("a comment event still routes as a comment, not a state change", () => {
+  const relay = relayFor(paired, "cordial-bridge", "issue_comment")!;
+  assertEquals(relay.archive, undefined, "a comment must not touch the thread's state");
+  assertStringIncludes(relay.content, "commented");
+});

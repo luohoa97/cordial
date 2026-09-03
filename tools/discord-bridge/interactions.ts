@@ -19,6 +19,7 @@
  */
 import { Discord, EPHEMERAL, InteractionType, modalValues, ResponseType } from "./discord.ts";
 import { ACTION_ROW, BUTTON, type IssueForm, modalFor } from "./issue_forms.ts";
+import { container, separator, text } from "./components.ts";
 import { GitHub } from "./github.ts";
 import {
   renderIssueBody,
@@ -364,10 +365,18 @@ async function fileIssue(
     threadId = await context.discord.openThread(
       context.threadChannelId,
       `#${issue.number} ${title}`.slice(0, 100),
-      `**${title}**\n${issue.html_url}\n\nFiled by ${submission.reporter.tag}. ` +
-        `Comments on the issue appear here. To add something, right-click a message ` +
-        `→ Apps → "Add to the issue".`,
-      threadControls(issue.number),
+      [
+        container(0xFF7A18, [
+          text(`### ${title}\n${issue.html_url}`),
+          separator(),
+          text(
+            `Filed by ${submission.reporter.tag}. Comments on the issue appear here. ` +
+              `To add something from this thread, right-click a message → Apps → ` +
+              `**Add to the issue**.`,
+          ),
+          ...threadControls(issue.number),
+        ]),
+      ],
     );
     await context.github.setIssueBody(
       issue.number,

@@ -410,9 +410,14 @@ Deno.test("the thread's first message carries every control", async () => {
   } as never);
   await after!();
 
-  // Fourth argument of openThread -- on the opening post, not a message below it.
-  const controls = f.of("openThread")[0].args[3] as { components: { custom_id: string }[] }[];
-  const ids = controls[0].components.map((c) => c.custom_id);
+  // The opening post is Components V2: one Container holding the text and the
+  // controls, so the buttons are in the first message rather than below it.
+  const opening = f.of("openThread")[0].args[2] as { type: number; components: unknown[] }[];
+  assertEquals(opening[0].type, 17, "a Container");
+  const rows = opening[0].components.filter((c) => (c as { type: number }).type === 1);
+  assertEquals(rows.length, 1, "one action row, inside the container");
+  const ids = (rows[0] as { components: { custom_id: string }[] }).components
+    .map((c) => c.custom_id);
   assertEquals(ids, [
     "cordial-comment:12",
     "cordial-fixed:12",
