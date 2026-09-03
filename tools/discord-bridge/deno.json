@@ -5,7 +5,8 @@
     "serve": "deno run --allow-net --allow-env --allow-read serve_deno.ts",
     "post-picker": "deno run --allow-net --allow-env post_picker.ts",
     "setup": "deno run --allow-net --allow-read --allow-write --allow-env setup.ts",
-    "deploy": "npx wrangler deploy"
+    "deploy": "npx wrangler deploy",
+    "register-commands": "deno run --allow-net --allow-env commands.ts"
   },
   "imports": {
     "@std/assert": "jsr:@std/assert@^1.0.8",

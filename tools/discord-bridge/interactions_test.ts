@@ -177,3 +177,104 @@ Deno.test("a button for a form that no longer exists says so instead of failing"
   assertStringIncludes(body.data.content, "no_such_form");
   assertEquals(body.data.flags, 1 << 6, "and only the presser sees it");
 });
+
+const messageCommand = (overrides: Record<string, unknown> = {}) => ({
+  type: 2,
+  token: "tok",
+  channel_id: "thread-1",
+  guild_id: "g1",
+  data: {
+    name: "Add to the issue",
+    type: 3,
+    target_id: "m1",
+    resolved: {
+      messages: {
+        m1: { content: "It also happens on X11.", author: { global_name: "Reporter" } },
+      },
+    },
+  },
+  ...overrides,
+} as never);
+
+Deno.test("the context menu adds one chosen message to the thread's issue", async () => {
+  const { context, of } = fakes();
+  (context.discord as unknown as { channelName: () => Promise<string> }).channelName = () =>
+    Promise.resolve("#24 [Bug]: something");
+
+  const { response, after } = await handle(context, messageCommand());
+  assertEquals((response as { type: number }).type, ResponseType.DEFERRED_MESSAGE);
+  await after!();
+
+  const [posted] = of("comment");
+  assertEquals(posted.args[0], 24, "the issue number comes from the thread name");
+  assertStringIncludes(posted.args[1] as string, "Reporter");
+  assertStringIncludes(posted.args[1] as string, "It also happens on X11.");
+  // A link back, so a maintainer can see the conversation it came from.
+  assertStringIncludes(posted.args[1] as string, "discord.com/channels/g1/thread-1/m1");
+});
+
+Deno.test("used outside an issue thread it explains itself and posts nothing", async () => {
+  const { context, of } = fakes();
+  (context.discord as unknown as { channelName: () => Promise<string> }).channelName = () =>
+    Promise.resolve("general");
+
+  const { after } = await handle(context, messageCommand());
+  await after!();
+  assertEquals(of("comment").length, 0, "nothing may reach the tracker");
+  assertStringIncludes(
+    (of("editOriginal")[0].args[1] as { content: string }).content,
+    "#<number>",
+  );
+});
+
+Deno.test("a message with no readable text is refused rather than posted blank", async () => {
+  // An attachment-only message has no content, and Discord does not document
+  // whether a bot without the Message Content intent sees content here at all
+  // -- so an empty body must never become an empty comment.
+  const { context, of } = fakes();
+  (context.discord as unknown as { channelName: () => Promise<string> }).channelName = () =>
+    Promise.resolve("#7 [Bug]: x");
+
+  const { after } = await handle(
+    context,
+    messageCommand({
+      data: {
+        name: "Add to the issue",
+        type: 3,
+        target_id: "m1",
+        resolved: { messages: { m1: { content: "   ", author: { username: "a" } } } },
+      },
+    }),
+  );
+  await after!();
+  assertEquals(of("comment").length, 0);
+  assertStringIncludes(
+    (of("editOriginal")[0].args[1] as { content: string }).content,
+    "no text the bot can read",
+  );
+});
+
+Deno.test("a follow-up that throws tells the reporter instead of hanging", async () => {
+  // The "is thinking" spinner never stops on its own. Every deferred path must
+  // land a reply even when the work fails.
+  const { context, of } = fakes();
+  (context.github as unknown as { createIssue: () => Promise<never> }).createIssue = () =>
+    Promise.reject(new Error("GitHub is having a day"));
+
+  const { after } = await handle(context, {
+    type: InteractionType.MODAL_SUBMIT,
+    token: "tok",
+    data: {
+      custom_id: "cordial-issue:bug_report:main",
+      components: [{ type: 18, component: { custom_id: "diagnostics", value: "d" } }],
+    },
+    ...user,
+  } as never);
+  await after!();
+
+  const [reply] = of("editOriginal");
+  assert(reply, "a failed follow-up must still edit the deferred reply");
+  const content = (reply.args[1] as { content: string }).content;
+  assertStringIncludes(content, "nothing was filed");
+  assertStringIncludes(content, "GitHub is having a day");
+});

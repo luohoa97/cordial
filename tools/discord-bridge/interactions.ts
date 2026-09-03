@@ -30,10 +30,24 @@ export interface Context {
   repoUrl: string;
 }
 
+interface ResolvedMessage {
+  content?: string;
+  author?: { username?: string; global_name?: string; bot?: boolean };
+  id?: string;
+}
+
 interface Interaction {
   type: number;
   token: string;
-  data?: { custom_id?: string };
+  channel_id?: string;
+  guild_id?: string;
+  data?: {
+    custom_id?: string;
+    name?: string;
+    type?: number;
+    target_id?: string;
+    resolved?: { messages?: Record<string, ResolvedMessage> };
+  };
   member?: { user?: { id: string; username: string; global_name?: string } };
   user?: { id: string; username: string; global_name?: string };
 }
@@ -50,6 +64,48 @@ const deferred = () => ({
   type: ResponseType.DEFERRED_MESSAGE,
   data: { flags: EPHEMERAL },
 });
+
+/**
+ * Make sure a deferred interaction always gets an answer.
+ *
+ * **A deferred reply that is never edited is a spinner that never stops.**
+ * Discord shows "… is thinking" until something replaces it, and until now any
+ * throw inside a follow-up left exactly that -- the reporter waiting on a
+ * message that was never coming, with no way to tell whether their report
+ * landed. It is the same symptom whatever the cause, which is what made the
+ * `waitUntil` bug so opaque.
+ *
+ * So every follow-up is wrapped: on failure it edits the reply to say so. The
+ * interaction token is good for fifteen minutes, so there is no hurry and no
+ * excuse.
+ */
+function reporting(
+  context: Context,
+  token: string,
+  work: () => Promise<void>,
+): () => Promise<void> {
+  return async () => {
+    try {
+      await work();
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      console.error(`follow-up: ${why}`);
+      try {
+        await context.discord.editOriginal(token, {
+          content: "That did not work, and nothing was filed. You can try again — " +
+            "and if it keeps happening, this is worth reporting on GitHub directly:\n" +
+            `\`\`\`\n${why.slice(0, 600)}\n\`\`\``,
+          components: [],
+        });
+      } catch (second) {
+        // Both the work and the apology failed. Nothing further can reach the
+        // user, so this is the end of the line; log it where a maintainer can
+        // find it.
+        console.error(`could not even report the failure: ${second}`);
+      }
+    }
+  };
+}
 
 const ephemeral = (content: string) => ({
   type: ResponseType.MESSAGE,
@@ -75,6 +131,20 @@ export async function handle(
   const [verb, ...rest] = id.split(":");
   const forms = await context.forms();
   const find = (slug: string) => forms.find((f) => f.slug === slug);
+
+  if (interaction.type === InteractionType.APPLICATION_COMMAND) {
+    if (interaction.data?.name === "Add to the issue") {
+      return {
+        response: deferred(),
+        after: reporting(
+          context,
+          interaction.token,
+          () => addMessageToIssue(context, interaction),
+        ),
+      };
+    }
+    return { response: ephemeral("That command is not one this bot knows about.") };
+  }
 
   if (interaction.type === InteractionType.MESSAGE_COMPONENT) {
     if (verb === "cordial-issue-open") {
@@ -128,7 +198,11 @@ export async function handle(
       if (!form) return { response: ephemeral(unknownForm(rest[0])) };
       return {
         response: deferred(),
-        after: () => fileIssue(context, interaction, form, { values, reporter: who }),
+        after: reporting(
+          context,
+          interaction.token,
+          () => fileIssue(context, interaction, form, { values, reporter: who }),
+        ),
       };
     }
 
@@ -145,12 +219,12 @@ export async function handle(
       if (!extra) return { response: ephemeral("Nothing was filled in, so nothing was added.") };
       return {
         response: deferred(),
-        after: async () => {
+        after: reporting(context, interaction.token, async () => {
           await context.github.comment(number, `${extra}\n\n*Added by ${who.tag} from Discord.*`);
           await context.discord.editOriginal(interaction.token, {
             content: `Added to [#${number}](${context.repoUrl}/issues/${number}).`,
           });
-        },
+        }),
       };
     }
 
@@ -162,12 +236,12 @@ export async function handle(
       }
       return {
         response: deferred(),
-        after: async () => {
+        after: reporting(context, interaction.token, async () => {
           await context.github.comment(number, `**${who.tag}** (from Discord):\n\n${text}`);
           await context.discord.editOriginal(interaction.token, {
             content: `Posted on [#${number}](${context.repoUrl}/issues/${number}).`,
           });
-        },
+        }),
       };
     }
   }
@@ -242,4 +316,56 @@ async function fileIssue(
         : ""),
     components: more,
   });
+}
+
+/**
+ * Put one chosen message on the issue its thread belongs to.
+ *
+ * The issue number comes from the **thread's name** rather than from reading
+ * any message: `openThread` names every thread `#<number> <title>`, so the
+ * pairing survives without a Message Content intent and without depending on
+ * an opening post nobody may have left alone.
+ *
+ * **The message body may legitimately be empty**, and the code says so rather
+ * than posting a blank comment. An attachment-only message has no content, and
+ * Discord's documentation does not state whether a bot without the intent sees
+ * content in a message-command payload -- so this degrades visibly instead of
+ * assuming, and the reporter is told what happened either way.
+ */
+async function addMessageToIssue(context: Context, interaction: Interaction): Promise<void> {
+  const say = (content: string) => context.discord.editOriginal(interaction.token, { content });
+
+  const channel = interaction.channel_id;
+  if (!channel) return await say("This has to be used inside an issue thread.");
+
+  const name = await context.discord.channelName(channel);
+  const number = Number(name.match(/^#(\d+)\b/)?.[1]);
+  if (!Number.isInteger(number)) {
+    return await say(
+      "This does not look like an issue thread — its name does not start with " +
+        "`#<number>`, which is how the bridge finds the issue. Use it in a thread " +
+        "the bot opened.",
+    );
+  }
+
+  const target = interaction.data?.target_id;
+  const message = target ? interaction.data?.resolved?.messages?.[target] : undefined;
+  const text = (message?.content ?? "").trim();
+  if (!text) {
+    return await say(
+      `Nothing to add: that message has no text the bot can read. If it was an ` +
+        `attachment or an embed, quote the part that matters in a reply and add ` +
+        `that instead.`,
+    );
+  }
+
+  const author = message?.author?.global_name ?? message?.author?.username ?? "someone";
+  const link = interaction.guild_id && target
+    ? `\n\n<https://discord.com/channels/${interaction.guild_id}/${channel}/${target}>`
+    : "";
+  await context.github.comment(
+    number,
+    `**${author}** in Discord:\n\n${text}${link}`,
+  );
+  await say(`Added to [#${number}](${context.repoUrl}/issues/${number}).`);
 }

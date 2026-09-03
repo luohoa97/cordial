@@ -16,6 +16,8 @@
  * Both shapes are accepted and the tests cover both.
  */
 
+import { send } from "./resilient.ts";
+
 const API = "https://api.github.com";
 const UA = "cordial-issue-bridge";
 
@@ -125,17 +127,28 @@ export class GitHub {
     this.#token = token;
   }
 
-  async #call(method: string, path: string, body?: unknown): Promise<Response> {
-    const response = await fetch(`${API}${path}`, {
-      method,
-      headers: {
-        "accept": "application/vnd.github+json",
-        "authorization": `Bearer ${await this.#token()}`,
-        "content-type": "application/json",
-        "user-agent": UA,
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+  async #call(
+    method: string,
+    path: string,
+    body?: unknown,
+    idempotent = false,
+  ): Promise<Response> {
+    const token = await this.#token();
+    const response = await send(
+      () =>
+        fetch(`${API}${path}`, {
+          method,
+          headers: {
+            "accept": "application/vnd.github+json",
+            "authorization": `Bearer ${token}`,
+            "content-type": "application/json",
+            "user-agent": UA,
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        }),
+      `${method} ${path}`,
+      { idempotent },
+    );
     if (!response.ok) {
       throw new Error(
         `${method} ${path}: GitHub answered ${response.status} ${await response.text()}`,
@@ -150,6 +163,9 @@ export class GitHub {
     labels: string[],
   ): Promise<{ number: number; html_url: string }> {
     const { owner, repo } = this.#repo;
+    // **Deliberately not idempotent.** A timeout after GitHub committed the
+    // write would file the same report twice, and a duplicate issue is worse
+    // than a failure the reporter can see and repeat themselves.
     const response = await this.#call("POST", `/repos/${owner}/${repo}/issues`, {
       title,
       body,
@@ -168,7 +184,8 @@ export class GitHub {
    */
   async setIssueBody(number: number, body: string): Promise<void> {
     const { owner, repo } = this.#repo;
-    await this.#call("PATCH", `/repos/${owner}/${repo}/issues/${number}`, { body });
+    // A PATCH sets the body to a fixed value, so repeating it changes nothing.
+    await this.#call("PATCH", `/repos/${owner}/${repo}/issues/${number}`, { body }, true);
   }
 
   async comment(number: number, body: string): Promise<void> {

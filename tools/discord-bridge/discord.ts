@@ -15,6 +15,8 @@
  * needs no intent either.
  */
 
+import { send } from "./resilient.ts";
+
 const API = "https://discord.com/api/v10";
 
 export const EPHEMERAL = 1 << 6;
@@ -42,16 +44,33 @@ export class Discord {
     this.#applicationId = applicationId;
   }
 
-  async #call(method: string, path: string, body?: unknown): Promise<Response> {
-    const response = await fetch(`${API}${path}`, {
-      method,
-      headers: {
-        "authorization": `Bot ${this.#token}`,
-        "content-type": "application/json",
-        "user-agent": "cordial-issue-bridge",
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+  /**
+   * `idempotent` says whether an *unknown* outcome may be repeated -- see
+   * `resilient.ts`. Posting a message is not: a lost response would double the
+   * message. Rate limits are retried either way, which is the case that
+   * actually happens, since the bridge makes three or four Discord calls per
+   * submission and two reporters at once is enough to meet one.
+   */
+  async #call(
+    method: string,
+    path: string,
+    body?: unknown,
+    idempotent = false,
+  ): Promise<Response> {
+    const response = await send(
+      () =>
+        fetch(`${API}${path}`, {
+          method,
+          headers: {
+            "authorization": `Bot ${this.#token}`,
+            "content-type": "application/json",
+            "user-agent": "cordial-issue-bridge",
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        }),
+      `${method} ${path}`,
+      { idempotent },
+    );
     if (!response.ok) {
       throw new Error(
         `${method} ${path}: Discord answered ${response.status} ${await response.text()}`,
@@ -90,6 +109,18 @@ export class Discord {
     }
   }
 
+  /**
+   * A channel's name, which is how a thread says which issue it belongs to.
+   *
+   * `openThread` names every thread `#<number> <title>`, so the pairing can be
+   * read back without touching a single message -- no Message Content intent,
+   * and nothing to go stale if somebody edits the opening post.
+   */
+  async channelName(channelId: string): Promise<string> {
+    const response = await this.#call("GET", `/channels/${channelId}`, undefined, true);
+    return (await response.json()).name ?? "";
+  }
+
   async post(channelId: string, content: string, components?: unknown[]): Promise<void> {
     await this.#call("POST", `/channels/${channelId}/messages`, {
       content,
@@ -100,10 +131,14 @@ export class Discord {
 
   /** Replace the deferred reply to an interaction. */
   async editOriginal(interactionToken: string, body: unknown): Promise<void> {
+    // Idempotent: a PATCH replaces the message, so a repeat cannot double
+    // anything -- and this is the call that decides whether the reporter sees
+    // an answer at all, so it is the one most worth retrying.
     await this.#call(
       "PATCH",
       `/webhooks/${this.#applicationId}/${interactionToken}/messages/@original`,
       body,
+      true,
     );
   }
 }
