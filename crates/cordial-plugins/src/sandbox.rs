@@ -38,6 +38,13 @@
 //! plugin confined" is in the log rather than inferred from whether the host
 //! happened to have a binary.
 //!
+//! **And "happened to have a binary" is not the test either.** A host can have
+//! `bwrap` installed and still be refused the user namespace it needs, in which
+//! case choosing it produces a plugin that starts and immediately dies with
+//! nothing in the log but bwrap's own complaint. [`bubblewrap_works`] probes a
+//! real sandbox rather than the binary's `--help`, so what is offered is what
+//! can run.
+//!
 //! ## Flatpak gets no OS layer, deliberately
 //!
 //! Inside a Flatpak `bwrap` cannot run — the outer sandbox blocks the
@@ -210,6 +217,57 @@ fn have(binary: &str) -> bool {
         .is_ok()
 }
 
+/// Can `bwrap` actually build a sandbox here, as opposed to merely being
+/// installed?
+///
+/// **`have("bwrap")` was the whole test and it answers the wrong question.**
+/// It runs `bwrap --help`, which succeeds on any host with the binary and says
+/// nothing about whether the kernel will hand out the namespaces. Where it will
+/// not -- an unprivileged user namespace denied by
+/// `kernel.unprivileged_userns_clone=0`, by `user.max_user_namespaces=0`, by an
+/// AppArmor or SELinux policy, or by being inside another container -- bwrap is
+/// present, is chosen, starts, and fails *after* `Command::spawn` has already
+/// returned success. The plugin then produces nothing and reports nothing,
+/// which is the same asynchronous silence `Plugin::spawn`'s interpreter check
+/// exists to eliminate, one layer over.
+///
+/// This is not hypothetical. It was found by this workspace's own suite going
+/// red inside the `archlinux:base-devel` container the Arch package is built
+/// in, the first time that container had an interpreter for the test to reach:
+/// `bwrap --help` succeeded there and every sandboxed plugin died on start.
+///
+/// So the probe is a real sandbox over the same namespace and mount work the
+/// live argv does, running a program that exists on every distribution Cordial
+/// targets. Failure falls back to [`Sandbox::None`], which is Deno's zero
+/// permissions and the broker -- a reported downgrade to what this module's
+/// callers had before it existed, rather than a plugin that starts and dies.
+///
+/// Cached, because the answer cannot change under a running client and the
+/// probe costs a process.
+fn bubblewrap_works() -> bool {
+    static WORKS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *WORKS.get_or_init(|| {
+        if !have("bwrap") {
+            return false;
+        }
+        Command::new("bwrap")
+            .args(["--unshare-all", "--die-with-parent", "--new-session"])
+            .args(["--ro-bind", "/usr", "/usr"])
+            .args(["--ro-bind-try", "/lib", "/lib"])
+            .args(["--ro-bind-try", "/lib64", "/lib64"])
+            .args(["--ro-bind-try", "/bin", "/bin"])
+            .args(["--proc", "/proc"])
+            .args(["--dev", "/dev"])
+            .args(["--tmpfs", "/tmp"])
+            .arg("/usr/bin/true")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
 /// Pick the strongest layer this host can actually provide.
 pub fn available() -> Sandbox {
     if in_flatpak() {
@@ -221,7 +279,7 @@ pub fn available() -> Sandbox {
         // rather than one that starts unconfined.
         return Sandbox::None;
     }
-    if have("bwrap") {
+    if bubblewrap_works() {
         return Sandbox::Bubblewrap;
     }
     Sandbox::None
@@ -470,5 +528,42 @@ mod tests {
         if in_flatpak() {
             assert_eq!(available(), Sandbox::None);
         }
+    }
+
+    /// **`available()` must never name a layer that cannot start.** The
+    /// distinction is the whole point of `bubblewrap_works`: a host can have
+    /// `bwrap` on `PATH` and still be unable to unshare a user namespace, and
+    /// the old check could not tell those apart.
+    ///
+    /// This asserts the two answers agree in both directions on whatever host
+    /// runs it, so it is a real assertion on a machine with a working bwrap
+    /// (this one, and every CI runner but the Arch container) *and* a real
+    /// assertion on one without (that container, which is where the bug was
+    /// found). Not conditioned on `have("bwrap")`, because "installed" is
+    /// exactly the signal being rejected.
+    #[test]
+    fn the_layer_offered_is_one_that_can_actually_start() {
+        if in_flatpak() {
+            return; // Decided by ADR-018 above, not by the probe.
+        }
+        match available() {
+            Sandbox::Bubblewrap => assert!(
+                bubblewrap_works(),
+                "bwrap was offered as the layer and cannot build a sandbox here"
+            ),
+            Sandbox::None => assert!(
+                !bubblewrap_works(),
+                "bwrap can build a sandbox here and was not offered"
+            ),
+        }
+    }
+
+    /// The probe must reject a `bwrap` that is missing outright, without the
+    /// caller having to check first. Cheap, and it pins the ordering inside
+    /// `bubblewrap_works` -- which cannot be tested through the cache, since
+    /// that is a process-wide `OnceLock`.
+    #[test]
+    fn a_binary_that_does_not_exist_is_not_available() {
+        assert!(!have("cordial-no-such-binary-exists"));
     }
 }

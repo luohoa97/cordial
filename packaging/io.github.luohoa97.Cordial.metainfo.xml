@@ -78,6 +78,23 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.13.2" date="2026-09-03">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.13.2</url>
+      <description>
+        <p>
+          Plugins ran and then silently died on any host whose kernel refuses
+          unprivileged user namespaces, because Cordial tested for the sandbox
+          by asking whether bwrap was installed rather than whether it could
+          build a sandbox. It now probes a real one and falls back, saying so,
+          to the permission model and broker it already had.
+        </p>
+        <p>
+          Also the release 0.13.1 should have been: its native packages built
+          correctly and were attached to nothing, so that release carries a
+          Flatpak alone.
+        </p>
+      </description>
+    </release>
     <release version="0.13.1" date="2026-09-03">
       <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.13.1</url>
       <description>
