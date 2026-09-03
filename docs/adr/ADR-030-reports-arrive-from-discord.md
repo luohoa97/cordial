@@ -1,6 +1,6 @@
 # ADR-030: Reports arrive from Discord, as forms rather than as messages
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-03
 **Related:** [ADR-017](ADR-017-sober-issue-corpus.md)
 
@@ -99,10 +99,60 @@ A generated form can drift from a template only by the generator failing, which
 is the intended direction. Running `deno task check` in CI is what makes
 that true rather than aspirational.
 
-**This ADR is proposed, not accepted.** The bridge is written and its 42 tests
-pass -- signature verification against an independently generated key, the App
-key against `openssl` as an oracle, the whole interaction flow against fakes,
-and the stale-template fallback -- but **nothing has been run against a real
-Discord server or a real GitHub App.** The component rules are read from
-Discord's reference and the modals are generated and inspected, which is not
-the same as watching somebody file an issue.
+## Status: accepted, 2026-09-04
+
+It is running. `cordial-issues` is a Cloudflare Worker deployed from `main` on
+every push, filing into `luohoa97/cordial` and posting into `#issues`, and a
+real bug report has been filed through it by a person who did not use GitHub to
+do it.
+
+Two decisions in the draft above turned out to be load-bearing, and one gap had
+to be filled.
+
+**The thread is the issue's other face, not a notification.** The draft had
+comments travelling both ways and stopped there. In practice the reporter also
+needs to be able to *finish* the thing they started -- they cannot close it on
+GitHub, having no account there, so filing without closing was half a
+permission. The thread now carries comment, close, reopen and mark-completed,
+and a close or reopen on GitHub moves the thread to match.
+
+**Close and complete are two different claims**, and separating them is the
+part most worth keeping. "I do not need this any more" is the reporter's to say
+and closes as `not_planned`; "this is fixed" is a claim about the project and
+closes as `completed`. They are gated differently -- the first against the
+reporter recorded in the issue, the second against Discord permissions -- and a
+tracker that let the two look alike would stop being able to answer what was
+actually fixed.
+
+**Who may act is read from the issue, never from the button.** A `custom_id` is
+client-supplied and anybody who can see a message can press it. The reporter's
+id therefore lives in the issue body, which only the App can write, and is
+re-read on every press.
+
+**Deno Deploy was tried first and abandoned.** Builds and deploys went green
+while every revision stayed "Revision inactive" with no domain attached, and
+verifying the organization changed nothing; the app was demonstrably healthy
+locally throughout. Cloudflare Workers took the same handler after a small port
+-- configuration passed in rather than read from a global, and npm `yaml` in
+place of a `jsr:` specifier its bundler cannot resolve.
+
+Three bugs are worth recording because each was invisible from the side it
+broke on:
+
+* a PEM in an environment variable arrives with escaped newlines, and the
+  whitespace strip left an `n` inside the base64. The isolate died before it
+  could log, so a green deploy served nothing;
+* a promise left running when a Worker's fetch handler returns is **cancelled**
+  -- correct under Deno, fatal here -- so the first real report sat on "is
+  thinking" for ever and no issue was created. `ctx.waitUntil` is the contract;
+* `IS_COMPONENTS_V2` alongside `content` is refused outright, so an issue was
+  filed and its thread was not.
+
+The last of those was fixed by going *further* into Components V2 rather than
+away from it: the forms message and each thread are one Container with a
+separator, which an embed's single description could not do.
+
+**What is still unverified**: whether a bot without the Message Content intent
+sees message content in a message-command payload. Discord's documentation does
+not say, so an empty body is refused with an explanation rather than posted as
+a blank comment.
