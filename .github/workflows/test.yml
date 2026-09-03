@@ -52,3 +52,29 @@ jobs:
         run: cargo test --workspace
       - name: cargo test with the web view
         run: cargo test --workspace --features cordial-shell/webview,cordial-runtime/webview
+
+  # The Discord issue bridge generates its modals from `.github/ISSUE_TEMPLATE/`
+  # and fetches them at *runtime*, so an edit to a template needs no redeploy.
+  # That moves one failure: a template edited into a shape a five-component
+  # modal cannot hold now breaks in front of whoever presses the button next.
+  # The bridge keeps serving the last good set when that happens, but this job
+  # is how the edit is caught before it ships. See ADR-030.
+  #
+  # Its own job rather than a step in the one above: it needs Deno and not the
+  # Rust toolchain, and there is no reason for it to queue behind a build.
+  issue-forms:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Do the issue forms still fit a modal?
+        working-directory: tools/discord-bridge
+        run: deno task check
+      - name: deno test
+        working-directory: tools/discord-bridge
+        run: deno task test
+      - name: deno lint and fmt
+        working-directory: tools/discord-bridge
+        run: deno lint && deno fmt --check

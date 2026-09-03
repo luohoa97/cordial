@@ -1,0 +1,22 @@
+{
+  "tasks": {
+    "check": "deno run --allow-read check.ts",
+    "test": "deno test --allow-read --allow-run=openssl",
+    "serve": "deno run --allow-net --allow-env main.ts",
+    "post-picker": "deno run --allow-net --allow-env post_picker.ts"
+  },
+  "imports": {
+    "@std/assert": "jsr:@std/assert@^1.0.8",
+    "@std/yaml": "jsr:@std/yaml@^1.0.5"
+  },
+  "fmt": {
+    "lineWidth": 100
+  },
+  "lint": {
+    "rules": {
+      "tags": [
+        "recommended"
+      ]
+    }
+  }
+}
