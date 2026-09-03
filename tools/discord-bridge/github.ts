@@ -188,6 +188,38 @@ export class GitHub {
     await this.#call("PATCH", `/repos/${owner}/${repo}/issues/${number}`, { body }, true);
   }
 
+  /** One issue, for the close button to check who filed it. */
+  async issue(number: number): Promise<{ body: string | null; state: string; title: string }> {
+    const { owner, repo } = this.#repo;
+    const response = await this.#call(
+      "GET",
+      `/repos/${owner}/${repo}/issues/${number}`,
+      undefined,
+      true,
+    );
+    return await response.json();
+  }
+
+  /**
+   * Close or reopen an issue, and say *why* it closed.
+   *
+   * **Never `completed`.** A reporter saying "never mind" is not the same fact
+   * as the bug being fixed, and a tracker where those two look alike stops
+   * being able to answer "what did we actually fix".
+   */
+  async setIssueOpen(number: number, open: boolean, completed = false): Promise<void> {
+    const { owner, repo } = this.#repo;
+    await this.#call("PATCH", `/repos/${owner}/${repo}/issues/${number}`, {
+      state: open ? "open" : "closed",
+      // The reason is the whole point of separating the two buttons: a
+      // reporter saying "never mind" is `not_planned`, a maintainer saying
+      // "fixed" is `completed`, and a tracker that conflates them cannot
+      // answer what was actually fixed. `state_reason` is only meaningful on
+      // the way closed.
+      ...(open ? {} : { state_reason: completed ? "completed" : "not_planned" }),
+    }, true);
+  }
+
   async comment(number: number, body: string): Promise<void> {
     const { owner, repo } = this.#repo;
     await this.#call("POST", `/repos/${owner}/${repo}/issues/${number}/comments`, {

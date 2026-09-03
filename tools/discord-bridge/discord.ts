@@ -90,11 +90,23 @@ export class Discord {
    * rejected request on a text channel; the benefit is one less thing to
    * configure incorrectly.
    */
-  async openThread(channelId: string, name: string, opening: string): Promise<string> {
+  async openThread(
+    channelId: string,
+    name: string,
+    opening: string,
+    components?: unknown[],
+  ): Promise<string> {
+    // Components ride on the opening message itself in both shapes, so the
+    // controls are in the first post rather than a second one below it -- a
+    // forum post's starter message takes them when it is created with the
+    // thread, and a text-channel thread's is posted here anyway.
+    const message = components
+      ? { content: opening, components, flags: 1 << 15 }
+      : { content: opening };
     try {
       const forum = await this.#call("POST", `/channels/${channelId}/threads`, {
         name,
-        message: { content: opening },
+        message,
       });
       return (await forum.json()).id;
     } catch {
@@ -104,7 +116,7 @@ export class Discord {
         auto_archive_duration: 10080,
       });
       const id = (await thread.json()).id;
-      await this.post(id, opening);
+      await this.post(id, opening, components);
       return id;
     }
   }
@@ -119,6 +131,18 @@ export class Discord {
   async channelName(channelId: string): Promise<string> {
     const response = await this.#call("GET", `/channels/${channelId}`, undefined, true);
     return (await response.json()).name ?? "";
+  }
+
+  /**
+   * Archive or unarchive a thread.
+   *
+   * **Archived, never locked.** A locked thread can only be reopened by a
+   * moderator, which would strand the reporter the close button exists to
+   * serve; an archived one comes back the moment anybody posts in it. Closing
+   * an issue should tidy the thread away, not seal it.
+   */
+  async setArchived(threadId: string, archived: boolean): Promise<void> {
+    await this.#call("PATCH", `/channels/${threadId}`, { archived }, true);
   }
 
   async post(channelId: string, content: string, components?: unknown[]): Promise<void> {

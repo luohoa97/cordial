@@ -278,3 +278,145 @@ Deno.test("a follow-up that throws tells the reporter instead of hanging", async
   assertStringIncludes(content, "nothing was filed");
   assertStringIncludes(content, "GitHub is having a day");
 });
+
+/** An issue as GitHub returns it, paired to a Discord reporter. */
+function issueOwnedBy(reporterId: string | null, state = "open") {
+  return {
+    state,
+    title: "[Bug]: x",
+    body: reporterId
+      ? `text\n\n<!-- cordial-bridge thread=777 reporter=${reporterId} -->`
+      : "filed on the web, no marker",
+  };
+}
+
+function withIssue(issue: unknown) {
+  const f = fakes();
+  (f.context.github as unknown as { issue: () => Promise<unknown> }).issue = () =>
+    Promise.resolve(issue);
+  (f.context.github as unknown as { setIssueOpen: (...a: unknown[]) => Promise<void> })
+    .setIssueOpen = (...args: unknown[]) => {
+      f.calls.push({ what: "setIssueOpen", args });
+      return Promise.resolve();
+    };
+  (f.context.discord as unknown as { setArchived: (...a: unknown[]) => Promise<void> })
+    .setArchived = (...args: unknown[]) => {
+      f.calls.push({ what: "setArchived", args });
+      return Promise.resolve();
+    };
+  return f;
+}
+
+const press = (customId: string, extra: Record<string, unknown> = {}) => ({
+  type: InteractionType.MESSAGE_COMPONENT,
+  token: "tok",
+  channel_id: "777",
+  data: { custom_id: customId },
+  member: { user: { id: "9", username: "someone", global_name: "Someone" } },
+  ...extra,
+} as never);
+
+Deno.test("the reporter can close their own issue, and the thread follows it", async () => {
+  const f = withIssue(issueOwnedBy("9"));
+  const { after } = await handle(f.context, press("cordial-close:31"));
+  await after!();
+
+  const [closed] = f.of("setIssueOpen");
+  assertEquals(closed.args, [31, false, false], "closed, and not as completed");
+  assertEquals(f.of("setArchived")[0].args, ["777", true], "the thread is archived, not locked");
+  assertStringIncludes(f.of("comment")[0].args[1] as string, "Someone");
+});
+
+Deno.test("somebody else pressing close changes nothing", async () => {
+  // The custom_id is client-supplied and anyone who can see the message can
+  // press it, so the check has to be against the issue, not the button.
+  const f = withIssue(issueOwnedBy("1234567890"));
+  const { after } = await handle(f.context, press("cordial-close:31"));
+  await after!();
+
+  assertEquals(f.of("setIssueOpen").length, 0, "the issue must not move");
+  assertEquals(f.of("setArchived").length, 0);
+  assertStringIncludes(
+    (f.of("editOriginal")[0].args[1] as { content: string }).content,
+    "Only the person who filed this",
+  );
+});
+
+Deno.test("an issue filed on the web cannot be closed from Discord at all", async () => {
+  const f = withIssue(issueOwnedBy(null));
+  const { after } = await handle(f.context, press("cordial-close:31"));
+  await after!();
+  assertEquals(f.of("setIssueOpen").length, 0);
+  assertStringIncludes(
+    (f.of("editOriginal")[0].args[1] as { content: string }).content,
+    "not filed from Discord",
+  );
+});
+
+Deno.test("marking completed needs a permission the reporter does not have", async () => {
+  // "This is fixed" is a claim about the project; "I do not need this" is the
+  // reporter's own. They must not be the same button or the same permission.
+  const f = withIssue(issueOwnedBy("9"));
+  const { response, after } = await handle(f.context, press("cordial-fixed:31"));
+  assertEquals(after, undefined, "it must not even defer");
+  const body = response as { type: number; data: { content: string; flags: number } };
+  assertEquals(body.data.flags, 1 << 6);
+  assertStringIncludes(body.data.content, "helps run this server");
+});
+
+Deno.test("a maintainer marks it completed, and that is a different close", async () => {
+  const f = withIssue(issueOwnedBy("1234567890"));
+  const { after } = await handle(
+    f.context,
+    press("cordial-fixed:31", {
+      // Manage Messages. Not the reporter -- deliberately, because a
+      // maintainer may close an issue they did not file.
+      member: { user: { id: "maint", username: "m" }, permissions: String(1n << 13n) },
+    }),
+  );
+  await after!();
+  assertEquals(f.of("setIssueOpen")[0].args, [31, false, true], "closed as completed");
+});
+
+Deno.test("reopening puts the issue and the thread back", async () => {
+  const f = withIssue(issueOwnedBy("9", "closed"));
+  const { after } = await handle(f.context, press("cordial-reopen:31"));
+  await after!();
+  assertEquals(f.of("setIssueOpen")[0].args, [31, true, false]);
+  assertEquals(f.of("setArchived")[0].args, ["777", false], "unarchived before posting into it");
+});
+
+Deno.test("pressing close on an already-closed issue says so and does nothing", async () => {
+  const f = withIssue(issueOwnedBy("9", "closed"));
+  const { after } = await handle(f.context, press("cordial-close:31"));
+  await after!();
+  assertEquals(f.of("setIssueOpen").length, 0);
+  assertStringIncludes(
+    (f.of("editOriginal")[0].args[1] as { content: string }).content,
+    "already closed",
+  );
+});
+
+Deno.test("the thread's first message carries every control", async () => {
+  const f = fakes();
+  const { after } = await handle(f.context, {
+    type: InteractionType.MODAL_SUBMIT,
+    token: "tok",
+    data: {
+      custom_id: "cordial-issue:bug_report:main",
+      components: [{ type: 18, component: { custom_id: "diagnostics", value: "d" } }],
+    },
+    ...user,
+  } as never);
+  await after!();
+
+  // Fourth argument of openThread -- on the opening post, not a message below it.
+  const controls = f.of("openThread")[0].args[3] as { components: { custom_id: string }[] }[];
+  const ids = controls[0].components.map((c) => c.custom_id);
+  assertEquals(ids, [
+    "cordial-comment:12",
+    "cordial-fixed:12",
+    "cordial-close:12",
+    "cordial-reopen:12",
+  ]);
+});

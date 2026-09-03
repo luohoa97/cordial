@@ -20,7 +20,12 @@
 import { Discord, EPHEMERAL, InteractionType, modalValues, ResponseType } from "./discord.ts";
 import { ACTION_ROW, BUTTON, type IssueForm, modalFor } from "./issue_forms.ts";
 import { GitHub } from "./github.ts";
-import { renderIssueBody, renderIssueTitle, type Submission } from "./issue_body.ts";
+import {
+  renderIssueBody,
+  renderIssueTitle,
+  reporterFromBody,
+  type Submission,
+} from "./issue_body.ts";
 
 export interface Context {
   forms: () => Promise<IssueForm[]>;
@@ -48,7 +53,11 @@ interface Interaction {
     target_id?: string;
     resolved?: { messages?: Record<string, ResolvedMessage> };
   };
-  member?: { user?: { id: string; username: string; global_name?: string } };
+  member?: {
+    user?: { id: string; username: string; global_name?: string };
+    /** A decimal bitfield string, as Discord sends it. */
+    permissions?: string;
+  };
   user?: { id: string; username: string; global_name?: string };
 }
 
@@ -164,6 +173,36 @@ export async function handle(
       modal.custom_id = `cordial-issue:${form.slug}:extra:${rest[1]}`;
       return { response: { type: ResponseType.MODAL, data: modal } };
     }
+    if (verb === "cordial-close" || verb === "cordial-reopen" || verb === "cordial-fixed") {
+      const open = verb === "cordial-reopen";
+      const completed = verb === "cordial-fixed";
+      if (completed && !canSayItIsFixed(interaction)) {
+        return {
+          response: ephemeral(
+            "Only someone who helps run this server can mark an issue completed — " +
+              "that is a claim that it was fixed. If you filed it and simply do not " +
+              "need it any more, use **Close it**.",
+          ),
+        };
+      }
+      return {
+        response: deferred(),
+        after: reporting(
+          context,
+          interaction.token,
+          () =>
+            setIssueOpen(
+              context,
+              interaction,
+              Number(rest[0]),
+              reporter(interaction),
+              open,
+              completed,
+            ),
+        ),
+      };
+    }
+
     if (verb === "cordial-comment") {
       return {
         response: {
@@ -249,6 +288,49 @@ export async function handle(
   return { response: ephemeral("That control is not one this bot knows about.") };
 }
 
+/**
+ * Discord permission bits that mean "this person helps run the place".
+ *
+ * Used only to gate **Mark as completed**, which is a claim about the project
+ * rather than about the reporter's own intent -- "this is fixed" is not
+ * something the person who reported it gets to assert on everyone's behalf,
+ * and a tracker where it is stops being able to answer what was actually
+ * fixed.
+ */
+const MANAGE_MESSAGES = 1n << 13n;
+const MANAGE_THREADS = 1n << 34n;
+const ADMINISTRATOR = 1n << 3n;
+
+function canSayItIsFixed(interaction: Interaction): boolean {
+  const bits = interaction.member?.permissions;
+  if (!bits) return false;
+  let held: bigint;
+  try {
+    held = BigInt(bits);
+  } catch {
+    return false;
+  }
+  return (held & (MANAGE_MESSAGES | MANAGE_THREADS | ADMINISTRATOR)) !== 0n;
+}
+
+/** The controls that sit on an issue thread's first message. */
+function threadControls(number: number): unknown[] {
+  return [{
+    type: ACTION_ROW,
+    components: [
+      {
+        type: BUTTON,
+        style: 2,
+        label: "Comment on the issue",
+        custom_id: `cordial-comment:${number}`,
+      },
+      { type: BUTTON, style: 3, label: "Mark as completed", custom_id: `cordial-fixed:${number}` },
+      { type: BUTTON, style: 4, label: "Close it", custom_id: `cordial-close:${number}` },
+      { type: BUTTON, style: 2, label: "Reopen it", custom_id: `cordial-reopen:${number}` },
+    ],
+  }];
+}
+
 function unknownForm(slug: string): string {
   return `There is no form called \`${slug}\` any more. The buttons above may be ` +
     `out of date — ask a maintainer to repost them.`;
@@ -283,7 +365,9 @@ async function fileIssue(
       context.threadChannelId,
       `#${issue.number} ${title}`.slice(0, 100),
       `**${title}**\n${issue.html_url}\n\nFiled by ${submission.reporter.tag}. ` +
-        `Comments on the issue appear here; use the button on the issue message to reply.`,
+        `Comments on the issue appear here. To add something, right-click a message ` +
+        `→ Apps → "Add to the issue".`,
+      threadControls(issue.number),
     );
     await context.github.setIssueBody(
       issue.number,
@@ -368,4 +452,89 @@ async function addMessageToIssue(context: Context, interaction: Interaction): Pr
     `**${author}** in Discord:\n\n${text}${link}`,
   );
   await say(`Added to [#${number}](${context.repoUrl}/issues/${number}).`);
+}
+
+/**
+ * Let the person who filed an issue close it again.
+ *
+ * They cannot close it on GitHub -- having no account there is the whole
+ * reason the bridge exists -- so filing without closing is half a permission.
+ *
+ * **Who is allowed is read from the issue, not from the button.** A custom_id
+ * is client-supplied and anybody who can see the message can press it; the
+ * reporter's id lives in the issue body, which only the App can write. So the
+ * check is against the tracker's own record every time, and an issue filed on
+ * the web (no reporter in its marker) can never be closed from Discord at all.
+ *
+ * This does not take anything away from maintainers: closing as `not_planned`
+ * is an ordinary close and reopening is one click on GitHub.
+ */
+async function setIssueOpen(
+  context: Context,
+  interaction: { token: string; channel_id?: string },
+  number: number,
+  who: Submission["reporter"],
+  open: boolean,
+  completed = false,
+): Promise<void> {
+  const say = (content: string) => context.discord.editOriginal(interaction.token, { content });
+  const link = `[#${number}](${context.repoUrl}/issues/${number})`;
+
+  if (!Number.isInteger(number)) return await say("That button has lost its issue number.");
+
+  const issue = await context.github.issue(number);
+  if ((issue.state === "open") === open) {
+    return await say(`${link} is already ${open ? "open" : "closed"}.`);
+  }
+
+  // Marking something fixed is a maintainer's call and was already gated on
+  // Discord permissions, so it does not also have to be the reporter's issue.
+  if (!completed) {
+    const reporterId = reporterFromBody(issue.body);
+    if (!reporterId) {
+      return await say(
+        `${link} was not filed from Discord, so it cannot be changed from here. ` +
+          `Ask a maintainer, or use GitHub.`,
+      );
+    }
+    if (reporterId !== who.id) {
+      return await say(
+        `Only the person who filed this can ${open ? "reopen" : "close"} it from Discord. ` +
+          `A maintainer can do it on GitHub.`,
+      );
+    }
+  }
+
+  const what = completed ? "Marked completed" : open ? "Reopened" : "Closed";
+  await context.github.comment(
+    number,
+    `${what} by **${who.tag}** from Discord.`,
+  );
+  await context.github.setIssueOpen(number, open, completed);
+
+  // The thread follows the issue: tidied away when it is closed, back when it
+  // is not. Unarchiving first, because a message cannot be posted into an
+  // archived thread.
+  const thread = interaction.channel_id;
+  if (thread) {
+    try {
+      if (open) await context.discord.setArchived(thread, false);
+      await context.discord.post(
+        thread,
+        open
+          ? `**Reopened** by ${who.tag}. ${context.repoUrl}/issues/${number}`
+          : `**${what}** by ${who.tag}. Posting here brings the thread back if it turns ` +
+            `out not to be finished.`,
+      );
+      if (!open) await context.discord.setArchived(thread, true);
+    } catch (error) {
+      // The issue is the record; the thread is where it is discussed. Failing
+      // to tidy the thread must not undo a close that already happened.
+      console.error(`thread for #${number}: ${error}`);
+    }
+  }
+
+  await say(
+    open ? `Reopened ${link}.` : `${what} ${link} and archived the thread. Thanks for saying so.`,
+  );
 }

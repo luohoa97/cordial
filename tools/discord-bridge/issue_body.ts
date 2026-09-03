@@ -35,14 +35,37 @@ export interface Submission {
   reporter: { id: string; tag: string };
 }
 
-export function threadMarker(threadId: string): string {
-  return `<!-- ${MARKER} thread=${threadId} -->`;
+/**
+ * The hidden pairing line: which thread, and who filed it.
+ *
+ * The reporter's id is here rather than only in the prose above it because
+ * something has to *act* on it -- the close button checks the presser against
+ * it -- and parsing an identity out of a sentence a maintainer may reword is
+ * the kind of thing that works until somebody tidies the wording.
+ */
+export function threadMarker(threadId: string, reporterId?: string): string {
+  const who = reporterId ? ` reporter=${reporterId}` : "";
+  return `<!-- ${MARKER} thread=${threadId}${who} -->`;
 }
 
 /** The thread id a body was paired with, or null if it was never paired. */
 export function threadFromBody(body: string | null | undefined): string | null {
   const match = (body ?? "").match(
-    new RegExp(`<!--\\s*${MARKER}\\s+thread=(\\d{1,32})\\s*-->`),
+    new RegExp(`<!--\\s*${MARKER}\\s+thread=(\\d{1,32})`),
+  );
+  return match ? match[1] : null;
+}
+
+/**
+ * The Discord id of whoever filed this, or null.
+ *
+ * Null for an issue filed on the web, and for one filed by the bridge before
+ * the marker carried a reporter -- both must read as "nobody may close this
+ * from Discord" rather than as an error.
+ */
+export function reporterFromBody(body: string | null | undefined): string | null {
+  const match = (body ?? "").match(
+    new RegExp(`<!--\\s*${MARKER}\\s[^>]*?reporter=(\\d{1,32})`),
   );
   return match ? match[1] : null;
 }
@@ -78,7 +101,7 @@ export function renderIssueBody(
       `Replies posted here are relayed to them in the thread.`,
   );
 
-  if (threadId) parts.push(threadMarker(threadId));
+  if (threadId) parts.push(threadMarker(threadId, submission.reporter.id));
   return parts.join("\n\n");
 }
 
