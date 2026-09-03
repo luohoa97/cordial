@@ -216,6 +216,30 @@ async function validate(values: Record<string, string>): Promise<string[]> {
 
   if (!/^[0-9a-f]{64}$/i.test(values.DISCORD_PUBLIC_KEY)) {
     problems.push("DISCORD_PUBLIC_KEY is not 64 hex characters");
+  } else {
+    // **A public key from the wrong application is 64 valid hex characters.**
+    // It passes every shape check and then rejects every request Discord
+    // signs, and the only symptom is Discord refusing the interactions
+    // endpoint with "could not be verified" -- which reads as the endpoint
+    // being unreachable. That happened here: the key belonged to Cordial's
+    // Rich Presence application, whose page sits one click away in the same
+    // portal.
+    //
+    // `/applications/@me` returns the application's own `verify_key`, so the
+    // pairing is checkable and there is no excuse for guessing.
+    const app = await fetch("https://discord.com/api/v10/applications/@me", {
+      headers: { authorization: `Bot ${values.DISCORD_BOT_TOKEN}` },
+    });
+    if (app.ok) {
+      const { verify_key: key, name } = await app.json();
+      if (key && key !== values.DISCORD_PUBLIC_KEY) {
+        problems.push(
+          `DISCORD_PUBLIC_KEY is not ${name}'s key -- it is 64 valid hex ` +
+            `characters belonging to some other application. Copy it from ` +
+            `this application's General Information page.`,
+        );
+      }
+    }
   }
 
   for (const name of ["DISCORD_THREAD_CHANNEL_ID", "DISCORD_PICKER_CHANNEL_ID"]) {
