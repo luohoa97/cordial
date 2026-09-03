@@ -35,8 +35,18 @@ target-*/
 # ever lands here, but it stays local regardless.
 tools/sober-corpus/data/
 
-# The Discord bridge's configuration. Written 0600 by `deno task setup` and
-# holding a bot token and a GitHub App key in plaintext -- it must never be
-# committed, and the ignore is here rather than in a nested .gitignore so it
-# cannot be removed by deleting that directory's own file.
+# The Discord bridge's configuration and credentials. Written 0600 by
+# `deno task setup` and `create_github_app.ts`, and holding a bot token, a
+# GitHub App private key and a webhook secret in plaintext. These must never be
+# committed, and the ignores are here rather than in a nested .gitignore so
+# they cannot be removed by deleting that directory's own file.
+#
+# **The .pem and the .env beside it were untracked and unignored for an hour**
+# after the App was created, which `git add -A` would have committed. The
+# patterns below are deliberately broader than the three exact names, because
+# the next credential this directory acquires will not be called any of them.
 tools/discord-bridge/.env
+tools/discord-bridge/*.pem
+tools/discord-bridge/*.key
+tools/discord-bridge/*-app.env
+tools/discord-bridge/.env.*
