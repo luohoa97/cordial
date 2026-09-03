@@ -43,6 +43,18 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # **Before the Deno steps, not after.** The bridge's `yaml` dependency
+      # comes from npm so that the same import works under Workers' bundler,
+      # and Deno resolves it out of `node_modules` -- so a `deno task` run
+      # before this fails with "Could not find yaml in a node_modules folder".
+      # That is exactly how this workflow failed on its first run.
+      - name: Install the Worker's dependencies
+        working-directory: tools/discord-bridge
+        run: npm ci --no-audit --no-fund
 
       - name: Do the issue forms still fit a modal?
         working-directory: tools/discord-bridge
@@ -55,15 +67,6 @@ jobs:
       - name: deno lint and fmt
         working-directory: tools/discord-bridge
         run: deno lint && deno fmt --check
-
-      # `npm ci` rather than `deno install`: wrangler bundles from
-      # `node_modules` and `package-lock.json` is what pins it there.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Install the Worker's dependencies
-        working-directory: tools/discord-bridge
-        run: npm install --no-audit --no-fund
 
       - name: Deploy
         working-directory: tools/discord-bridge

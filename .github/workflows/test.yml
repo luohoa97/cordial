@@ -69,6 +69,15 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # The bridge's `yaml` comes from npm so the same import resolves under
+      # Cloudflare Workers' bundler, and Deno reads it from `node_modules` --
+      # so this has to run before any `deno task`.
+      - name: Install the bridge's dependencies
+        working-directory: tools/discord-bridge
+        run: npm ci --no-audit --no-fund
       - name: Do the issue forms still fit a modal?
         working-directory: tools/discord-bridge
         run: deno task check
