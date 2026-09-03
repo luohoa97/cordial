@@ -30,7 +30,11 @@
  * two of the five templates have more fields than that, and which ones give
  * way is a decision that has to be visible.
  */
-import { parse as parseYaml } from "jsr:@std/yaml@^1.0.5";
+// npm `yaml` rather than `jsr:@std/yaml`, because a `jsr:` specifier does not
+// resolve under Cloudflare Workers' bundler and the bridge has to run on both.
+// Deno takes it through the import map below; wrangler takes it from
+// node_modules.
+import { parse as parseYaml } from "yaml";
 
 export const ACTION_ROW = 1;
 export const BUTTON = 2;

@@ -50,3 +50,4 @@ tools/discord-bridge/*.pem
 tools/discord-bridge/*.key
 tools/discord-bridge/*-app.env
 tools/discord-bridge/.env.*
+tools/discord-bridge/node_modules/

@@ -1,0 +1,12 @@
+{
+  "name": "cordial-issue-bridge",
+  "private": true,
+  "type": "module",
+  "//": "For wrangler only. Deno resolves the same dependency through deno.json's import map, so the two must name the same version -- there is a test that pins it.",
+  "dependencies": {
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

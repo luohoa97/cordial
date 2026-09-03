@@ -1,4 +1,3 @@
-#!/usr/bin/env -S deno run --allow-net --allow-env
 /**
  * The bridge, as one stateless HTTP handler.
  *
@@ -6,6 +5,15 @@
  * `POST /github` for the issue-comment webhook. No database, no gateway
  * connection, no background work -- so it runs anywhere a request can be
  * served, and losing the instance loses nothing.
+ *
+ * ## Why the configuration is passed in rather than read here
+ *
+ * **This module used to call `Deno.env.get` directly, and that quietly tied it
+ * to one host.** Cloudflare Workers has no `Deno` and hands configuration to
+ * the fetch handler as a second argument instead; a module that reaches for a
+ * global at import time cannot run there at all. Passing a plain record in
+ * means the same `build` serves both, and the host-specific part is the ten
+ * lines of adapter in `serve_deno.ts` and `worker.ts`.
  *
  * See ADR-030 for why it is shaped this way, and `README.md` beside this file
  * for what has to be set up before it will do anything.
@@ -17,16 +25,22 @@ import { Templates } from "./templates.ts";
 import { importPublicKey, verifyRequest } from "./verify.ts";
 import { relayFor, verifyGitHubSignature } from "./webhook.ts";
 
-function required(name: string): string {
-  const value = Deno.env.get(name);
-  if (!value) {
-    console.error(`${name} is not set; see tools/discord-bridge/README.md`);
-    Deno.exit(2);
-  }
-  return value;
-}
+/** Whatever the host calls configuration: `Deno.env.toObject()`, or a Worker's `env`. */
+export type Env = Record<string, string | undefined>;
 
-export async function build() {
+export class ConfigError extends Error {}
+
+export async function build(source: Env) {
+  // Throws rather than exits, because on a Worker there is no process to exit
+  // and the message has to reach a log instead.
+  const required = (name: string): string => {
+    const value = source[name];
+    if (!value) {
+      throw new ConfigError(`${name} is not set; see tools/discord-bridge/README.md`);
+    }
+    return value;
+  };
+
   const owner = required("GITHUB_OWNER");
   const repo = required("GITHUB_REPO");
   const repoUrl = `https://github.com/${owner}/${repo}`;
@@ -52,8 +66,8 @@ export async function build() {
   const templates = new Templates({
     owner,
     repo,
-    ref: Deno.env.get("GITHUB_REF_NAME") ?? "main",
-    token: Deno.env.get("GITHUB_READ_TOKEN"),
+    ref: source.GITHUB_REF_NAME ?? "main",
+    token: source.GITHUB_READ_TOKEN,
   });
 
   const context = {
@@ -66,7 +80,7 @@ export async function build() {
 
   const discordKey = await importPublicKey(required("DISCORD_PUBLIC_KEY"));
   const webhookSecret = required("GITHUB_WEBHOOK_SECRET");
-  const selfLogin = Deno.env.get("GITHUB_APP_LOGIN") ?? `${repo}-bridge`;
+  const selfLogin = source.GITHUB_APP_LOGIN ?? `${repo}-bridge`;
 
   return async function serve(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -126,18 +140,4 @@ export async function build() {
 
     return new Response("not found", { status: 404 });
   };
-}
-
-const handler = await build();
-
-/**
- * The handler as a plain `Request -> Response`, which is what every host that
- * matters speaks: Deno Deploy, Cloudflare Workers and Bun all take a default
- * export with a `fetch`. Exporting it rather than only calling `Deno.serve`
- * means there is one file and no per-host shim to keep in step.
- */
-export default { fetch: handler };
-
-if (import.meta.main) {
-  Deno.serve({ port: Number(Deno.env.get("PORT") ?? 8000) }, handler);
 }

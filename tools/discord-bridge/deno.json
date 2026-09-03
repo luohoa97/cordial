@@ -1,14 +1,15 @@
 {
   "tasks": {
-    "check": "deno run --allow-read check.ts",
-    "test": "deno test --allow-read --allow-run=openssl",
-    "serve": "deno run --allow-net --allow-env main.ts",
+    "check": "deno run --allow-read --allow-env check.ts",
+    "test": "deno test --allow-read --allow-env --allow-run=openssl",
+    "serve": "deno run --allow-net --allow-env --allow-read serve_deno.ts",
     "post-picker": "deno run --allow-net --allow-env post_picker.ts",
-    "setup": "deno run --allow-net --allow-read --allow-write --allow-env setup.ts"
+    "setup": "deno run --allow-net --allow-read --allow-write --allow-env setup.ts",
+    "deploy": "npx wrangler deploy"
   },
   "imports": {
     "@std/assert": "jsr:@std/assert@^1.0.8",
-    "@std/yaml": "jsr:@std/yaml@^1.0.5"
+    "yaml": "npm:yaml@^2.8.1"
   },
   "fmt": {
     "lineWidth": 100

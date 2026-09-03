@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cordial-issues",
+  "main": "worker.ts",
+  "compatibility_date": "2026-09-03",
+  // The bridge is Web Crypto, `fetch` and nothing else -- no Node built-ins --
+  // so `nodejs_compat` is deliberately absent. Adding it would pull in a
+  // polyfill layer for code that does not ask for one.
+  // Every value the bridge needs is a secret or an account id, and none of
+  // them belong in a committed file. They are uploaded with
+  // `wrangler secret bulk` from the gitignored `.env`; README.md lists all
+  // twelve. There is deliberately no `vars` block here to tempt anybody.
+  "observability": { "enabled": true }
+}
