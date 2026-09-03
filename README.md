@@ -934,7 +934,7 @@ Plugins; they are listed there whether or not you have ever installed anything.
 | | What it does | On by default |
 |---|---|---|
 | **FPS Flex** | Takes the frame-rate cap off. Roblox's Android build asks for FIFO, which pins drawing to your display's refresh — right on a phone, wrong on a desktop with a faster panel. | **No** |
-| **Discord Presence** | Shows on your Discord profile that you are in Cordial. It cannot name the game yet — no core event carries which place is running, so it says "Using Cordial". The application it appears as is configurable in the plugin's settings. | No |
+| **Discord Presence** | Shows on your Discord profile what you are playing: the experience's name, its creator, its cover art, and buttons to join the same server or open the game's page. A game that speaks BloxstrapRPC sets its own text and picture instead. The application it appears as is configurable in the plugin's settings. | No |
 | **Flag Inspector** | Logs which FastFlags are in effect and where each came from. A diagnostic, not a feature. | No |
 
 FPS Flex ships switched off on purpose rather than out of caution: uncapping
@@ -944,6 +944,28 @@ heat and battery. Turning it on is one click and it takes effect next launch.
 Nothing runs until you enable it, and a plugin only gets the permissions you
 approve, per profile. Approving something in a profile you made to try it out
 does not approve it in the profile you actually play on.
+
+### Plugins need Deno, and Cordial will fetch it
+
+Plugins are TypeScript run under [Deno](https://deno.com)
+([ADR-008](docs/adr/ADR-008-plugins-are-typescript-on-deno.md)), so there has to
+be an interpreter on the machine. **Arch is the only distribution that packages
+one**, and Cordial's AUR packages depend on it; Fedora and Debian ship none, and
+inside the Flatpak there is no host to install one on at all.
+
+So where there is no `deno` on `PATH`, **Settings → Plugins** shows a row
+offering to download it, and that row is absent on a machine that already has
+one. The download is a pinned Deno release with its checksum written into
+Cordial's source, verified before the file is put in place, and it lands under
+Cordial's own data directory rather than anywhere system-wide. It is about
+39 MB and you only do it once.
+
+If you would rather install it yourself, any `deno` on `PATH` is used in
+preference to the downloaded one.
+
+**Before 0.13.1 there was no interpreter and no row**, so on every install
+except a hand-built one with Deno already present, plugins were listed, granted
+and switched on without ever running a line.
 
 ### Installing somebody else's plugin
 

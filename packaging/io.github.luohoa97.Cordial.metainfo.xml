@@ -72,12 +72,33 @@
   -->
   <releases>
     <!--
-      **This list is eight releases stale below, and 0.13.0 is the first entry
+      **This list is eight releases stale below, and 0.13.0 was the first entry
       added since 0.5.2.** The comment above asks for it to be kept in step and
       it was not; backfilling 0.6 through 0.12 from their notes is worth doing
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.13.1" date="2026-09-03">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.13.1</url>
+      <description>
+        <p>
+          Plugins can run. No package Cordial ships installed or bundled Deno,
+          which plugins are written in, so they could not start on any install
+          that did not already have one. Settings now offers to fetch a pinned
+          interpreter where none is present, and the Arch package depends on
+          it properly.
+        </p>
+        <p>
+          The AppImage can open a web view again; it bundled WebKit without the
+          helper processes WebKit looks for by absolute path. Fixes a flash of
+          the window background when chat opens, and a plugin consent prompt
+          that asked again every time Settings was opened. The FastFlags editor
+          is syntax-coloured and reports errors as you type, and Discord
+          presence shows a game's own art with a default for games that send
+          none.
+        </p>
+      </description>
+    </release>
     <release version="0.13.0" date="2026-09-01">
       <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.13.0</url>
       <description>
