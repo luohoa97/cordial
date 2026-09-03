@@ -34,6 +34,21 @@ import { TEMPLATE_DIR } from "./repo.ts";
 const HERE = new URL(".", import.meta.url).pathname;
 const ENV_PATH = `${HERE}.env`;
 
+/**
+ * The Rich Presence application, which this must never be pointed at.
+ *
+ * `plugins/discord-presence/main.ts` publishes every user's "Playing Cordial"
+ * under this id, and its icon is the picture they see. `configureApplication`
+ * below sets the icon and description of whatever application the token
+ * belongs to -- so running setup against this one would replace the Rich
+ * Presence artwork with the bot's googly-eyed avatar, for everybody, and the
+ * only symptom would be users asking why the logo changed.
+ *
+ * Found by opening the developer portal and noticing the existing "Cordial"
+ * application was this one. Nothing in the code would have stopped it.
+ */
+const RICH_PRESENCE_APPLICATION_ID = "1543200871767212062";
+
 interface Setting {
   name: string;
   prompt: string;
@@ -185,6 +200,14 @@ async function validate(values: Record<string, string>): Promise<string[]> {
         `DISCORD_APPLICATION_ID is ${values.DISCORD_APPLICATION_ID} but the bot's id is ${bot.id}`,
       );
     }
+  }
+
+  if (values.DISCORD_APPLICATION_ID === RICH_PRESENCE_APPLICATION_ID) {
+    problems.push(
+      "DISCORD_APPLICATION_ID is Cordial's Rich Presence application. The bridge " +
+        "needs its own: setup sets the icon and description, and on that one it " +
+        'would replace the artwork every user sees on "Playing Cordial".',
+    );
   }
 
   if (!/^[0-9a-f]{64}$/i.test(values.DISCORD_PUBLIC_KEY)) {

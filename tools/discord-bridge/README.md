@@ -49,6 +49,12 @@ It asks for each value, checks every one against the live API before writing any
 `.env` at `0600`. Secrets are read without echo and never printed back. If anything is wrong it
 names the setting and what the API said, and writes nothing.
 
+**Give the bridge its own application.** Cordial already has one — `1543200871767212062`, which
+`plugins/discord-presence/main.ts` publishes every user's "Playing Cordial" under. Setup sets the
+icon and description of whatever application the token belongs to, so pointing it at that one would
+replace the artwork every user sees. The script refuses that id by name; the reason it has to is
+that nothing else would have caught it.
+
 **Two steps are not automatable and no script can make them so.** Discord has no endpoint that
 creates an application — checked against their resource documentation on 2026-09-03; there is a get
 and an edit and nothing that makes one — and no Dynamic Client Registration either. So creating the
