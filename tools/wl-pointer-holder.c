@@ -15,10 +15,17 @@
 // So: create the pointer, then block on stdin and keep it. One command per
 // line, so a shell script can drive a whole interaction:
 //
-//     move <x> <y>      absolute, in output coordinates
-//     down | up         left button
-//     click             down then up
+//     move <x> <y>            absolute, in output coordinates
+//     down|up|click [button]  button is left (default), right or middle
 //     quit
+//
+// **The button argument is not a convenience.** Left was the only one this
+// sent, and left is the one button Cordial's pointer lock deliberately does
+// *not* capture for -- a left drag is how every slider and scrollbar in
+// Roblox's own interface is used. So the capture path could not be driven
+// from here at all: the right-button camera drag, the lock it takes and the
+// stale request it leaves behind were all untestable with the instrument
+// that existed, which is why they shipped on reading alone.
 //
 // Prints "ok" per command so a caller can synchronise instead of sleeping.
 #include <linux/input-event-codes.h>
@@ -60,22 +67,37 @@ int main(int argc, char **argv) {
     char line[256];
     while (fgets(line, sizeof line, stdin)) {
         unsigned x, y;
+        char which[16] = "";
         clock_ms += 16;
         if (sscanf(line, "move %u %u", &x, &y) == 2) {
             zwlr_virtual_pointer_v1_motion_absolute(ptr, clock_ms, x, y, width, height);
             zwlr_virtual_pointer_v1_frame(ptr);
-        } else if (!strncmp(line, "down", 4)) {
-            zwlr_virtual_pointer_v1_button(ptr, clock_ms, BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
-            zwlr_virtual_pointer_v1_frame(ptr);
-        } else if (!strncmp(line, "up", 2)) {
-            zwlr_virtual_pointer_v1_button(ptr, clock_ms, BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
-            zwlr_virtual_pointer_v1_frame(ptr);
-        } else if (!strncmp(line, "click", 5)) {
-            zwlr_virtual_pointer_v1_button(ptr, clock_ms, BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
-            zwlr_virtual_pointer_v1_frame(ptr);
-            clock_ms += 16;
-            zwlr_virtual_pointer_v1_button(ptr, clock_ms, BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
-            zwlr_virtual_pointer_v1_frame(ptr);
+        } else if (!strncmp(line, "down", 4) || !strncmp(line, "up", 2)
+                   || !strncmp(line, "click", 5)) {
+            // An unknown name is refused rather than quietly taken as left.
+            // A test that meant to drag with the right button and silently
+            // dragged with the left would pass against the wrong gesture.
+            const char *arg = strpbrk(line, " \t");
+            unsigned button = BTN_LEFT;
+            if (arg && sscanf(arg, "%15s", which) == 1 && *which) {
+                if (!strcmp(which, "right")) button = BTN_RIGHT;
+                else if (!strcmp(which, "middle")) button = BTN_MIDDLE;
+                else if (strcmp(which, "left")) {
+                    printf("err unknown button %s\n", which); fflush(stdout);
+                    continue;
+                }
+            }
+            if (strncmp(line, "up", 2) != 0) {
+                zwlr_virtual_pointer_v1_button(ptr, clock_ms, button,
+                                               WL_POINTER_BUTTON_STATE_PRESSED);
+                zwlr_virtual_pointer_v1_frame(ptr);
+            }
+            if (strncmp(line, "down", 4) != 0) {
+                clock_ms += 16;
+                zwlr_virtual_pointer_v1_button(ptr, clock_ms, button,
+                                               WL_POINTER_BUTTON_STATE_RELEASED);
+                zwlr_virtual_pointer_v1_frame(ptr);
+            }
         } else if (!strncmp(line, "quit", 4)) {
             break;
         }

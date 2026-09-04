@@ -172,6 +172,27 @@ fn handle(line: &str) -> String {
         "ping" => "ok".into(),
         "info" => info_line(),
         "textbox" => textbox_line(),
+        // Every input to the pointer-lock decision, including the engine's own
+        // answer *before* the right-drag latch is applied to it. See
+        // `wayland::pointer_lock_report` for why reading a trace line instead
+        // was not a measurement.
+        "pointerlock" => crate::android::wayland::pointer_lock_report(),
+        // A test seam for the one input to the lock decision that cannot be
+        // produced from outside a game. See `input::FAKE_ENGINE_LOCK` for what
+        // a reading taken with it set does and does not establish.
+        "fakeenginelock" => match it.next() {
+            Some(v @ ("true" | "false" | "clear")) => {
+                let code = match v {
+                    "true" => 2,
+                    "false" => 1,
+                    _ => 0,
+                };
+                crate::android::input::FAKE_ENGINE_LOCK
+                    .store(code, std::sync::atomic::Ordering::Relaxed);
+                format!("ok fakeenginelock={v}")
+            }
+            _ => "err fakeenginelock <true|false|clear>".into(),
+        },
         // `natives <class>` -- what the engine registered on a Java class, as
         // opposed to what it exported. See `registered_natives`' own doc for
         // the weeks-old wrong conclusion this exists to settle.

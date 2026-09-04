@@ -1143,7 +1143,34 @@ pub fn set_mouse_lock_native(native: *mut c_void) {
 /// every other `NativeInputInterface` native here is called with — see
 /// `native/game_activity.cpp`'s `cordial_input_mouse_move`, which passes the
 /// class object in exactly this position.
+/// The `fakeenginelock` override: 0 off, 1 force false, 2 force true.
+///
+/// See [`engine_wants_pointer_lock`] for what a reading taken with this set is
+/// and is not evidence of.
+pub static FAKE_ENGINE_LOCK: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
 pub fn engine_wants_pointer_lock() -> Option<bool> {
+    // **A test seam, and it tests Cordial and not the engine.** 0 is off, 1
+    // false, 2 true. Nothing sets it but the `fakeenginelock` control verb,
+    // which is only reachable with `CORDIAL_DEV_CONTROL=1`.
+    //
+    // It exists because the state machine around this answer cannot otherwise
+    // be exercised at all. The comment above says why: this getter has never
+    // been observed returning true, because that needs first person or shift
+    // lock and cannot be had from the home page. The right-drag latch keys
+    // entirely off a false-then-true transition, so without a seam the only
+    // available evidence for it is reading the code -- which is how it shipped
+    // and how its own wedge got in.
+    //
+    // What a run with this on proves is that Cordial reacts correctly to that
+    // transition. That the engine *makes* it stays `INFERRED`, from mocktail's
+    // `window_pointer_capture_owner.cc` documenting the same behaviour, and
+    // nothing here upgrades that.
+    match FAKE_ENGINE_LOCK.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => return Some(false),
+        2 => return Some(true),
+        _ => {}
+    }
     let f = GET_MOUSE_LOCKED_CENTER.load(std::sync::atomic::Ordering::Relaxed);
     if f.is_null() {
         return None;

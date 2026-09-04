@@ -1148,37 +1148,6 @@ pub struct WaylandWindow {
     /// atomic word rather than taking a mutex on the hottest input path.
     pointer_pos: AtomicU64,
     pointer_buttons: AtomicI32,
-    /// Whether the engine already wanted the pointer *before* the right button
-    /// went down, and the two flags that follow from it.
-    ///
-    /// **`nativeGetMainWindowIsMouseLockedCenter` starts answering true as
-    /// soon as Roblox sees the right button press**, whether or not the box
-    /// was locked before -- mocktail documents the same behaviour in
-    /// `src/window/window_pointer_capture_owner.cc` and works around it the
-    /// same way (Apache-2.0; the state machine is adapted, not the code). So
-    /// on release, `dragging` goes false while `engine_wants` is still true
-    /// from the drag itself, `sync_pointer_lock` reads that as first person,
-    /// and the pointer stays captured after an ordinary camera drag with no
-    /// way to tell it apart from a real lock.
-    lock_wanted_before_right_drag: AtomicBool,
-    /// Set on a right-button release that was *only* a drag. While it is set
-    /// the engine's own answer is disregarded, until it reads false once and
-    /// proves the drag's true has expired.
-    await_engine_unlock_after_right_drag: AtomicBool,
-    /// Shift pressed during a right drag engages shift lock, which is a real
-    /// lock that must survive the release the drag does not.
-    shift_during_right_drag: AtomicBool,
-    /// `now_ms` when `await_engine_unlock_after_right_drag` was set, or 0.
-    ///
-    /// **The latch needs a way out, and this is it.** Disregarding the
-    /// engine's answer is only sound while the answer is a leftover from the
-    /// drag, and that expires as soon as Roblox processes the button-up --
-    /// a frame or two. If it has not expired after a second, the premise is
-    /// wrong for this case: the player entered first person *during* the drag,
-    /// say by scrolling in, so the engine means it. Holding the latch then
-    /// would kill the camera for good with nothing on screen to explain it,
-    /// which is the same shape as the Escape latch this release just removed.
-    right_drag_latch_since: AtomicI64,
     down_time_ms: AtomicI64,
     clock: std::time::Instant,
 
@@ -1790,10 +1759,6 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         xkb: Mutex::new(None),
         pointer_pos: AtomicU64::new(pack_pointer_position(0.0, 0.0)),
         pointer_buttons: AtomicI32::new(0),
-        lock_wanted_before_right_drag: AtomicBool::new(false),
-        await_engine_unlock_after_right_drag: AtomicBool::new(false),
-        shift_during_right_drag: AtomicBool::new(false),
-        right_drag_latch_since: AtomicI64::new(0),
         down_time_ms: AtomicI64::new(0),
         clock: std::time::Instant::now(),
         ime: Mutex::new(ImeState {
@@ -2989,6 +2954,7 @@ impl WaylandWindow {
 
         if press {
             let before = self.pointer_buttons.fetch_or(android_button, Ordering::Relaxed);
+            LAST_POINTER_BUTTONS.store(before | android_button, Ordering::Relaxed);
             if before == 0 {
                 self.down_time_ms.store(now, Ordering::Relaxed);
             }
@@ -3003,6 +2969,7 @@ impl WaylandWindow {
         } else {
             self.pointer_buttons.fetch_and(!android_button, Ordering::Relaxed);
             let buttons = self.pointer_buttons.load(Ordering::Relaxed);
+            LAST_POINTER_BUTTONS.store(buttons, Ordering::Relaxed);
             let down_time = self.down_time_ms.load(Ordering::Relaxed);
             if handle != 0 {
                 super::input::deliver_mouse(
@@ -3034,20 +3001,20 @@ impl WaylandWindow {
             // second".
             if press {
                 let already = super::input::engine_wants_pointer_lock() == Some(true)
-                    && !self.await_engine_unlock_after_right_drag.load(Ordering::Acquire);
-                self.lock_wanted_before_right_drag.store(already, Ordering::Release);
-                self.shift_during_right_drag.store(false, Ordering::Release);
+                    && !AWAIT_ENGINE_UNLOCK_AFTER_RIGHT_DRAG.load(Ordering::Acquire);
+                LOCK_WANTED_BEFORE_RIGHT_DRAG.store(already, Ordering::Release);
+                SHIFT_DURING_RIGHT_DRAG.store(false, Ordering::Release);
             } else {
                 // Shift pressed mid-drag engages shift lock, which is a real
                 // lock and outlives the drag; without this the release would
                 // discard it and the camera would come unstuck a moment after
                 // the player asked for it to stick.
-                let shift_locked = self.shift_during_right_drag.load(Ordering::Acquire)
+                let shift_locked = SHIFT_DURING_RIGHT_DRAG.load(Ordering::Acquire)
                     && super::input::engine_wants_pointer_lock() == Some(true);
                 let survives =
-                    self.lock_wanted_before_right_drag.load(Ordering::Acquire) || shift_locked;
-                self.await_engine_unlock_after_right_drag.store(!survives, Ordering::Release);
-                self.right_drag_latch_since
+                    LOCK_WANTED_BEFORE_RIGHT_DRAG.load(Ordering::Acquire) || shift_locked;
+                AWAIT_ENGINE_UNLOCK_AFTER_RIGHT_DRAG.store(!survives, Ordering::Release);
+                RIGHT_DRAG_LATCH_SINCE
                     .store(if survives { 0 } else { self.now_ms() }, Ordering::Relaxed);
                 if !survives && super::input::trace_mouse() {
                     eprintln!(
@@ -3055,8 +3022,8 @@ impl WaylandWindow {
                          disregarding the engine's request until it reads false once"
                     );
                 }
-                self.lock_wanted_before_right_drag.store(false, Ordering::Release);
-                self.shift_during_right_drag.store(false, Ordering::Release);
+                LOCK_WANTED_BEFORE_RIGHT_DRAG.store(false, Ordering::Release);
+                SHIFT_DURING_RIGHT_DRAG.store(false, Ordering::Release);
             }
             self.sync_pointer_lock();
         } else if android_button == super::input::BUTTON_TERTIARY {
@@ -3520,6 +3487,38 @@ impl WaylandWindow {
 /// that is never going to arrive.
 static POINTER_LOCK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Whether the engine already wanted the pointer *before* the right button
+/// went down, and the two flags that follow from it.
+///
+/// **`nativeGetMainWindowIsMouseLockedCenter` starts answering true as
+/// soon as Roblox sees the right button press**, whether or not the box
+/// was locked before -- mocktail documents the same behaviour in
+/// `src/window/window_pointer_capture_owner.cc` and works around it the
+/// same way (Apache-2.0; the state machine is adapted, not the code). So
+/// on release, `dragging` goes false while `engine_wants` is still true
+/// from the drag itself, `sync_pointer_lock` reads that as first person,
+/// and the pointer stays captured after an ordinary camera drag with no
+/// way to tell it apart from a real lock.
+static LOCK_WANTED_BEFORE_RIGHT_DRAG: AtomicBool = AtomicBool::new(false);
+/// Set on a right-button release that was *only* a drag. While it is set
+/// the engine's own answer is disregarded, until it reads false once and
+/// proves the drag's true has expired.
+static AWAIT_ENGINE_UNLOCK_AFTER_RIGHT_DRAG: AtomicBool = AtomicBool::new(false);
+/// Shift pressed during a right drag engages shift lock, which is a real
+/// lock that must survive the release the drag does not.
+static SHIFT_DURING_RIGHT_DRAG: AtomicBool = AtomicBool::new(false);
+/// `now_ms` when `await_engine_unlock_after_right_drag` was set, or 0.
+///
+/// **The latch needs a way out, and this is it.** Disregarding the
+/// engine's answer is only sound while the answer is a leftover from the
+/// drag, and that expires as soon as Roblox processes the button-up --
+/// a frame or two. If it has not expired after a second, the premise is
+/// wrong for this case: the player entered first person *during* the drag,
+/// say by scrolling in, so the engine means it. Holding the latch then
+/// would kill the camera for good with nothing on screen to explain it,
+/// which is the same shape as the Escape latch this release just removed.
+static RIGHT_DRAG_LATCH_SINCE: AtomicI64 = AtomicI64::new(0);
+
 /// Set when the user presses Escape out of a lock, and cleared only once
 /// nothing wants the lock any more.
 ///
@@ -3877,7 +3876,7 @@ impl WaylandWindow {
         // moment it sees the press, so after a drag that was only a drag its
         // answer has to read false once before it means anything again.
         if !engine_says {
-            if self.await_engine_unlock_after_right_drag.swap(false, Ordering::AcqRel)
+            if AWAIT_ENGINE_UNLOCK_AFTER_RIGHT_DRAG.swap(false, Ordering::AcqRel)
                 && super::input::trace_mouse()
             {
                 eprintln!(
@@ -3885,9 +3884,9 @@ impl WaylandWindow {
                      right-drag leftover has expired; honouring it again"
                 );
             }
-            self.right_drag_latch_since.store(0, Ordering::Relaxed);
+            RIGHT_DRAG_LATCH_SINCE.store(0, Ordering::Relaxed);
         }
-        let mut ignoring = self.await_engine_unlock_after_right_drag.load(Ordering::Acquire);
+        let mut ignoring = AWAIT_ENGINE_UNLOCK_AFTER_RIGHT_DRAG.load(Ordering::Acquire);
 
         // **A latch that never lifts has to say so and let go.** See
         // `right_drag_latch_since`: a leftover `true` expires within a frame or
@@ -3898,10 +3897,10 @@ impl WaylandWindow {
         // it corrects: the camera comes back late, nobody knows why, and the
         // next person to see it has nothing to search for.
         if ignoring {
-            let since = self.right_drag_latch_since.load(Ordering::Relaxed);
+            let since = RIGHT_DRAG_LATCH_SINCE.load(Ordering::Relaxed);
             if since != 0 && self.now_ms().saturating_sub(since) > 1_000 {
-                self.await_engine_unlock_after_right_drag.store(false, Ordering::Release);
-                self.right_drag_latch_since.store(0, Ordering::Relaxed);
+                AWAIT_ENGINE_UNLOCK_AFTER_RIGHT_DRAG.store(false, Ordering::Release);
+                RIGHT_DRAG_LATCH_SINCE.store(0, Ordering::Relaxed);
                 ignoring = false;
                 eprintln!(
                     "[android] wayland: the engine has wanted the pointer for a second \
@@ -4047,6 +4046,7 @@ fn constrain_toplevel() -> bool {
 }
 
     fn lock_pointer(&self) {
+        POINTER_LOCK_REQUESTED.store(true, Ordering::Release);
         let mut slot = self.locked_pointer.lock().unwrap_or_else(|e| e.into_inner());
         if !slot.is_null() {
             return;
@@ -4130,6 +4130,7 @@ fn constrain_toplevel() -> bool {
     /// which after a long camera drag is not where the person looking at the
     /// screen thinks it is.
     fn release_pointer(&self) {
+        POINTER_LOCK_REQUESTED.store(false, Ordering::Release);
         let mut slot = self.locked_pointer.lock().unwrap_or_else(|e| e.into_inner());
         if slot.is_null() {
             return;
@@ -4210,6 +4211,64 @@ fn constrain_toplevel() -> bool {
         Some(true)
     }
 }
+
+/// Every input to the pointer-lock decision, for the control socket.
+///
+/// **There was no readback at all before this, and three behavioural changes
+/// shipped without one.** The Escape toggle, the right-drag latch and its
+/// timeout were each argued from reading the code, because the only visible
+/// signal was a `CORDIAL_TRACE_MOUSE` line written in the same commit as the
+/// behaviour -- which tests that the `eprintln!` runs, not that the lock did
+/// anything. `cordial_textbox` exists for the same reason on the text side and
+/// the argument is identical: a screenshot cannot see a compositor's pointer
+/// constraint any more than it can see a GTK widget.
+///
+/// `engine` is the engine's own answer, before the latch is applied, so a
+/// caller can see the two disagree. That is the whole of what the latch does
+/// and it is invisible from any other vantage point.
+///
+/// `requested` and `confirmed` are deliberately separate; see
+/// [`POINTER_LOCK_REQUESTED`]. Cordial decides the first and the compositor
+/// decides the second, and a caller testing Cordial wants the first.
+pub(crate) fn pointer_lock_report() -> String {
+    let engine = match super::input::engine_wants_pointer_lock() {
+        Some(v) => if v { "true" } else { "false" },
+        None => "unavailable",
+    };
+    format!(
+        "ok requested={} confirmed={} suppressed={} engine={engine} \
+         awaiting_drag_unlock={} shift_in_drag={} on_canvas={} buttons={}",
+        POINTER_LOCK_REQUESTED.load(Ordering::Acquire),
+        POINTER_LOCK_ACTIVE.load(Ordering::Acquire),
+        POINTER_LOCK_SUPPRESSED.load(Ordering::Acquire),
+        AWAIT_ENGINE_UNLOCK_AFTER_RIGHT_DRAG.load(Ordering::Acquire),
+        SHIFT_DURING_RIGHT_DRAG.load(Ordering::Acquire),
+        POINTER_ON_CANVAS.load(Ordering::Acquire),
+        LAST_POINTER_BUTTONS.load(Ordering::Relaxed),
+    )
+}
+
+/// Whether a `zwp_locked_pointer_v1` currently exists, as opposed to whether
+/// the compositor has confirmed it.
+///
+/// **These are two states and conflating them cost a whole test run.** The
+/// object is created the moment Cordial asks; `POINTER_LOCK_ACTIVE` is set only
+/// when the compositor sends `locked`, and it may never send it -- the protocol
+/// gives it no way to refuse, so silence is the refusal. A headless nested sway
+/// is silent for every request, so a harness asserting on `POINTER_LOCK_ACTIVE`
+/// measures the compositor and reports it as a verdict on Cordial's decision,
+/// which is the broken instrument AGENTS.md opens with.
+///
+/// Everything the lock *decides* -- the Escape toggle, the right-drag latch,
+/// its timeout -- lands here. What the compositor then does with it is a
+/// separate fact and is reported separately.
+static POINTER_LOCK_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// The buttons the Wayland handler last saw held, mirrored out of the window so
+/// [`pointer_lock_report`] can quote them beside the lock state. A report that
+/// said "not locked" without saying whether a button was even down would leave
+/// the reader unable to tell a bug from a test that failed to press anything.
+static LAST_POINTER_BUTTONS: AtomicI32 = AtomicI32::new(0);
 
 /// So a compositor that declines to lock says so once rather than every second.
 static LOCK_REFUSAL_REPORTED: AtomicBool = AtomicBool::new(false);
@@ -4658,7 +4717,7 @@ impl WaylandWindow {
             && matches!(evdev_key, Self::KEY_LEFTSHIFT | Self::KEY_RIGHTSHIFT)
             && self.pointer_buttons.load(Ordering::Relaxed) & super::input::BUTTON_SECONDARY != 0
         {
-            self.shift_during_right_drag.store(true, Ordering::Release);
+            SHIFT_DURING_RIGHT_DRAG.store(true, Ordering::Release);
         }
 
         const KEY_ESC: u32 = 1;
