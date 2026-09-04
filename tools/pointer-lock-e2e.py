@@ -34,11 +34,18 @@ before it.
 
 **What this does not establish.** Two things, and neither is small.
 
-The engine's own request cannot be produced outside a game -- reaching first
-person needs a signed-in account and a joined experience -- so the false-to-true
-transition the latch keys on comes from the `fakeenginelock` seam. Cordial's
-reaction to that transition is measured here. That the engine *makes* it stays
-`INFERRED` from mocktail's `window_pointer_capture_owner.cc`.
+The engine's own request needs a signed-in account and a joined experience, so
+the false-to-true transition the latch keys on comes from the `fakeenginelock`
+seam. Cordial's reaction to that transition is measured here.
+
+**A hand-run first-person session on 2026-09-04 supplied the rest, and it
+disagreed with the seam's premise.** On engine 2.736.0.1408, scrolling into
+first person took the engine's answer to true and Cordial requested the lock;
+Escape dropped it and a second Escape took it back. But holding the right button
+in third person left the answer *false* for the whole drag -- so the
+false-to-true crossing this file simulates is not something that build was seen
+to do. See `wayland::LOCK_WANTED_BEFORE_RIGHT_DRAG`. The seam still tests the
+state machine; it no longer stands in for observed engine behaviour.
 
 And a headless nested sway never confirms a constraint: it answers no request
 with `locked`, which the protocol permits and gives it no way to announce. So

@@ -1133,11 +1133,27 @@ pub fn set_mouse_lock_native(native: *mut c_void) {
 ///
 /// So it resolves, it is called every pump, it answers, and it does not throw —
 /// the `FAILED` latch below never fires and `None` is never returned for that
-/// reason. **The dead-getter branch is closed.** What is still unmeasured is
-/// whether it ever answers `true`, which needs a session in first person or
-/// shift lock and cannot be had from the home page. Until one is run the
-/// *engine-driven* half of pointer capture stays `INFERRED` in that narrower
-/// sense, and the drag-driven half is not.
+/// reason. **The dead-getter branch is closed.**
+///
+/// **And it answers `true`, observed 2026-09-04.** This used to say the true
+/// case was unmeasured and that the engine-driven half of pointer capture was
+/// `INFERRED` until somebody ran a session in first person. One was: a signed-in
+/// profile, a joined experience, the camera scrolled in, on engine
+/// 2.736.0.1408 under a nested sway. `pointerlock` went from `engine=false` to
+/// `engine=true` on the scroll and Cordial requested the lock in response, and
+/// back to false on scrolling out. The engine-driven half is measured now.
+///
+/// Two things that came out of the same session and are worth having here,
+/// because both contradict something this tree believed:
+///
+/// - **Escape makes the engine stop asking.** It is Roblox's menu key and
+///   still reaches the engine, and opening the menu drops the request:
+///   `engine=true` before, `engine=false` immediately after, `true` again when
+///   a second Escape closes the menu. See
+///   `wayland::toggle_pointer_lock_suppression`.
+/// - **A right-button press does not make the engine ask.** Held in third
+///   person it stayed `engine=false` for the whole drag. mocktail documents
+///   the opposite for its build; see `wayland::LOCK_WANTED_BEFORE_RIGHT_DRAG`.
 ///
 /// Called through `call_static_bare_bool`, the same `(JNIEnv*, jclass)` shape
 /// every other `NativeInputInterface` native here is called with — see

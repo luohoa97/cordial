@@ -17,7 +17,13 @@
 //
 //     move <x> <y>            absolute, in output coordinates
 //     down|up|click [button]  button is left (default), right or middle
+//     scroll <notches>        vertical wheel; negative scrolls up (zooms in)
 //     quit
+//
+// Scroll is here because first person is behind it. Roblox zooms the camera in
+// on the wheel, and first person is the only state where the engine asks for
+// the pointer of its own accord -- so without a wheel the engine-driven half
+// of pointer capture cannot be reached at all on a machine with no real mouse.
 //
 // **The button argument is not a convenience.** Left was the only one this
 // sent, and left is the one button Cordial's pointer lock deliberately does
@@ -97,6 +103,23 @@ int main(int argc, char **argv) {
                 zwlr_virtual_pointer_v1_button(ptr, clock_ms, button,
                                                WL_POINTER_BUTTON_STATE_RELEASED);
                 zwlr_virtual_pointer_v1_frame(ptr);
+            }
+        } else if (!strncmp(line, "scroll", 6)) {
+            int notches = 0;
+            if (sscanf(line, "scroll %d", &notches) != 1 || notches == 0) {
+                printf("err scroll <notches>\n"); fflush(stdout);
+                continue;
+            }
+            // Both the discrete step and the continuous value, because clients
+            // take one or the other and Roblox's is not documented here. 15 is
+            // wl_pointer's conventional pixels-per-detent.
+            int step = notches > 0 ? 1 : -1;
+            for (int i = 0; i < (notches > 0 ? notches : -notches); i++) {
+                zwlr_virtual_pointer_v1_axis_discrete(
+                    ptr, clock_ms, WL_POINTER_AXIS_VERTICAL_SCROLL,
+                    wl_fixed_from_int(step * 15), step);
+                zwlr_virtual_pointer_v1_frame(ptr);
+                clock_ms += 16;
             }
         } else if (!strncmp(line, "quit", 4)) {
             break;

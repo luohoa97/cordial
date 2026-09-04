@@ -3490,15 +3490,30 @@ static POINTER_LOCK_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Whether the engine already wanted the pointer *before* the right button
 /// went down, and the two flags that follow from it.
 ///
-/// **`nativeGetMainWindowIsMouseLockedCenter` starts answering true as
-/// soon as Roblox sees the right button press**, whether or not the box
-/// was locked before -- mocktail documents the same behaviour in
-/// `src/window/window_pointer_capture_owner.cc` and works around it the
-/// same way (Apache-2.0; the state machine is adapted, not the code). So
-/// on release, `dragging` goes false while `engine_wants` is still true
-/// from the drag itself, `sync_pointer_lock` reads that as first person,
-/// and the pointer stays captured after an ordinary camera drag with no
-/// way to tell it apart from a real lock.
+/// mocktail's `src/window/window_pointer_capture_owner.cc` records that
+/// `nativeGetMainWindowIsMouseLockedCenter` starts answering true as soon as
+/// Roblox sees the right button press, whether or not the box was locked
+/// before, and works around it this way (Apache-2.0; the state machine is
+/// adapted, not the code). If that holds, then on release `dragging` goes
+/// false while `engine_wants` is still true from the drag itself,
+/// `sync_pointer_lock` reads that as first person, and the pointer stays
+/// captured after an ordinary camera drag.
+///
+/// **It did not reproduce here, and that is measured rather than assumed.**
+/// On engine 2.736.0.1408, in a joined experience in third person, holding the
+/// right button left `pointerlock` reading `engine=false` for the whole drag
+/// and after it. One build, one game, one camera state -- so this is not a
+/// refutation of mocktail's note, which may be about a different build or a
+/// game that sets `MouseBehavior` itself. It does mean the bookkeeping below
+/// is defending against something nothing here has yet seen happen.
+///
+/// It is kept rather than deleted because it costs nothing when the engine
+/// does not do this -- the latch only engages on a false-to-true crossing
+/// across a drag, which never occurred in that session -- and because it has a
+/// timeout, so the failure mode if the premise is wrong is a second of delay
+/// and a printed line, not a dead camera. Measured in the same session: a
+/// right drag *inside* first person left `awaiting_drag_unlock` false and
+/// `requested` true throughout, so it does not disturb a real lock either.
 static LOCK_WANTED_BEFORE_RIGHT_DRAG: AtomicBool = AtomicBool::new(false);
 /// Set on a right-button release that was *only* a drag. While it is set
 /// the engine's own answer is disregarded, until it reads false once and
