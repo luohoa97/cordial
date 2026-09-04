@@ -2057,8 +2057,11 @@ pub mod game_activity {
     /// about Roblox's platform API and is taken as one; the values this
     /// struct actually carries were captured from Cordial's own boxes and are
     /// not mocktail's. See the long comment on `CordialTextBoxInfo` in
-    /// `native/android_classes.cpp` for the rest of the reasoning, including
-    /// why `i9`/`i10`/`i11` are equally settled now but not renamed here.
+    /// `native/android_classes.cpp` for the rest of the reasoning, and for
+    /// what these names are evidence of: two positional readings of the same
+    /// constructor agreeing, not a reflection of the real Java class.
+    ///
+    /// Every slot but the fifteenth carries a name as of 2026-09-04.
     #[repr(C)]
     #[derive(Clone, Copy, Debug, Default, PartialEq)]
     pub struct RawTextBoxInfo {
@@ -2076,7 +2079,11 @@ pub mod game_activity {
         pub height: f32,
         /// `INFERRED`; see [`RawTextBoxInfo::height`].
         pub font_size: f32,
-        pub z5: i32,
+        /// Roblox's `TextBox.MultiLine`. Slot 5, settled 2026-09-04 by
+        /// mocktail's constructor placing `textWrapped` at slot 13 -- which
+        /// leaves 5 as the only candidate this project's own captures could
+        /// not rule out. See `CordialTextBoxInfo` for both halves.
+        pub multiline: i32,
         /// Roblox's `Enum.TextXAlignment`: `Left` = 0, `Center` = 1,
         /// `Right` = 2 -- Roblox's own published scripting-API ordinals.
         /// Confirmed as slot 6 by mocktail's constructor field order; see this
@@ -2088,19 +2095,23 @@ pub mod game_activity {
         /// Packed ARGB. Observed `0xffd5d5dd` on both login boxes, which is
         /// what identified this slot: nothing else in the class is a colour.
         pub text_color: i32,
-        pub i9: i32,
-        /// One of the two ints that varied between the two login boxes; the
-        /// other is [`RawTextBoxInfo::i11`]. Consistent with `textInputType`
-        /// and `returnKeyType` in some order, `INFERRED` and not yet worth a
-        /// name.
-        pub i10: i32,
-        /// See [`RawTextBoxInfo::i10`].
-        pub i11: i32,
+        /// Roblox's font id for this box. Slot 9, which is what
+        /// `editor_font::font_slot` already defaulted to.
+        pub font: i32,
+        /// Roblox's own input-type enum, not Android's `InputType`: the two
+        /// login boxes reported 5 and 7, which are far too small for Android's
+        /// packed class-plus-variation words. Slot 10.
+        pub text_input_type: i32,
+        /// Which action key the box asks for -- the two login boxes differed
+        /// here, Next against Done. Slot 11.
+        pub return_key_type: i32,
         /// Observed 1 on two single-line login fields, so this is *not*
         /// `multiline` — that is slot 5 or slot 13. Settling which wants a box
         /// that genuinely differs, such as an in-experience chat entry.
-        pub z12: i32,
-        pub z13: i32,
+        /// Slot 12. Both login boxes reported 1.
+        pub manual_focus_release: i32,
+        /// Slot 13, which is what settles [`RawTextBoxInfo::multiline`].
+        pub text_wrapped: i32,
         /// The fifteenth constructor slot. The dex signature is
         /// `(FFFFFZIIIIIIZZZ)` -- three trailing booleans, not two -- and
         /// omitting this one made the whole hook fail to match. Unnamed
@@ -2576,9 +2587,10 @@ pub mod game_activity {
             #[allow(clippy::too_many_arguments)]
             fn cordial_textbox_test_focus(
                 handle: i64, text: *const c_char,
-                f0: f32, f1: f32, f2: f32, f3: f32, f4: f32, z5: c_int,
-                i6: c_int, i7: c_int, i8: c_int, i9: c_int, i10: c_int, i11: c_int,
-                z12: c_int, z13: c_int, z14: c_int,
+                f0: f32, f1: f32, f2: f32, f3: f32, f4: f32, multiline: c_int,
+                x_alignment: c_int, y_alignment: c_int, text_color: c_int,
+                font: c_int, text_input_type: c_int, return_key_type: c_int,
+                manual_focus_release: c_int, text_wrapped: c_int, z14: c_int,
             );
         }
 
@@ -2617,9 +2629,10 @@ pub mod game_activity {
                 focused_textbox_info(),
                 Some(RawTextBoxInfo {
                     x: 1.5, y: 2.5, width: 3.5, height: 4.5, font_size: 5.5,
-                    z5: 1,
-                    x_alignment: 6, y_alignment: 7, text_color: 8, i9: 9, i10: 10, i11: 11,
-                    z12: 0, z13: 1, z14: 1,
+                    multiline: 1,
+                    x_alignment: 6, y_alignment: 7, text_color: 8,
+                    font: 9, text_input_type: 10, return_key_type: 11,
+                    manual_focus_release: 0, text_wrapped: 1, z14: 1,
                 })
             );
 

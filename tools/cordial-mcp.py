@@ -277,14 +277,14 @@ TOOLS = [
             "CORDIAL_TRACE_TEXT_SHOW_PASSWORDS is set on the client, because a focused "
             "field is as often a password box as a search bar; the character count is not, "
             "and it is what catches a key being inserted twice. "
-            "It also reports xAlign/yAlign (Roblox's TextXAlignment/TextYAlignment, "
-            "confirmed via mocktail's NativeTextBoxInfo constructor field order, "
-            "2026-08-30) and the three remaining unnamed constructor slots (i9 i10 i11), "
-            "which of them Cordial is reading as the font id (fontSlot, confirmed as slot "
-            "9), and the font family that resolved out of it. i10/i11 (textInputType, "
-            "returnKeyType) are settled by the same evidence but nothing downstream reads "
-            "them yet, so a restyled TextBox in a game and a default box side by side is "
-            "still the way to catch a build that renumbers the constructor again."
+            "It also reports the named constructor slots -- xAlign/yAlign, multiline, "
+            "textInputType, returnKeyType, textWrapped -- which Cordial is reading as the "
+            "font id (fontSlot, slot 9), and the font family that resolved out of it. "
+            "Every slot but the fifteenth carries a name as of 2026-09-04, from mocktail's "
+            "NativeTextBoxInfo constructor agreeing with this project's own reading of the "
+            "same argument order. That is corroboration and not proof -- both are "
+            "positional -- so a restyled TextBox in a game and a default box side by side "
+            "is still the way to catch a build that renumbers the constructor."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },

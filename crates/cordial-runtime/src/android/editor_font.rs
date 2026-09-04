@@ -297,9 +297,9 @@ pub fn slot_value(
     match slot {
         6 => Some(info.x_alignment),
         7 => Some(info.y_alignment),
-        9 => Some(info.i9),
-        10 => Some(info.i10),
-        11 => Some(info.i11),
+        9 => Some(info.font),
+        10 => Some(info.text_input_type),
+        11 => Some(info.return_key_type),
         _ => None,
     }
 }
@@ -774,9 +774,9 @@ mod tests {
             x_alignment: 606,
             y_alignment: 707,
             text_color: 808,
-            i9: 909,
-            i10: 1010,
-            i11: 1111,
+            font: 909,
+            text_input_type: 1010,
+            return_key_type: 1111,
             ..Default::default()
         };
         assert_eq!(slot_value(&info, 6), Some(606));
@@ -888,10 +888,10 @@ mod tests {
             x_alignment: 0,
             y_alignment: 1,
             text_color: 0xffd5_d5ddu32 as i32,
-            i9: 46,
-            i10: 7,
-            i11: 3,
-            z12: 1,
+            font: 46,
+            text_input_type: 7,
+            return_key_type: 3,
+            manual_focus_release: 1,
             ..Default::default()
         };
         assert_eq!(slot_value(&username, DEFAULT_FONT_SLOT), Some(46));

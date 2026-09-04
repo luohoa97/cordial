@@ -1148,6 +1148,26 @@ pub struct WaylandWindow {
     /// atomic word rather than taking a mutex on the hottest input path.
     pointer_pos: AtomicU64,
     pointer_buttons: AtomicI32,
+    /// Whether the engine already wanted the pointer *before* the right button
+    /// went down, and the two flags that follow from it.
+    ///
+    /// **`nativeGetMainWindowIsMouseLockedCenter` starts answering true as
+    /// soon as Roblox sees the right button press**, whether or not the box
+    /// was locked before -- mocktail documents the same behaviour in
+    /// `src/window/window_pointer_capture_owner.cc` and works around it the
+    /// same way (Apache-2.0; the state machine is adapted, not the code). So
+    /// on release, `dragging` goes false while `engine_wants` is still true
+    /// from the drag itself, `sync_pointer_lock` reads that as first person,
+    /// and the pointer stays captured after an ordinary camera drag with no
+    /// way to tell it apart from a real lock.
+    lock_wanted_before_right_drag: AtomicBool,
+    /// Set on a right-button release that was *only* a drag. While it is set
+    /// the engine's own answer is disregarded, until it reads false once and
+    /// proves the drag's true has expired.
+    await_engine_unlock_after_right_drag: AtomicBool,
+    /// Shift pressed during a right drag engages shift lock, which is a real
+    /// lock that must survive the release the drag does not.
+    shift_during_right_drag: AtomicBool,
     down_time_ms: AtomicI64,
     clock: std::time::Instant,
 
@@ -1759,6 +1779,9 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         xkb: Mutex::new(None),
         pointer_pos: AtomicU64::new(pack_pointer_position(0.0, 0.0)),
         pointer_buttons: AtomicI32::new(0),
+        lock_wanted_before_right_drag: AtomicBool::new(false),
+        await_engine_unlock_after_right_drag: AtomicBool::new(false),
+        shift_during_right_drag: AtomicBool::new(false),
         down_time_ms: AtomicI64::new(0),
         clock: std::time::Instant::now(),
         ime: Mutex::new(ImeState {
@@ -2250,18 +2273,20 @@ impl WaylandWindow {
             // `showKeyboard`'s spec is in the log but is not what gets used
             // when the getter or the fallback supplies the geometry instead.
             //
-            // **All five candidate ints, on the same line as the family that
-            // was resolved from whichever one is selected.** `xAlign`/`yAlign`
-            // (slots 6/7) and the font slot (9) are confirmed rather than
-            // candidates now -- mocktail's `NativeTextBoxInfo` constructor
-            // field order, credited in `RawTextBoxInfo`'s own doc comment --
-            // but `i10`/`i11` stay printed numerically alongside the resolved
-            // family for the same reason they always were: with the candidates
-            // and the outcome side by side, whichever int moved *and* changed
-            // the family is the field, and this line is the whole experiment.
-            // Split across two lines or two sources it would need correlating
-            // by hand, which is how the last five candidates survived a
-            // capture each.
+            // **Every named slot, on the same line as the family resolved
+            // from the font one.** The slots stopped being candidates on
+            // 2026-09-04 -- see `RawTextBoxInfo` -- but the line keeps all of
+            // them together rather than shrinking to the two that are read,
+            // because that is what made the naming possible: with the whole
+            // spec and the outcome side by side, whichever int moved *and*
+            // changed the family is the field. Split across two lines or two
+            // sources it would need correlating by hand, which is how the last
+            // five candidates survived a capture each.
+            //
+            // `multiline` earns its place here for a different reason: nothing
+            // downstream lays a box out differently for it yet, so this line is
+            // the only way to find out whether a box that reports it is also a
+            // box that looks wrong.
             let (slot, id, family, ratio) = match (super::editor_font::font_slot(), face.as_ref()) {
                 (Some(slot), Some((id, face))) => {
                     (slot.to_string(), id.to_string(), face.family.clone(), face.from_rbx_font_ratio)
@@ -2273,11 +2298,13 @@ impl WaylandWindow {
             };
             eprintln!(
                 "[cordial] text editor placed from {} x={} y={} w={} h={} \
-                 xAlign={} yAlign={} i9={} i10={} i11={} fontSlot={slot} fontId={id} family={family:?} \
+                 xAlign={} yAlign={} multiline={} textInputType={} returnKeyType={} \
+                 textWrapped={} fontSlot={slot} fontId={id} family={family:?} \
                  fontSize={} fromRbxFontRatio={ratio} drawnFontSize={}",
                 placed.source(),
                 info.x, info.y, info.width, info.height,
-                info.x_alignment, info.y_alignment, info.i9, info.i10, info.i11,
+                info.x_alignment, info.y_alignment, info.multiline,
+                info.text_input_type, info.return_key_type, info.text_wrapped,
                 info.font_size, info.font_size * ratio,
             );
         }
@@ -2309,7 +2336,12 @@ impl WaylandWindow {
             font_family: face.as_ref().map(|(_, f)| f.family.as_str()),
             font_weight: face.as_ref().map_or(400, |(_, f)| f.weight),
             font_italic: face.as_ref().is_some_and(|(_, f)| f.italic),
-            password: matches!(info.i10, 5 | 9 | 10),
+            // Slot 10 is `textInputType`, named on 2026-09-04; the three
+            // values are the ones observed on boxes that masked their text.
+            // Roblox's own enum, not Android's `InputType` -- see the field.
+            password: matches!(info.text_input_type, 5 | 9 | 10),
+            // Passed through and, for now, only *reported*. See `TextOverlay`.
+            multiline: info.multiline != 0,
             // Only the placed bar draws its own chrome. An editor held at the
             // previous box's place is still sitting on a real field and must
             // not suddenly grow a background.
@@ -2982,9 +3014,32 @@ impl WaylandWindow {
         // engine's drawn cursor remained centred. At this point the button
         // event still proves pointer focus on the canvas, which is exactly
         // when the compositor can honour `lock_pointer`.
-        if android_button == super::input::BUTTON_SECONDARY
-            || android_button == super::input::BUTTON_TERTIARY
-        {
+        if android_button == super::input::BUTTON_SECONDARY {
+            // See `lock_wanted_before_right_drag`. Recorded on the press,
+            // because by the time the button comes up the engine's answer has
+            // been contaminated by the drag itself and there is nothing left
+            // to distinguish "was in first person" from "held right for a
+            // second".
+            if press {
+                let already = super::input::engine_wants_pointer_lock() == Some(true)
+                    && !self.await_engine_unlock_after_right_drag.load(Ordering::Acquire);
+                self.lock_wanted_before_right_drag.store(already, Ordering::Release);
+                self.shift_during_right_drag.store(false, Ordering::Release);
+            } else {
+                // Shift pressed mid-drag engages shift lock, which is a real
+                // lock and outlives the drag; without this the release would
+                // discard it and the camera would come unstuck a moment after
+                // the player asked for it to stick.
+                let shift_locked = self.shift_during_right_drag.load(Ordering::Acquire)
+                    && super::input::engine_wants_pointer_lock() == Some(true);
+                let survives =
+                    self.lock_wanted_before_right_drag.load(Ordering::Acquire) || shift_locked;
+                self.await_engine_unlock_after_right_drag.store(!survives, Ordering::Release);
+                self.lock_wanted_before_right_drag.store(false, Ordering::Release);
+                self.shift_during_right_drag.store(false, Ordering::Release);
+            }
+            self.sync_pointer_lock();
+        } else if android_button == super::input::BUTTON_TERTIARY {
             self.sync_pointer_lock();
         }
     }
@@ -3796,7 +3851,16 @@ impl WaylandWindow {
         // control run answers "what would it have done" rather than only "it
         // did nothing". A control that also turns off the instrumentation is
         // not a control, it is a second unknown.
-        let engine_wants = super::input::engine_wants_pointer_lock() == Some(true);
+        let engine_says = super::input::engine_wants_pointer_lock() == Some(true);
+        // A `true` left over from a right-button drag is not a request. See
+        // `lock_wanted_before_right_drag`: the engine answers true from the
+        // moment it sees the press, so after a drag that was only a drag its
+        // answer has to read false once before it means anything again.
+        if !engine_says {
+            self.await_engine_unlock_after_right_drag.store(false, Ordering::Release);
+        }
+        let engine_wants = engine_says
+            && !self.await_engine_unlock_after_right_drag.load(Ordering::Acquire);
         if self.pointer_constraints.is_null() || no_pointer_lock() {
             return;
         }
@@ -4059,16 +4123,40 @@ fn constrain_toplevel() -> bool {
         }
     }
 
-    /// The Escape hatch, in both senses. Returns whether a lock was actually
-    /// released, so the caller can say so.
-    fn escape_pointer_lock(&self) -> bool {
+    /// The Escape hatch, in both senses -- and a **toggle**, not a one-way
+    /// door. Returns `Some(true)` when it took the cursor back, `Some(false)`
+    /// when it handed it to the engine again, and `None` when there was
+    /// nothing to do.
+    ///
+    /// **It used to latch, and that was the bug.** The latch lifted only when
+    /// nothing was asking for the lock any more, and in first person nothing
+    /// ever stops asking -- so one press of Escape killed the camera until the
+    /// player left first person, with no way back. Escape is also Roblox's own
+    /// menu key and still reaches the engine, so the sequence people actually
+    /// hit was: press Escape for the menu, close the menu, discover the camera
+    /// no longer turns. Reported as exactly that confusion.
+    ///
+    /// As a toggle the two meanings agree instead of fighting. Escape opens
+    /// the menu and gives the cursor back; Escape closes the menu and takes it
+    /// again. The cursor stays free for as long as somebody wants it -- which
+    /// is the case the hatch exists for, a dialog the game put in the middle
+    /// of the screen while first person holds the pointer -- and it comes back
+    /// on the same key rather than on a state change nobody can see.
+    fn toggle_pointer_lock_suppression(&self) -> Option<bool> {
+        if POINTER_LOCK_SUPPRESSED.swap(false, Ordering::AcqRel) {
+            // Re-engage now rather than waiting for the next pump, for the
+            // same reason `dispatch_pointer_button` does: a pump is up to 50ms
+            // away and the gap is visible as a camera that answers late.
+            self.sync_pointer_lock();
+            return Some(false);
+        }
         let held = !self.locked_pointer.lock().unwrap_or_else(|e| e.into_inner()).is_null();
         if !held {
-            return false;
+            return None;
         }
         POINTER_LOCK_SUPPRESSED.store(true, Ordering::Release);
         self.release_pointer();
-        true
+        Some(true)
     }
 }
 
@@ -4498,19 +4586,39 @@ impl WaylandWindow {
             (keysym, unicode, n.max(0) as usize, text_buf, meta)
         };
 
-        // Escape gives the cursor back, and the key still reaches the engine.
+        // Escape toggles the cursor, and the key still reaches the engine.
         //
         // Deliberately not a combination nobody would find. The one thing a
         // person tries when an application has taken their pointer is Escape,
         // and a hatch that has to be looked up is a hatch that is not there
         // when it is needed. Escape already means "leave what I am doing" in
-        // Roblox, so it is also the key whose ordinary meaning agrees.
+        // Roblox, so it is also the key whose ordinary meaning agrees -- and
+        // because the key reaches the engine as well, the menu it opens and
+        // the cursor it frees move together. See
+        // `toggle_pointer_lock_suppression` for why this had to stop being
+        // one-way.
         //
         // `keysym` is not used for this: the lock is a physical-key affair and
         // `KEY_ESC` is 1 in evdev, whatever the layout has made of it.
+        // Shift while the right button is held is shift lock being engaged
+        // mid-drag. Noted here so the release can tell that apart from a plain
+        // camera drag -- see `shift_during_right_drag`.
+        if down
+            && matches!(evdev_key, Self::KEY_LEFTSHIFT | Self::KEY_RIGHTSHIFT)
+            && self.pointer_buttons.load(Ordering::Relaxed) & super::input::BUTTON_SECONDARY != 0
+        {
+            self.shift_during_right_drag.store(true, Ordering::Release);
+        }
+
         const KEY_ESC: u32 = 1;
-        if down && evdev_key == KEY_ESC && self.escape_pointer_lock() {
-            eprintln!("[android] wayland: Escape released the pointer lock");
+        if down && evdev_key == KEY_ESC {
+            match self.toggle_pointer_lock_suppression() {
+                Some(true) => eprintln!("[android] wayland: Escape released the pointer lock"),
+                Some(false) => {
+                    eprintln!("[android] wayland: Escape handed the pointer back to the engine")
+                }
+                None => {}
+            }
         }
 
         // This window has no GtkApplication accelerator group: the launcher's

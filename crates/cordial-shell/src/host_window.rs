@@ -329,6 +329,17 @@ pub struct TextOverlay<'a> {
     /// its own, so this is applied by resizing the widget rather than by
     /// setting an attribute.
     pub y_alignment: i32,
+    /// Roblox's `TextBox.MultiLine`, from constructor slot 5.
+    ///
+    /// **The editor is still a single-line `gtk::Text` when this is true, and
+    /// that is a known gap rather than a decision.** What it changes today is
+    /// only [`vertical_placement`]: a `Top`- or `Bottom`-aligned single-line
+    /// box is shrunk to one line's natural height and anchored, which is right
+    /// for a one-line field and wrong for a chat entry that is four lines tall
+    /// -- it would draw the editor as a one-line strip at the top or bottom of
+    /// a box the engine drew full height. Leaving the rectangle alone is the
+    /// smaller error of the two until there is a real multi-line editor.
+    pub multiline: bool,
 }
 
 /// GTK's `Editable::set_alignment` fraction for Roblox's `xAlignment`: `0.0`
@@ -379,7 +390,19 @@ fn gtk_xalign(x_alignment: i32) -> f32 {
 /// box this project has focused has ever used anything but `Center`. Treat
 /// the `Top`/`Bottom` branches as **`UNVERIFIED`** end to end for that reason;
 /// [`vertical_placement_tests`] covers the arithmetic, not a live box.
-fn vertical_placement(y_alignment: i32, box_y: i32, box_h: i32, natural_h: i32) -> (i32, i32) {
+fn vertical_placement(
+    y_alignment: i32,
+    box_y: i32,
+    box_h: i32,
+    natural_h: i32,
+    multiline: bool,
+) -> (i32, i32) {
+    // A multi-line box has no single "the line" to anchor, and `natural_h` is
+    // one line of the editor -- so every branch below would shrink a tall box
+    // to a strip. See `TextOverlay::multiline`.
+    if multiline {
+        return (box_y, box_h);
+    }
     let h = natural_h.clamp(1, box_h.max(1));
     match y_alignment {
         0 => (box_y, h),
@@ -903,7 +926,7 @@ impl HostWindow {
         // project has ever measured) leaves `y`/`h` exactly as they arrived,
         // so this changes nothing for every box checked in docs/NEXT.md.
         let (_, natural_h, _, _) = self.editor.measure(gtk::Orientation::Vertical, -1);
-        let (y, h) = vertical_placement(overlay.y_alignment, y, h, natural_h);
+        let (y, h) = vertical_placement(overlay.y_alignment, y, h, natural_h, overlay.multiline);
 
         self.editor.set_size_request(w, h);
         self.text_layer.move_(&self.editor, x as f64, y as f64);
@@ -1541,23 +1564,44 @@ mod tests {
     #[test]
     fn vertical_placement_centre_is_untouched_top_and_bottom_anchor() {
         assert_eq!(
-            vertical_placement(1, 10, 22, 13),
+            vertical_placement(1, 10, 22, 13, false),
             (10, 22),
             "Centre must pass y/h through unchanged -- this is the measured case"
         );
         assert_eq!(
-            vertical_placement(0, 10, 22, 13),
+            vertical_placement(0, 10, 22, 13, false),
             (10, 13),
             "Top anchors the natural height at the box's own top"
         );
         assert_eq!(
-            vertical_placement(2, 10, 22, 13),
+            vertical_placement(2, 10, 22, 13, false),
             (19, 13),
             "Bottom anchors it at the box's own bottom: 10 + (22 - 13)"
         );
         // An unrecognised ordinal must be as inert as Centre, not stretch or
         // shrink the widget to something nobody asked for.
-        assert_eq!(vertical_placement(99, 10, 22, 13), (10, 22));
+        assert_eq!(vertical_placement(99, 10, 22, 13, false), (10, 22));
+    }
+
+    /// **A multi-line box keeps its whole rectangle, whatever it aligns to.**
+    ///
+    /// `natural_h` is one line of a single-line `gtk::Text`, so without this
+    /// a `Top`-aligned four-line chat entry would draw the editor as a
+    /// one-line strip along the top of a box the engine drew full height --
+    /// which is the shape "the text box is misaligned" describes. Asserted
+    /// against the arithmetic; UNVERIFIED against a real multi-line box,
+    /// because no capture in this project holds one yet.
+    #[test]
+    fn vertical_placement_leaves_a_multiline_box_its_full_height() {
+        for align in [0, 1, 2, 99] {
+            assert_eq!(
+                vertical_placement(align, 10, 88, 13, true),
+                (10, 88),
+                "yAlignment {align} must not shrink a multi-line box to one line"
+            );
+        }
+        // And the single-line behaviour it is contrasted with is unchanged.
+        assert_eq!(vertical_placement(0, 10, 88, 13, false), (10, 13));
     }
 
     /// A natural height taller than the box (a font too big for its own line
@@ -1566,8 +1610,8 @@ mod tests {
     /// outside it or invert the `Bottom` offset into a negative height.
     #[test]
     fn vertical_placement_clamps_a_natural_height_taller_than_the_box() {
-        assert_eq!(vertical_placement(0, 10, 22, 40), (10, 22));
-        assert_eq!(vertical_placement(2, 10, 22, 40), (10, 22));
+        assert_eq!(vertical_placement(0, 10, 22, 40, false), (10, 22));
+        assert_eq!(vertical_placement(2, 10, 22, 40, false), (10, 22));
     }
 
     /// **While a dialog is up the whole window is ours to click.**

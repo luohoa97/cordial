@@ -135,36 +135,52 @@
 /// instead of covering for an unresolved one, and it stays useful if a future
 /// Roblox build renumbers the constructor again.
 ///
-/// Slot 12 is not multiline. Both Login boxes are single-line fields and both
-/// report 1 there, so multiline is slot 5 or slot 13. mocktail's *fourteen*-
-/// argument form (it predates the `editable` field discovered here on
-/// 2026-08-27) has `manualFocusRelease` at the position this struct's slot 12
-/// occupies and `textWrapped` at slot 13, matching what this file already
-/// guessed from the two Login boxes -- corroborated, not merely repeated,
-/// since mocktail's list is by name and declared order rather than by two
-/// numbers that happened to both read 1. `z14` (`editable`) has no
-/// corresponding field in mocktail's older constructor and stays unnamed.
+/// **Slot 5 is `multiline`, settled 2026-09-04.** This file could not place it
+/// from its own captures and said so: both Login boxes are single-line fields
+/// and both report 1 at slot 12, which ruled slot 12 out and left slot 5 or
+/// slot 13. The same mocktail constructor closes it from the other end --
+/// its fourteen-argument form lists `multiline` immediately after the five
+/// floats and `textWrapped` last -- so slot 5 is `multiline`, slot 12 is
+/// `manualFocusRelease` and slot 13 is `textWrapped`. That is the reading this
+/// file already preferred for 12 and 13 from two boxes that both read 1;
+/// mocktail corroborates it by declared order rather than by repeating the
+/// same weak evidence.
+///
+/// mocktail's form predates the `editable` field discovered here on
+/// 2026-08-27, so `z14` has no counterpart there and stays unnamed. It is the
+/// only slot in this struct that still does.
+///
+/// **What the names are and are not.** They come from mocktail's own `<init>`
+/// hook, which assigns them positionally exactly as this one does -- so this
+/// is two independent readings of the same constructor agreeing, not a
+/// reflection of the real Java class. It is corroboration and it is worth
+/// having; it is not proof, and a build that renumbers the constructor would
+/// make both wrong together. The captured *values* remain Cordial's own.
 ///
 /// When a slot is settled, rename it here and in `RawTextBoxInfo` in
-/// `crates/cordial-linker-sys/src/lib.rs` together. A wrong name would be worse
-/// than no name, because it would be believed -- which is why only `i6`/`i7`
-/// are renamed below: `i9`/`i10`/`i11` are equally settled now, but renaming
-/// them is left for whoever next touches the font-slot or input-type code, to
-/// keep this change to the slots the alignment fix actually needed.
+/// `crates/cordial-linker-sys/src/lib.rs` together. A wrong name would be
+/// worse than no name, because it would be believed.
 struct CordialTextBoxInfo {
     float x, y, width, height, font_size;
-    // The three `Z` slots are widened to `int` rather than kept as `jboolean`.
+    // The four `Z` slots are widened to `int` rather than kept as `jboolean`.
     // This struct is mirrored field-for-field on the Rust side, and a one-byte
     // member sitting between four-byte ones is padding waiting to be got wrong.
-    int z5;
+    //
+    // Slot 5 is `multiline`, which this file spent two captures unable to
+    // place: both Login boxes are single-line and both report 1 at slot 12, so
+    // the choice was between slot 5 and slot 13 and neither could be ruled out
+    // from here. mocktail's constructor settles it by naming slot 13
+    // `textWrapped` -- see the struct's doc comment.
+    int multiline;
     // Roblox's `Enum.TextXAlignment`/`Enum.TextYAlignment`: `Left`/`Top` = 0,
     // `Center` = 1, `Right`/`Bottom` = 2. Confirmed via mocktail's
     // `NativeTextBoxInfo` constructor field order -- see the struct's own doc
     // comment above.
     int x_alignment, y_alignment;
     int text_color;
-    int i9, i10, i11;
-    int z12, z13, z14;
+    // Slots 9-11, named from the same constructor order as the two alignments.
+    int font, text_input_type, return_key_type;
+    int manual_focus_release, text_wrapped, z14;
 };
 
 namespace {
@@ -199,12 +215,15 @@ std::atomic<unsigned> g_textbox_generation{0};
 void trace_textbox_info(const char* source, const CordialTextBoxInfo& i) {
     fprintf(stderr,
             "[cordial] textbox spec from %s x=%g y=%g w=%g h=%g fontSize=%g "
-            "z5=%d xAlign=%d yAlign=%d textColor=%#x i9=%d i10=%d i11=%d z12=%d z13=%d z14=%d\n",
+            "multiline=%d xAlign=%d yAlign=%d textColor=%#x font=%d "
+            "textInputType=%d returnKeyType=%d manualFocusRelease=%d "
+            "textWrapped=%d z14=%d\n",
             source, static_cast<double>(i.x), static_cast<double>(i.y),
             static_cast<double>(i.width), static_cast<double>(i.height),
-            static_cast<double>(i.font_size), i.z5, i.x_alignment, i.y_alignment,
-            static_cast<unsigned>(i.text_color), i.i9, i.i10, i.i11, i.z12, i.z13,
-            i.z14);
+            static_cast<double>(i.font_size), i.multiline, i.x_alignment,
+            i.y_alignment, static_cast<unsigned>(i.text_color), i.font,
+            i.text_input_type, i.return_key_type, i.manual_focus_release,
+            i.text_wrapped, i.z14);
 }
 } // namespace
 
@@ -313,7 +332,7 @@ extern "C" int cordial_textbox_info(CordialTextBoxInfo* out) {
     return 1;
 }
 
-/// Test seam: publish a focused box built here, from the fourteen values in
+/// Test seam: publish a focused box built here, from the fifteen values in
 /// the order `NativeTextBoxInfo.<init>` takes them.
 ///
 /// It exists because the obvious test — hand a Rust-built struct to
@@ -333,15 +352,15 @@ extern "C" void cordial_textbox_test_focus(long long handle, const char* text,
     info.width = s2;
     info.height = s3;
     info.font_size = s4;
-    info.z5 = s5;
+    info.multiline = s5;
     info.x_alignment = s6;
     info.y_alignment = s7;
     info.text_color = s8;
-    info.i9 = s9;
-    info.i10 = s10;
-    info.i11 = s11;
-    info.z12 = s12;
-    info.z13 = s13;
+    info.font = s9;
+    info.text_input_type = s10;
+    info.return_key_type = s11;
+    info.manual_focus_release = s12;
+    info.text_wrapped = s13;
     info.z14 = s14;
     cordial_textbox_focused(handle, text, &info);
 }
@@ -523,16 +542,18 @@ public:
     /// the tool to reach for whenever a hook silently does nothing.
     static std::shared_ptr<NativeTextBoxInfo> init(
         ENV*, Class*, jfloat f0, jfloat f1, jfloat f2, jfloat f3, jfloat f4,
-        jboolean z5, jint x_alignment, jint y_alignment, jint i8, jint i9,
-        jint i10, jint i11, jboolean z12, jboolean z13, jboolean z14) {
+        jboolean multiline, jint x_alignment, jint y_alignment, jint text_color,
+        jint font, jint text_input_type, jint return_key_type,
+        jboolean manual_focus_release, jboolean text_wrapped, jboolean z14) {
         auto o = std::make_shared<NativeTextBoxInfo>();
-        // Positional on purpose: these are the constructor's slots, and only
-        // some of them have earned a name. See `CordialTextBoxInfo`.
+        // Positional, because that is what the constructor is. Every slot but
+        // the fifteenth has a name now; see `CordialTextBoxInfo`.
         o->spec = CordialTextBoxInfo{
             f0, f1, f2, f3, f4,
-            z5 ? 1 : 0,
-            x_alignment, y_alignment, i8, i9, i10, i11,
-            z12 ? 1 : 0, z13 ? 1 : 0, z14 ? 1 : 0,
+            multiline ? 1 : 0,
+            x_alignment, y_alignment, text_color, font, text_input_type,
+            return_key_type,
+            manual_focus_release ? 1 : 0, text_wrapped ? 1 : 0, z14 ? 1 : 0,
         };
         o->spec_known = true;
         cordial_textbox_last_built(&o->spec);

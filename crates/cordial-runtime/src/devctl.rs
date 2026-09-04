@@ -368,8 +368,10 @@ fn textbox_font_fields() -> String {
     let slot = crate::android::editor_font::font_slot()
         .map_or_else(|| "off".to_owned(), |s| s.to_string());
     format!(
-        " xAlign={} yAlign={} i9={} i10={} i11={} fontSlot={slot}{resolved}",
-        info.x_alignment, info.y_alignment, info.i9, info.i10, info.i11
+        " xAlign={} yAlign={} multiline={} font={} textInputType={} returnKeyType={} \
+         textWrapped={} fontSlot={slot}{resolved}",
+        info.x_alignment, info.y_alignment, info.multiline, info.font,
+        info.text_input_type, info.return_key_type, info.text_wrapped
     )
 }
 
