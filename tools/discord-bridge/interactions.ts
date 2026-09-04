@@ -22,6 +22,7 @@ import { ACTION_ROW, BUTTON, type IssueForm, modalFor } from "./issue_forms.ts";
 import { container, separator, text } from "./components.ts";
 import { GitHub } from "./github.ts";
 import {
+  fieldSection,
   renderIssueBody,
   renderIssueTitle,
   reporterFromBody,
@@ -254,7 +255,7 @@ export async function handle(
       }
       const extra = form.dropped
         .filter((b) => b.id && values[b.id]?.trim())
-        .map((b) => `### ${b.attributes?.label ?? b.id}\n\n${values[b.id!].trim()}`)
+        .map((b) => fieldSection(b, values[b.id!]))
         .join("\n\n");
       if (!extra) return { response: ephemeral("Nothing was filled in, so nothing was added.") };
       return {

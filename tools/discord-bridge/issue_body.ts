@@ -26,6 +26,7 @@
  * than appearing to be the bot's own observation.
  */
 import type { FormBlock, IssueForm } from "./issue_forms.ts";
+import { maxLengthFor } from "./issue_forms.ts";
 
 const MARKER = "cordial-bridge";
 
@@ -80,6 +81,45 @@ function heading(block: FormBlock): string {
  * filed from the web read identically in the tracker. A maintainer should not
  * be able to tell which route a report took without looking for the note.
  */
+/**
+ * One `### Label` section, with a note if the answer ran into Discord's limit.
+ *
+ * Shared with the follow-up modal's path in `interactions.ts`, which is not a
+ * tidiness point: the fields that do not fit the five-component modal are the
+ * long ones, so the *overflow* form is where a 4000-character log actually
+ * arrives. Issue #28 came in through it. A note wired only into the main body
+ * would have missed every case it was written for.
+ */
+/**
+ * A note under any answer that ran into Discord's limit for its field.
+ *
+ * **A truncated log that does not say it is truncated is a lie the reader
+ * cannot see.** Discord's client stops accepting characters at the field's
+ * `max_length` without telling the person typing, and it keeps the beginning --
+ * so a crash log arrives with the startup banner intact and the crash missing.
+ * Issue #28 is the worked example, at 3996 of 4000 characters, ending mid-word
+ * on a startup line with the exit status gone.
+ *
+ * **The test is on the raw value, not the trimmed one, and that is the whole
+ * of its precision.** #28's field held exactly 4000 characters and rendered as
+ * 3996 once trailing whitespace came off -- so a length check after `trim()`
+ * needs a fudge factor, and any fudge factor either misses a real truncation
+ * or annotates an answer that merely came close. Discord returns the box's
+ * contents verbatim, so a box that is full is exactly `max_length` long and
+ * there is nothing to estimate.
+ */
+export function fieldSection(block: FormBlock, raw: string): string {
+  return `### ${heading(block)}\n\n${raw.trim()}${truncationNote(block, raw)}`;
+}
+
+function truncationNote(block: FormBlock, raw: string): string {
+  if (raw.length < maxLengthFor(block.type)) return "";
+  return `\n\n*(This filled Discord's ${maxLengthFor(block.type)}-character limit for one ` +
+    `field, so it is the **beginning** of what was pasted and the end is missing. If the ` +
+    `end is the part that matters -- it usually is, for a crash -- post it in the thread ` +
+    `and use **Add to the issue**.)*`;
+}
+
 export function renderIssueBody(
   form: IssueForm,
   submission: Submission,
@@ -89,9 +129,9 @@ export function renderIssueBody(
   for (const block of form.fields) {
     const id = block.id;
     if (!id) continue;
-    const value = submission.values[id]?.trim();
-    if (!value) continue;
-    parts.push(`### ${heading(block)}\n\n${value}`);
+    const raw = submission.values[id];
+    if (!raw?.trim()) continue;
+    parts.push(fieldSection(block, raw));
   }
 
   parts.push(

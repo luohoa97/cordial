@@ -115,6 +115,25 @@ function isRequired(block: FormBlock): boolean {
 }
 
 /** One issue-form block as one Discord `Label` and its input. */
+/**
+ * How many characters a modal field of this kind accepts.
+ *
+ * **Exported because the issue body has to know it too.** Discord's client
+ * stops accepting input at `max_length` and says nothing about it, so a person
+ * pasting a crash log gets the *first* 4000 characters -- the half without the
+ * crash in it. Issue #28 arrived that way: 3996 characters ending mid-word on
+ * an `ALooper_addFd` line, with the exit status and the last frames gone, and
+ * nothing in the issue saying the log was incomplete. It read as a client that
+ * stopped for no reason.
+ *
+ * `renderIssueBody` compares against this to say so. Two copies of the number
+ * would drift, and silently in the direction that matters: raised here and not
+ * there, the notice simply stops appearing.
+ */
+export function maxLengthFor(blockType: string): number {
+  return blockType === "input" ? 1000 : 4000;
+}
+
 export function fieldToComponent(block: FormBlock): unknown {
   const attrs = block.attributes ?? {};
   const id = block.id;
@@ -143,7 +162,7 @@ export function fieldToComponent(block: FormBlock): unknown {
       custom_id: id,
       style: block.type === "input" ? 1 : 2,
       required: isRequired(block),
-      max_length: block.type === "input" ? 1000 : 4000,
+      max_length: maxLengthFor(block.type),
     };
     const placeholder = clip(attrs.placeholder, PLACEHOLDER_MAX);
     if (placeholder) input.placeholder = placeholder;
