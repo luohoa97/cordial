@@ -1168,6 +1168,17 @@ pub struct WaylandWindow {
     /// Shift pressed during a right drag engages shift lock, which is a real
     /// lock that must survive the release the drag does not.
     shift_during_right_drag: AtomicBool,
+    /// `now_ms` when `await_engine_unlock_after_right_drag` was set, or 0.
+    ///
+    /// **The latch needs a way out, and this is it.** Disregarding the
+    /// engine's answer is only sound while the answer is a leftover from the
+    /// drag, and that expires as soon as Roblox processes the button-up --
+    /// a frame or two. If it has not expired after a second, the premise is
+    /// wrong for this case: the player entered first person *during* the drag,
+    /// say by scrolling in, so the engine means it. Holding the latch then
+    /// would kill the camera for good with nothing on screen to explain it,
+    /// which is the same shape as the Escape latch this release just removed.
+    right_drag_latch_since: AtomicI64,
     down_time_ms: AtomicI64,
     clock: std::time::Instant,
 
@@ -1782,6 +1793,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         lock_wanted_before_right_drag: AtomicBool::new(false),
         await_engine_unlock_after_right_drag: AtomicBool::new(false),
         shift_during_right_drag: AtomicBool::new(false),
+        right_drag_latch_since: AtomicI64::new(0),
         down_time_ms: AtomicI64::new(0),
         clock: std::time::Instant::now(),
         ime: Mutex::new(ImeState {
@@ -3035,6 +3047,14 @@ impl WaylandWindow {
                 let survives =
                     self.lock_wanted_before_right_drag.load(Ordering::Acquire) || shift_locked;
                 self.await_engine_unlock_after_right_drag.store(!survives, Ordering::Release);
+                self.right_drag_latch_since
+                    .store(if survives { 0 } else { self.now_ms() }, Ordering::Relaxed);
+                if !survives && super::input::trace_mouse() {
+                    eprintln!(
+                        "[cordial] pointer lock: right drag ended without a lock behind it; \
+                         disregarding the engine's request until it reads false once"
+                    );
+                }
                 self.lock_wanted_before_right_drag.store(false, Ordering::Release);
                 self.shift_during_right_drag.store(false, Ordering::Release);
             }
@@ -3857,10 +3877,41 @@ impl WaylandWindow {
         // moment it sees the press, so after a drag that was only a drag its
         // answer has to read false once before it means anything again.
         if !engine_says {
-            self.await_engine_unlock_after_right_drag.store(false, Ordering::Release);
+            if self.await_engine_unlock_after_right_drag.swap(false, Ordering::AcqRel)
+                && super::input::trace_mouse()
+            {
+                eprintln!(
+                    "[cordial] pointer lock: the engine's request went false, so the \
+                     right-drag leftover has expired; honouring it again"
+                );
+            }
+            self.right_drag_latch_since.store(0, Ordering::Relaxed);
         }
-        let engine_wants = engine_says
-            && !self.await_engine_unlock_after_right_drag.load(Ordering::Acquire);
+        let mut ignoring = self.await_engine_unlock_after_right_drag.load(Ordering::Acquire);
+
+        // **A latch that never lifts has to say so and let go.** See
+        // `right_drag_latch_since`: a leftover `true` expires within a frame or
+        // two of the button coming up, so one still standing a second later is
+        // not a leftover -- it is the engine meaning it, and Cordial is now the
+        // thing holding the camera down. Reported rather than merely fixed
+        // because a silent self-correction is indistinguishable from the bug
+        // it corrects: the camera comes back late, nobody knows why, and the
+        // next person to see it has nothing to search for.
+        if ignoring {
+            let since = self.right_drag_latch_since.load(Ordering::Relaxed);
+            if since != 0 && self.now_ms().saturating_sub(since) > 1_000 {
+                self.await_engine_unlock_after_right_drag.store(false, Ordering::Release);
+                self.right_drag_latch_since.store(0, Ordering::Relaxed);
+                ignoring = false;
+                eprintln!(
+                    "[android] wayland: the engine has wanted the pointer for a second \
+                     since a right-button drag ended, which is longer than a leftover \
+                     from the drag lasts. Treating it as a real request and capturing. \
+                     If the camera stuck for that second, this is why."
+                );
+            }
+        }
+        let engine_wants = engine_says && !ignoring;
         if self.pointer_constraints.is_null() || no_pointer_lock() {
             return;
         }
