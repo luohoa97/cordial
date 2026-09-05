@@ -3534,13 +3534,6 @@ static SHIFT_DURING_RIGHT_DRAG: AtomicBool = AtomicBool::new(false);
 /// which is the same shape as the Escape latch this release just removed.
 static RIGHT_DRAG_LATCH_SINCE: AtomicI64 = AtomicI64::new(0);
 
-/// Set when the user presses Escape out of a lock, and cleared only once
-/// nothing wants the lock any more.
-///
-/// Without the latch, Escape releases the pointer and the very next pump sees
-/// the engine still asking for a locked centre and takes it straight back — an
-/// escape hatch that lasts 50ms is not one.
-static POINTER_LOCK_SUPPRESSED: AtomicBool = AtomicBool::new(false);
 
 /// `CORDIAL_NO_POINTER_LOCK=1` — never capture the pointer, whatever the engine
 /// or the mouse buttons say.
@@ -3930,6 +3923,32 @@ impl WaylandWindow {
             return;
         }
 
+        // **While the window is not focused, decide nothing.**
+        //
+        // The lock is requested `PERSISTENT`, which means the compositor
+        // deactivates it when focus goes away and reactivates it when focus
+        // comes back. That is the whole contract, and it is the compositor's
+        // job rather than ours -- it is also what gives the user a way out
+        // (Super, an overview, a workspace switch) that no client can take
+        // away from them.
+        //
+        // Acting here anyway is what broke it. Alt-tab makes the engine stop
+        // asking, `asked` goes false, and the arm below calls
+        // `release_pointer`, which *destroys* the very object the compositor
+        // was holding for us. The reactivation then has nothing to reactivate:
+        // coming back needs the engine to re-assert, a fresh `lock_pointer`,
+        // and a fresh activation, and if the engine is slow or does not
+        // re-assert at all the cursor simply stays loose. Reported as the lock
+        // not surviving an alt-tab, and it is Cordial interrupting something
+        // that was working.
+        //
+        // `Some(false)` only. `None` is "this backend does not track focus" --
+        // X11 answers that for every window -- and must keep behaving as it
+        // always has rather than freezing the lock state forever.
+        if self.host.0.focused() == Some(false) {
+            return;
+        }
+
         // The right and middle buttons, and emphatically **not the left one**.
         // A left-button drag is how every draggable thing in Roblox's own
         // interface is used — a slider, a scrollbar, a window in Studio — and
@@ -3981,10 +4000,24 @@ impl WaylandWindow {
         // pressing Escape in first person gives the cursor back for as long as
         // the engine keeps wanting it — until the user leaves first person,
         // at which point the next request is honoured normally.
-        if !asked {
-            POINTER_LOCK_SUPPRESSED.store(false, Ordering::Release);
-        }
-        let want = asked && !POINTER_LOCK_SUPPRESSED.load(Ordering::Acquire);
+        // **No second opinion about what the engine asked for.** Cordial used
+        // to keep a suppression latch that Escape set, so a focused window
+        // could be told to lock and decline. That is the one thing a client
+        // should not do: while the window has focus the engine's answer is the
+        // answer, the way it is in any other game.
+        //
+        // The escape route is the compositor's and is better than ours was --
+        // Super, an overview, a workspace switch -- because the protocol
+        // requires one and no client can take it away. Ours could be reached
+        // only if Cordial was still running well enough to read a key.
+        //
+        // Escape needed no help in any case, which is the measurement that
+        // settled this: it is Roblox's own menu key and reaches the engine, and
+        // opening the menu drops the engine's request by itself. Measured
+        // 2026-09-04 in a first-person session -- `engine=true` before,
+        // `false` with the menu open, `true` again on closing it. The latch was
+        // duplicating a decision the engine had already made correctly.
+        let want = asked;
 
         let held = !self.locked_pointer.lock().unwrap_or_else(|e| e.into_inner()).is_null();
         if want && !held {
@@ -4190,41 +4223,6 @@ fn constrain_toplevel() -> bool {
         }
     }
 
-    /// The Escape hatch, in both senses -- and a **toggle**, not a one-way
-    /// door. Returns `Some(true)` when it took the cursor back, `Some(false)`
-    /// when it handed it to the engine again, and `None` when there was
-    /// nothing to do.
-    ///
-    /// **It used to latch, and that was the bug.** The latch lifted only when
-    /// nothing was asking for the lock any more, and in first person nothing
-    /// ever stops asking -- so one press of Escape killed the camera until the
-    /// player left first person, with no way back. Escape is also Roblox's own
-    /// menu key and still reaches the engine, so the sequence people actually
-    /// hit was: press Escape for the menu, close the menu, discover the camera
-    /// no longer turns. Reported as exactly that confusion.
-    ///
-    /// As a toggle the two meanings agree instead of fighting. Escape opens
-    /// the menu and gives the cursor back; Escape closes the menu and takes it
-    /// again. The cursor stays free for as long as somebody wants it -- which
-    /// is the case the hatch exists for, a dialog the game put in the middle
-    /// of the screen while first person holds the pointer -- and it comes back
-    /// on the same key rather than on a state change nobody can see.
-    fn toggle_pointer_lock_suppression(&self) -> Option<bool> {
-        if POINTER_LOCK_SUPPRESSED.swap(false, Ordering::AcqRel) {
-            // Re-engage now rather than waiting for the next pump, for the
-            // same reason `dispatch_pointer_button` does: a pump is up to 50ms
-            // away and the gap is visible as a camera that answers late.
-            self.sync_pointer_lock();
-            return Some(false);
-        }
-        let held = !self.locked_pointer.lock().unwrap_or_else(|e| e.into_inner()).is_null();
-        if !held {
-            return None;
-        }
-        POINTER_LOCK_SUPPRESSED.store(true, Ordering::Release);
-        self.release_pointer();
-        Some(true)
-    }
 }
 
 /// Every input to the pointer-lock decision, for the control socket.
@@ -4251,11 +4249,15 @@ pub(crate) fn pointer_lock_report() -> String {
         None => "unavailable",
     };
     format!(
-        "ok requested={} confirmed={} suppressed={} engine={engine} \
+        "ok requested={} confirmed={} focused={} engine={engine} \
          awaiting_drag_unlock={} shift_in_drag={} on_canvas={} buttons={}",
         POINTER_LOCK_REQUESTED.load(Ordering::Acquire),
         POINTER_LOCK_ACTIVE.load(Ordering::Acquire),
-        POINTER_LOCK_SUPPRESSED.load(Ordering::Acquire),
+        match current().and_then(|w| w.host.0.focused()) {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "unknown",
+        },
         AWAIT_ENGINE_UNLOCK_AFTER_RIGHT_DRAG.load(Ordering::Acquire),
         SHIFT_DURING_RIGHT_DRAG.load(Ordering::Acquire),
         POINTER_ON_CANVAS.load(Ordering::Acquire),
@@ -4711,20 +4713,14 @@ impl WaylandWindow {
             (keysym, unicode, n.max(0) as usize, text_buf, meta)
         };
 
-        // Escape toggles the cursor, and the key still reaches the engine.
+        // **Escape is not special here any more, and that is the point.** It
+        // reaches the engine like any other key, Roblox opens its own menu and
+        // drops its own cursor request, and the lock follows. Cordial used to
+        // keep a suppression latch on this key; see `sync_pointer_lock` for the
+        // measurement that showed it was duplicating a decision the engine
+        // already makes, and why a client second-guessing the lock while it has
+        // focus is the wrong shape.
         //
-        // Deliberately not a combination nobody would find. The one thing a
-        // person tries when an application has taken their pointer is Escape,
-        // and a hatch that has to be looked up is a hatch that is not there
-        // when it is needed. Escape already means "leave what I am doing" in
-        // Roblox, so it is also the key whose ordinary meaning agrees -- and
-        // because the key reaches the engine as well, the menu it opens and
-        // the cursor it frees move together. See
-        // `toggle_pointer_lock_suppression` for why this had to stop being
-        // one-way.
-        //
-        // `keysym` is not used for this: the lock is a physical-key affair and
-        // `KEY_ESC` is 1 in evdev, whatever the layout has made of it.
         // Shift while the right button is held is shift lock being engaged
         // mid-drag. Noted here so the release can tell that apart from a plain
         // camera drag -- see `shift_during_right_drag`.
@@ -4733,17 +4729,6 @@ impl WaylandWindow {
             && self.pointer_buttons.load(Ordering::Relaxed) & super::input::BUTTON_SECONDARY != 0
         {
             SHIFT_DURING_RIGHT_DRAG.store(true, Ordering::Release);
-        }
-
-        const KEY_ESC: u32 = 1;
-        if down && evdev_key == KEY_ESC {
-            match self.toggle_pointer_lock_suppression() {
-                Some(true) => eprintln!("[android] wayland: Escape released the pointer lock"),
-                Some(false) => {
-                    eprintln!("[android] wayland: Escape handed the pointer back to the engine")
-                }
-                None => {}
-            }
         }
 
         // This window has no GtkApplication accelerator group: the launcher's

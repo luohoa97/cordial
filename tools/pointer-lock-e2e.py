@@ -312,6 +312,7 @@ def run_cases(case, dev, kbd, ptr, args):
     case.note("does this compositor grant constraints at all",
               f"confirmed={before.get('confirmed')}")
     case.check("nothing requested before any input", before.get("requested"), "false")
+    case.note("focused", before.get("focused"))
     case.check("the pointer is over the canvas", before.get("on_canvas"), "true")
 
     print("\n-- a LEFT drag must not take the pointer (the control)")
@@ -332,27 +333,23 @@ def run_cases(case, dev, kbd, ptr, args):
     case.check("no latch left behind when the engine never asked",
                after.get("awaiting_drag_unlock"), "false")
 
-    print("\n-- Escape toggles, which is the change: it used to be one-way")
+    print("\n-- the engine's request is honoured while focused, full stop")
     dev.send("fakeenginelock true")          # stand in for first person
     time.sleep(0.5)
     case.check("the engine's request is honoured", dev.lock().get("requested"), "true")
+
+    # **Escape is no longer special.** It used to set a suppression latch here
+    # and this block asserted the toggle. Cordial does not second-guess the
+    # lock while the window has focus any more -- the compositor owns the way
+    # out (Super, an overview) and the protocol requires it to have one. With
+    # the engine's answer pinned true by the seam, Escape must change nothing.
     kbd.cmd("key Escape")
-    time.sleep(0.4)
-    freed = dev.lock()
-    case.check("Escape gives the cursor back", freed.get("requested"), "false")
-    case.check("and latches, so the next pump does not re-take it",
-               freed.get("suppressed"), "true")
-    time.sleep(1.3)
-    case.check("still free a second later, with the engine still asking",
-               dev.lock().get("requested"), "false")
+    time.sleep(0.5)
+    case.check("Escape does not override a focused engine request",
+               dev.lock().get("requested"), "true")
     kbd.cmd("key Escape")
-    time.sleep(0.4)
-    back = dev.lock()
-    # Under the one-way latch this stayed false for the rest of the session,
-    # because the latch lifted only when nothing was asking and in first person
-    # nothing ever stops. This assertion is the regression test for that.
-    case.check("a second Escape hands it back", back.get("requested"), "true")
-    case.check("and clears the latch", back.get("suppressed"), "false")
+    time.sleep(0.5)
+    case.check("and a second Escape does not either", dev.lock().get("requested"), "true")
 
     print("\n-- a right drag that ends must not inherit the engine's stale 'true'")
     dev.send("fakeenginelock false")
