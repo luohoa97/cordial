@@ -269,6 +269,9 @@ pub struct HostWindow {
     /// Whether the canvas is currently lowered. Remembered for the CSS class;
     /// the input region no longer depends on it, see [`HostWindow::set_canvas_cutout`].
     canvas_see_through: std::cell::Cell<bool>,
+    /// So the "no window size" line is printed once per episode rather than
+    /// every pump. See [`HostWindow::refresh_opaque_region`].
+    opaque_unsized: std::cell::Cell<bool>,
     /// The canvas rectangle in surface coordinates, as last given to
     /// [`HostWindow::set_canvas_cutout`]. Remembered so the input region can be
     /// rebuilt when the *editor* moves, without waiting for the next geometry
@@ -389,6 +392,32 @@ fn gtk_xalign(x_alignment: i32) -> f32 {
 /// font size -- there was nothing to measure a fudge factor against, since no
 /// box this project has focused has ever used anything but `Center`. Treat
 /// the `Top`/`Bottom` branches as **`UNVERIFIED`** end to end for that reason;
+/// The rectangle an opaque region should cover, or `None` when the window has
+/// no usable size.
+///
+/// Pure and separate from [`HostWindow::refresh_opaque_region`] for the reason
+/// `input::keepalive_wanted` is: the interesting case is the one nobody
+/// reaches by hand, and it needs no compositor to check.
+///
+/// The window rather than the surface, because a GTK surface carries the
+/// client-side decoration shadow -- measured under sway with the window
+/// floated at surface 1636x911 against window 1596x871, forty pixels in each
+/// axis -- and an opaque shadow is a window that drags a stale halo and loses
+/// its rounded corners.
+fn opaque_bounds(
+    window_w: i32,
+    window_h: i32,
+    _surface_w: i32,
+    _surface_h: i32,
+    dx: f64,
+    dy: f64,
+) -> Option<(i32, i32, i32, i32)> {
+    if window_w <= 0 || window_h <= 0 {
+        return None;
+    }
+    Some((dx.round() as i32, dy.round() as i32, window_w, window_h))
+}
+
 /// [`vertical_placement_tests`] covers the arithmetic, not a live box.
 fn vertical_placement(
     y_alignment: i32,
@@ -709,6 +738,7 @@ impl HostWindow {
             editor_css,
             editor_rect: std::cell::Cell::new(None),
             canvas_see_through: std::cell::Cell::new(false),
+            opaque_unsized: std::cell::Cell::new(false),
             canvas_rect: std::cell::Cell::new(None),
             dialog_up: std::cell::Cell::new(false),
             editor_seeding,
@@ -1180,11 +1210,38 @@ impl HostWindow {
         // against window 1596x871, forty pixels in each axis.
         let (dx, dy) = self.window.surface_transform();
         let (ww, wh) = (self.window.width(), self.window.height());
-        let (ox, oy, ow, oh) = if ww > 0 && wh > 0 {
-            (dx.round() as i32, dy.round() as i32, ww, wh)
-        } else {
-            (0, 0, sw, sh)
+        let Some((ox, oy, ow, oh)) = opaque_bounds(ww, wh, sw, sh, dx, dy) else {
+            // **No usable window size means claim nothing, not claim everything.**
+            //
+            // This used to fall back to the whole surface, which is precisely
+            // the shape the paragraph above exists to avoid: the surface
+            // carries the client-side decoration shadow, and declaring that
+            // opaque tells the compositor not to repaint behind it. The window
+            // then renders with no shadow and square corners -- borderless --
+            // and stays that way until something makes GDK recompute, which
+            // is what alt-tabbing away and back does.
+            //
+            // `GtkWindow::width` reads zero while the window is unmapped, so a
+            // minimise is a way to reach this with a live surface underneath.
+            // Reported as exactly that: minimising leaves the window borderless
+            // until you switch away and back.
+            //
+            // `None` is the honest region: nothing is *known* opaque, so the
+            // compositor repaints everything behind and the shadow works. It
+            // costs a little overdraw for as long as the window has no size,
+            // which is a state that does not last.
+            if !self.opaque_unsized.replace(true) {
+                eprintln!(
+                    "[shell] no window size to build an opaque region from                      (window {ww}x{wh}, surface {sw}x{sh}); claiming nothing until it has one"
+                );
+            }
+            #[allow(deprecated)]
+            surface.set_opaque_region(None);
+            return;
         };
+        if self.opaque_unsized.replace(false) {
+            eprintln!("[shell] window size is back ({ww}x{wh}); opaque region rebuilt");
+        }
 
         let opaque =
             gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(ox, oy, ow, oh));
@@ -1561,6 +1618,33 @@ mod tests {
     /// measurement in docs/NEXT.md come out within 0.5px with no code here at
     /// all. `Top` and `Bottom` are asserted against the arithmetic only --
     /// UNVERIFIED against a real box, as the function's own doc says.
+    /// **A window with no size must claim nothing opaque, not everything.**
+    ///
+    /// This returned the whole surface until 2026-09-06, and the surface
+    /// carries the CSD shadow -- so an unsized moment told the compositor not
+    /// to repaint behind the shadow, and the window came back square-cornered
+    /// and flat until something made GDK recompute. `GtkWindow::width` reads
+    /// zero while the window is unmapped, which is how a minimise reaches it.
+    #[test]
+    fn an_unsized_window_claims_nothing_opaque_rather_than_its_own_shadow() {
+        assert_eq!(opaque_bounds(0, 0, 1636, 911, 20.0, 20.0), None);
+        assert_eq!(opaque_bounds(1596, 0, 1636, 911, 20.0, 20.0), None);
+        assert_eq!(opaque_bounds(0, 871, 1636, 911, 20.0, 20.0), None);
+        assert_eq!(opaque_bounds(-1, -1, 1636, 911, 20.0, 20.0), None);
+    }
+
+    /// The measured floating case: surface 1636x911, window 1596x871, twenty
+    /// pixels of shadow on each side. The region is the window, offset by the
+    /// surface transform, so the shadow stays outside it.
+    #[test]
+    fn the_opaque_region_is_the_window_and_excludes_the_shadow() {
+        assert_eq!(
+            opaque_bounds(1596, 871, 1636, 911, 20.0, 20.0),
+            Some((20, 20, 1596, 871)),
+            "the shadow must not be inside the opaque region"
+        );
+    }
+
     #[test]
     fn vertical_placement_centre_is_untouched_top_and_bottom_anchor() {
         assert_eq!(
