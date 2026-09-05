@@ -64,7 +64,14 @@ const PLACEHOLDER_MAX = 100;
  * more is an error rather than a line nobody notices.
  */
 const SHORT_DESCRIPTIONS: Record<string, string> = {
-  "diagnostics": "Settings → Report a Problem → Copy diagnostics, or `cordial --diagnostics`.",
+  // **The button, not a command.** This named `cordial --diagnostics`, which
+  // does not exist on a Flatpak install -- the largest group of people filing
+  // through Discord. Issue #32's reporter ran it, got "command not found", and
+  // said so in the field this description was meant to help them fill in. The
+  // web template lists the command for all four install types; there is no room
+  // for that in 100 characters, and the button works on every one of them.
+  "diagnostics":
+    "Settings → Report a Problem → Copy diagnostics. That button works on every install.",
   "which-feature":
     'What you tried, and what happened instead. "Nothing happened" is a good answer.',
   "engine-log": "The client's own output, if you have it. Trim it to the interesting part.",

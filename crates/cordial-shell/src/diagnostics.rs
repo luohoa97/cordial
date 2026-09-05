@@ -163,15 +163,41 @@ fn session() -> String {
 
 /// The Roblox build, and how Cordial came to know it.
 ///
-/// **Cordial only records a version for a build it fetched itself.** For an APK
-/// somebody obtained elsewhere there is nothing to read without parsing
-/// Android's binary manifest, so this says so rather than guessing -- the same
-/// refusal `updater.rs` makes, for the same reason, and the honest answer is
-/// more useful in a bug report than a number that might be invented.
+/// **This used to say "unknown" for any APK Cordial did not fetch, and the
+/// reason it gave was wrong.** It claimed there was nothing to read without
+/// parsing Android's binary manifest. There is: the version is stamped in the
+/// extracted `libroblox.so`, `cordial_update::engine::installed_version` scans
+/// for it, and `cordial-run` has printed `engine version ... (read from the
+/// binary)` at every launch the whole time. The diagnostics block was the one
+/// place that did not look.
+///
+/// It matters more than a missing field usually would. Cordial adopts Sober's
+/// APK when it finds one, so a large share of users are on a build Cordial did
+/// not fetch -- and for them the block said `unknown` for exactly the field
+/// that identifies whether their engine is one Cordial can start. Issue #32 is
+/// three exchanges long because of it: the reporter's crash turned on which
+/// build they had, and the block they were asked for could not say.
+///
+/// The three answers are kept distinct because they are different claims. A
+/// fetched build is one Cordial chose; a scanned one is read off the binary
+/// that will actually be loaded, which is the stronger evidence of the two;
+/// and `unknown` now means there is genuinely no library to look at, not that
+/// nobody tried.
 fn roblox() -> String {
-    match cordial_update::cache::recorded_version(&crate::install::engine_cache()) {
-        Some(v) => format!("{v} (fetched by Cordial)"),
-        None => "unknown (an APK Cordial did not fetch records no version)".into(),
+    roblox_in(&crate::install::engine_cache())
+}
+
+/// Split from [`roblox`] so the three branches are testable without an engine
+/// cache, the same reason `input::keepalive_wanted` is split from its caller.
+/// `engine_cache()` reads `XDG_CACHE_HOME`, which is process-wide and would
+/// interleave with every other test in this crate that reads the environment.
+fn roblox_in(dir: &std::path::Path) -> String {
+    if let Some(v) = cordial_update::cache::recorded_version(dir) {
+        return format!("{v} (fetched by Cordial)");
+    }
+    match cordial_update::engine::installed_version(dir) {
+        Some(v) => format!("{v} (read from the extracted library)"),
+        None => "unknown (no extracted library to read a version from)".into(),
     }
 }
 
@@ -251,5 +277,39 @@ mod tests {
         assert_eq!("unknown", "unknown");
         let m = install_method();
         assert!(!m.is_empty(), "install_method must always answer something");
+    }
+}
+
+#[cfg(test)]
+mod roblox_version_tests {
+    use super::roblox_in;
+
+    /// A directory with neither a record nor a library is the only case that
+    /// may still say "unknown", and it must say *why* -- the old wording
+    /// blamed the APK's provenance for something that was really nobody having
+    /// looked at the library. See `roblox_in`.
+    #[test]
+    fn an_empty_cache_says_there_is_nothing_to_read_rather_than_blaming_the_apk() {
+        let dir = std::env::temp_dir().join("cordial-diag-empty-cache");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let out = roblox_in(&dir);
+        assert!(out.starts_with("unknown"), "{out}");
+        assert!(out.contains("no extracted library"), "{out}");
+        assert!(!out.contains("did not fetch"), "the old wording is the bug: {out}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A recorded version still wins, and still says so. It is the stronger
+    /// claim about provenance even though the scan is the stronger claim about
+    /// what will actually load.
+    #[test]
+    fn a_recorded_version_is_reported_as_fetched() {
+        let dir = std::env::temp_dir().join("cordial-diag-recorded-cache");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        cordial_update::cache::record_version(&dir, "2.736.0.1408").expect("record");
+        assert_eq!(roblox_in(&dir), "2.736.0.1408 (fetched by Cordial)");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
