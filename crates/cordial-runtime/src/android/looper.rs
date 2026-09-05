@@ -777,6 +777,9 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
     // Stall detection state; see the block that uses it, below.
     let mut stall_presents: u64 = 0;
     let mut stall_since = std::time::Instant::now();
+    // The periodic health line's own bookkeeping. See where it prints.
+    let mut heartbeat_at = std::time::Instant::now();
+    let mut heartbeat_presents: u64 = 0;
     let mut stall_reported = false;
     let mut recovery_tried = false;
     let join_watch = JOIN_REQUESTED.load(Ordering::Relaxed);
@@ -1074,6 +1077,48 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
                 }
             }
         }
+        // **A present count in the log, every thirty seconds, always.**
+        //
+        // The stall detector below catches presents stopping *dead*. It does
+        // not catch the case that actually cost an hour on 2026-09-06: a user
+        // reported a session freezing, and the log of that session was
+        // indistinguishable from one where somebody had left the client sitting
+        // in a menu. Both are two minutes of nothing but the cookie timer. The
+        // stall detector had not fired, which was the single most useful fact
+        // available about that run -- and it was only knowable by grepping for
+        // the absence of a line, which is not a thing anyone thinks to do.
+        //
+        // `cordial_info`'s present count is the reading AGENTS.md calls the
+        // best test for a wedged client, and it was reachable only over the
+        // development control socket, live, while the client was up. By the
+        // time anybody looks at a report the run is over. So it goes in the
+        // log, where a report can carry it.
+        //
+        // The three states it separates, and the numbers to read it by: about
+        // 1800 in thirty seconds is a client drawing at 60/s with input;
+        // about 30 is the engine's idle throttle, which holds exactly 1.0/s and
+        // is *healthy*; 0 is stopped. Reading the middle one as a freeze has
+        // already wasted a day here, which is why the line names the rate
+        // rather than leaving it to be divided out.
+        //
+        // Unconditional, for the same reason the stall detector is: the whole
+        // difficulty is that this happens when nobody was measuring. Two lines
+        // a minute, against the four a minute the battery reporter already
+        // writes.
+        if heartbeat_at.elapsed() >= std::time::Duration::from_secs(30) {
+            let now = super::glcount::QUEUE_PRESENT.load(Ordering::Relaxed);
+            let secs = heartbeat_at.elapsed().as_secs_f64();
+            let drawn = now.saturating_sub(heartbeat_presents);
+            println!(
+                "[cordial] health: {drawn} presents in {secs:.0}s ({:.1}/s), {now} total{}",
+                drawn as f64 / secs,
+                if drawn == 0 { " -- nothing was drawn" } else { "" }
+            );
+            flush_stdout();
+            heartbeat_at = std::time::Instant::now();
+            heartbeat_presents = now;
+        }
+
         // Catch the engine going quiet, and say everything about the moment it
         // did -- once, unconditionally, whether or not anything is tracing.
         //
