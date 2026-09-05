@@ -1584,14 +1584,31 @@ pub fn keepalive_wanted(policy: ThrottleWhen, focused: Option<bool>, visible: Op
     match policy {
         ThrottleWhen::Off => true,
         ThrottleWhen::Unfocused => focused != Some(false),
-        // Not `visible != Some(false)` alone. A minimised window reports both
-        // unfocused and not visible, but a compositor that reports neither
-        // `SUSPENDED` nor `MINIMIZED` for a window it has hidden would leave
-        // this setting doing nothing at all; losing focus is the weaker
-        // signal and is not sufficient on its own, so it is not consulted
-        // here. If that compositor turns up, this is where the second
-        // condition goes.
-        ThrottleWhen::Visible => visible != Some(false),
+        // **Focused beats not-visible, and that is the second condition this
+        // comment used to say would be needed one day.**
+        //
+        // The case it was written for -- a compositor that hides a window and
+        // reports nothing -- is not the one that turned up. The opposite did:
+        // mutter reports `FOCUSED | SUSPENDED` for a window that is merely
+        // covered, and goes on reporting it after the window is uncovered
+        // again. `android::backend_focused`'s own comment has the measurement:
+        // 20 s and 7 s of stuck `SUSPENDED` across 15 runs.
+        //
+        // With `visible != Some(false)` alone that is a window the user has
+        // alt-tabbed back to, is looking at, and which stays at the engine's
+        // 1.0/s idle throttle until the compositor gets round to clearing a
+        // flag. Reported exactly that way: alt-tabbing away and back "ruins
+        // fps". The window being focused is the strongest evidence there is
+        // that somebody is looking at it, and it should not be outvoted by a
+        // visibility flag that is known to stick.
+        //
+        // This does not weaken the setting where it earns its keep. A
+        // minimised window reports `focused = Some(false)` as well as not
+        // visible, so it still throttles; so does a window on another
+        // workspace. What changes is only the contradictory pair, and the
+        // contradiction resolves towards the signal that cannot be stale
+        // without the user noticing.
+        ThrottleWhen::Visible => visible != Some(false) || focused == Some(true),
     }
 }
 
@@ -2712,7 +2729,19 @@ mod tests {
         // second monitor, not focused, still being watched.
         assert!(keepalive_wanted(Visible, Some(false), Some(true)));
         assert!(!keepalive_wanted(Visible, Some(false), Some(false)));
-        assert!(!keepalive_wanted(Visible, Some(true), Some(false)));
+        // **Focused but reported not visible keeps running.** This asserted
+        // the opposite until 2026-09-05, and the opposite is the bug: mutter
+        // leaves `SUSPENDED` set on a window that has been uncovered, so the
+        // pair happens to a window the user is looking at and the engine sits
+        // at its 1.0/s idle throttle until the flag clears. See
+        // `keepalive_wanted` for the measurement.
+        assert!(
+            keepalive_wanted(Visible, Some(true), Some(false)),
+            "a focused window is being looked at, whatever a sticky SUSPENDED says"
+        );
+        // And the throttle still works where it is meant to: minimised reports
+        // both, and so does a window on another workspace.
+        assert!(!keepalive_wanted(Visible, Some(false), Some(false)));
         // "Not known" is not "not visible". X11 tracks neither and must keep
         // the behaviour it has always had rather than throttling itself.
         assert!(keepalive_wanted(Visible, None, None));
