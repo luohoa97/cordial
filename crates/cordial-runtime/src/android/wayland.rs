@@ -4415,9 +4415,29 @@ unsafe extern "C" fn keyboard_enter(
     // since clicking the window produces a fresh enter after the window is up.
     LAST_ENTERED_SURFACE.store(surface as usize, Ordering::Release);
     let Some(w) = current() else { return };
-    if std::ptr::eq(surface, w.parent_surface) {
+    let ours = std::ptr::eq(surface, w.parent_surface);
+    if ours {
         KEYBOARD_FOCUSED.store(true, Ordering::Release);
     }
+    // **Say which surface, and whether it matched.**
+    //
+    // This gate is the difference between every key reaching the engine and
+    // none of them doing so, and when it is shut there is nothing in the log
+    // to say why. Two reports (#30, #31, both Hyprland) describe keys dying
+    // permanently the moment another application takes focus and never coming
+    // back -- exactly what a gate that fails to reopen looks like -- and
+    // neither reporter could tell us whether the `enter` arrived at all or
+    // arrived naming a surface this did not recognise. Those are different
+    // bugs with different fixes and the log could not distinguish them.
+    //
+    // Not behind a trace flag. An enter or a leave is a handful of lines in a
+    // whole session, and the case that needs them is the one where nobody
+    // thought to turn tracing on.
+    println!(
+        "[android] wayland: keyboard enter on {surface:p}{} (the window's own surface is {:p})",
+        if ours { "" } else { " -- NOT the engine window; keys stay gated" },
+        w.parent_surface
+    );
 }
 
 /// The surface `wl_keyboard.enter` last named, whether or not there was a window
@@ -4528,6 +4548,7 @@ unsafe extern "C" fn keyboard_leave(_data: *mut c_void, _kb: *mut c_void, _seria
         }
     }
     KEYBOARD_FOCUSED.store(false, Ordering::Release);
+    println!("[android] wayland: keyboard leave; keys are gated until the next enter");
     // **And forget the surface `enter` named, or the gate above undoes
     // itself.** `reconcile_keyboard_focus` re-asserts focus from
     // `LAST_ENTERED_SURFACE` whenever `KEYBOARD_FOCUSED` is false — which is
