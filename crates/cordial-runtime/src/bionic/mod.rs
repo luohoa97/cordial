@@ -47,6 +47,9 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
         // it is on a phone. Framework-layer policy, implemented here because the
         // native side reads it through libc.
         f!("__system_property_get", system_property_get),
+        // See each function's own comment for the divergence it translates.
+        f!("mallinfo", bionic_mallinfo),
+        f!("__cxa_thread_atexit_impl", bionic_cxa_thread_atexit_impl),
         // Stubbed until now, and a stub here answers 0 — which reads as an
         // impossibly old Android rather than an unknown one.
         f!("android_get_device_api_level", android_get_device_api_level),
@@ -201,6 +204,100 @@ extern "C" {
     fn poll(fds: *mut c_void, nfds: u64, timeout: c_int) -> c_int;
     fn readlink(path: *const c_char, buf: *mut c_char, bufsize: usize) -> isize;
     fn fread(ptr: *mut c_void, size: usize, n: usize, stream: *mut c_void) -> usize;
+    #[link_name = "dlsym"]
+    fn libc_dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    #[link_name = "__cxa_thread_atexit_impl"]
+    fn host_cxa_thread_atexit_impl(
+        func: *mut c_void,
+        arg: *mut c_void,
+        dso_handle: *mut c_void,
+    ) -> c_int;
+}
+
+/// bionic's `struct mallinfo`: ten `size_t`, where glibc's is ten `int`.
+///
+/// Eighty bytes against forty on LP64, and every field the wrong width and at
+/// the wrong offset. The engine imports `mallinfo` undefined, so before this it
+/// resolved to a stub; letting it reach glibc's would have been worse than the
+/// stub, which is the point `native/system_paths.cpp` makes about `statvfs`.
+///
+/// glibc has exactly the right shape under another name. `mallinfo2` is the
+/// same ten fields as `size_t`, added in glibc 2.33 precisely because the `int`
+/// version overflows on large heaps -- so the translation is a field-for-field
+/// copy rather than a widening, and there is no truncation anywhere in it.
+#[repr(C)]
+pub struct BionicMallinfo {
+    arena: usize,
+    ordblks: usize,
+    smblks: usize,
+    hblks: usize,
+    hblkhd: usize,
+    usmblks: usize,
+    fsmblks: usize,
+    uordblks: usize,
+    fordblks: usize,
+    keepcost: usize,
+}
+
+/// glibc's `mallinfo2`, looked up at run time rather than linked.
+///
+/// `dlsym` rather than an `extern` block so a host older than glibc 2.33 gets
+/// zeroes instead of a link failure. Zeroes are the honest answer there: the
+/// only other source is the `int` `mallinfo`, and copying its fields into
+/// `size_t` slots would report a heap over 2 GB as whatever it wrapped to.
+fn host_mallinfo2() -> Option<extern "C" fn() -> BionicMallinfo> {
+    static FOUND: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    let addr = (*FOUND.get_or_init(|| {
+        // SAFETY: a plain symbol lookup in the already-loaded host libc.
+        let p = unsafe {
+            libc_dlsym(std::ptr::null_mut(), c"mallinfo2".as_ptr())
+        };
+        if p.is_null() { None } else { Some(p as usize) }
+    }))?;
+    // SAFETY: `mallinfo2` takes no arguments and returns the ten-`size_t`
+    // struct `BionicMallinfo` mirrors exactly.
+    Some(unsafe { std::mem::transmute::<usize, extern "C" fn() -> BionicMallinfo>(addr) })
+}
+
+/// **Reports the host allocator's arena, which may not be the engine's.**
+///
+/// `mimalloc_lib` exists, so whether these numbers describe the heap Roblox is
+/// actually allocating from depends on what ends up overriding `malloc` in a
+/// given run. They are the truth about glibc's arena either way, and that is
+/// what the name promises; nothing here invents a number. `INFERRED` that the
+/// engine only uses this for telemetry -- no behaviour change was observed when
+/// it went from a stub to this.
+extern "C" fn bionic_mallinfo() -> BionicMallinfo {
+    match host_mallinfo2() {
+        Some(f) => f(),
+        None => BionicMallinfo {
+            arena: 0, ordblks: 0, smblks: 0, hblks: 0, hblkhd: 0,
+            usmblks: 0, fsmblks: 0, uordblks: 0, fordblks: 0, keepcost: 0,
+        },
+    }
+}
+
+/// `__cxa_thread_atexit_impl` — **not a divergence, simply absent.**
+///
+/// Issue #14 lists this beside `mallinfo` as an ABI divergence and it is not
+/// one: bionic and glibc declare the identical
+/// `int (*)(void (*)(void*), void*, void*)`, so the only problem was that
+/// `libc` is not host-resolved by default and this was therefore reaching a
+/// stub. A stub here means every `thread_local` with a destructor in the
+/// engine never runs it -- a leak per thread, silent, and not a crash, which
+/// is why nothing pointed at it.
+///
+/// Forwarded rather than reimplemented. glibc's own implementation is what
+/// registers the callback with the thread's exit path, and there is no second
+/// place to put it.
+extern "C" fn bionic_cxa_thread_atexit_impl(
+    func: *mut c_void,
+    arg: *mut c_void,
+    dso_handle: *mut c_void,
+) -> c_int {
+    // SAFETY: the three pointers are passed straight through to the host
+    // implementation of the same function, with the same signature.
+    unsafe { host_cxa_thread_atexit_impl(func, arg, dso_handle) }
 }
 
 extern "C" fn bionic_errno() -> *mut c_int {
@@ -320,6 +417,27 @@ const PROPERTIES: &[(&str, &str)] = &[
     ("ro.product.device", "linux"),
     ("ro.product.name", "cordial"),
     ("ro.hardware", "cordial"),
+    // **`ro.soc.manufacturer` is deliberately not here, and this comment is the
+    // answer to issue #12 rather than a note that nobody got round to it.**
+    //
+    // The engine asks for it twice a run and gets `""`, which is what an unset
+    // Android property returns -- plenty of real devices leave it unset, since
+    // it only arrived in API 31. So the empty answer is not a gap in the table;
+    // it is a value Android itself produces.
+    //
+    // The issue asked to establish what the field is used for before filling
+    // it. That was checked the way this repository checks such things first:
+    // `docs/traces/waydroid-roblox-startup.log.gz`, a capture of the same APK
+    // on real Android, does not mention `ro.soc` anywhere -- so there is no
+    // evidence the engine does anything with the answer, and none that a
+    // different one would change behaviour.
+    //
+    // Filling it in would mean choosing a SoC vendor. Cordial is not running on
+    // one, every plausible string is a lie the engine may act on, and AGENTS.md
+    // is explicit that a stub which lies is worse than one which fails. `""`
+    // fails honestly, so `""` stays. If something is ever traced to it, this is
+    // the comment to come back to and the trace is the thing that would settle
+    // it -- not a guess at a vendor name.
     ("ro.board.platform", "cordial"),
     ("ro.debuggable", "0"),
     ("ro.secure", "1"),

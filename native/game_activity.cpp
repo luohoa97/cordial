@@ -18,6 +18,8 @@
 
 #include <jnivm.h>
 
+#include "insets.h"
+
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -46,7 +48,7 @@ std::shared_ptr<jnivm::Object> make_display_metrics(jnivm::ENV* env);
 /// duplicated for the same reason make_display_metrics is: one class, one
 /// definition, and the insets the engine gets here are the same object the
 /// rest of the framework layer hands out.
-std::shared_ptr<jnivm::Object> cordial_make_zero_insets(jnivm::ENV* env);
+std::shared_ptr<Insets> cordial_make_zero_insets(jnivm::ENV* env);
 std::shared_ptr<jnivm::Object> make_resources(jnivm::ENV* env);
 void set_display_size(int width, int height);
 
@@ -179,7 +181,19 @@ public:
     std::shared_ptr<Object> getWindowInsets(ENV* env, jint /*typeMask*/) {
         return cordial_make_zero_insets(env);
     }
-    std::shared_ptr<Object> getWaterfallInsets(ENV* env) {
+    /// **`Insets`, not `Object`, and the difference is whether it binds at
+    /// all.** libjnivm derives the descriptor from this signature, so declaring
+    /// `Object` bound it as `()Ljava/lang/Object;` while the dex declares
+    /// `()Landroidx/core/graphics/Insets;` -- a mismatch libjnivm resolves by
+    /// silently never calling the hook. `tools/hook_descriptors.py` had been
+    /// printing this one as its only failure; it now prints none. Issue #11.
+    ///
+    /// `getWindowInsets` above is deliberately left returning `Object`: the
+    /// shipping dex does not declare it on `GameActivity` at all, so there is
+    /// no descriptor to agree with and the tool does not flag it. Changing a
+    /// signature the dex says nothing about would be guessing at a contract
+    /// rather than matching one.
+    std::shared_ptr<Insets> getWaterfallInsets(ENV* env) {
         return cordial_make_zero_insets(env);
     }
 
@@ -758,6 +772,9 @@ std::shared_ptr<InputConnection>& shared_input_connection(ENV* env) {
 } // namespace
 
 void register_game_activity_classes(ENV* env) {
+    // Before `GameActivity`, whose `getWaterfallInsets` returns one. See
+    // `Insets::Declare` for what happens when it is not.
+    Insets::Declare(env);
     ClassLoader::Register(env);
     AssetManager::Register(env);
     Configuration::Register(env);

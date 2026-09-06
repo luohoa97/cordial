@@ -25,6 +25,8 @@
 // it is not this object. See docs/analysis/platform-identity.md.
 
 #include <jnivm.h>
+
+#include "insets.h"
 #include <vector>
 #include <sys/statvfs.h>
 
@@ -113,7 +115,7 @@ class AndroidActivity;
 std::shared_ptr<Object> make_display_metrics(ENV* env);
 /// Defined below with `Insets`; declared here so game_activity.cpp can
 /// return one without duplicating the class.
-std::shared_ptr<Object> cordial_make_zero_insets(ENV* env);
+std::shared_ptr<Insets> cordial_make_zero_insets(ENV* env);
 
 /// Which device identity Cordial presents to the engine and to roblox.com.
 ///
@@ -653,37 +655,7 @@ public:
     }
 };
 
-/// `androidx.core.graphics.Insets`
-///
-/// Four fields. Zero on every one is the correct answer and, unusually here,
-/// not a placeholder: Cordial's window has no status bar, no navigation bar,
-/// no display cutout and no gesture areas, so there is genuinely nothing for
-/// the engine to inset its layout by. Registering them matters anyway — an
-/// unresolved *field* is not the same as a field that reads zero, and the
-/// engine's `getWaterfallInsets`/`getWindowInsets` return one of these.
-class Insets : public Object {
-public:
-    jint left = 0;
-    jint top = 0;
-    jint right = 0;
-    jint bottom = 0;
-
-    static std::shared_ptr<Insets> Create(ENV* env) {
-        auto p = std::make_shared<Insets>();
-        to_jni(env, p);
-        return p;
-    }
-
-    static void Register(ENV* env) {
-        env->GetClass<Insets>("androidx/core/graphics/Insets");
-        auto c = env->GetClass("androidx/core/graphics/Insets");
-#define F(name) c->HookInstance(env, #name, &Insets::name)
-        F(left); F(top); F(right); F(bottom);
-#undef F
-    }
-};
-
-std::shared_ptr<Object> cordial_make_zero_insets(ENV* env) { return Insets::Create(env); }
+std::shared_ptr<Insets> cordial_make_zero_insets(ENV* env) { return Insets::Create(env); }
 
 /// `androidx.core.view.WindowInsetsCompat$Type`
 ///
