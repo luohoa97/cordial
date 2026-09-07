@@ -4415,7 +4415,27 @@ unsafe extern "C" fn keyboard_enter(
     // since clicking the window produces a fresh enter after the window is up.
     LAST_ENTERED_SURFACE.store(surface as usize, Ordering::Release);
     let Some(w) = current() else { return };
-    let ours = std::ptr::eq(surface, w.parent_surface);
+    // **Against GTK's *current* surface, not only the one captured at
+    // start-up.** `parent_surface` is read once when the window is built and
+    // never refreshed, and issue #31's reporter established that on Hyprland
+    // the `enter` following a refocus names a different surface -- so the
+    // pointer comparison failed, `KEYBOARD_FOCUSED` stayed false, and every
+    // key after the first alt-tab was dropped by the gate in `keyboard_key`,
+    // permanently, with the pointer and touch paths carrying on normally.
+    // Relaunching was the only way back.
+    //
+    // Asking GDK for the surface each time costs one downcast on an event that
+    // arrives a handful of times a session, and it is the honest question:
+    // "is this the surface my window has now", rather than "is this the
+    // surface my window had when it was created".
+    //
+    // Still a specific comparison and not `true`. The gate exists so that keys
+    // aimed at another window never reach the game -- a `Ctrl+C` typed into a
+    // terminal once appeared in Cordial's own trace -- and accepting any
+    // surface would give that back to save a downcast.
+    let live = w.host.0.wl_surface();
+    let ours = std::ptr::eq(surface, w.parent_surface)
+        || live.is_some_and(|s| std::ptr::eq(surface, s));
     if ours {
         KEYBOARD_FOCUSED.store(true, Ordering::Release);
     }
@@ -4433,6 +4453,16 @@ unsafe extern "C" fn keyboard_enter(
     // Not behind a trace flag. An enter or a leave is a handful of lines in a
     // whole session, and the case that needs them is the one where nobody
     // thought to turn tracing on.
+    if ours && !std::ptr::eq(surface, w.parent_surface) {
+        // Worth one line: it means GTK's surface is not the one this struct
+        // captured, which is the Hyprland case and would otherwise be
+        // invisible now that it no longer breaks anything.
+        println!(
+            "[android] wayland: keyboard enter named GTK's current surface {surface:p}, \
+             not the one captured at start-up ({:p}); accepted",
+            w.parent_surface
+        );
+    }
     println!(
         "[android] wayland: keyboard enter on {surface:p}{} (the window's own surface is {:p})",
         if ours { "" } else { " -- NOT the engine window; keys stay gated" },
@@ -4459,7 +4489,13 @@ fn reconcile_keyboard_focus() {
         return;
     }
     if let Some(w) = current() {
-        if entered == w.parent_surface as usize {
+        // The same two-way comparison `keyboard_enter` makes, for the same
+        // reason. Two places deciding "is this our surface" by different rules
+        // is how one of them ends up wrong.
+        let live = w.host.0.wl_surface();
+        if entered == w.parent_surface as usize
+            || live.is_some_and(|s| entered == s as usize)
+        {
             KEYBOARD_FOCUSED.store(true, Ordering::Release);
         }
     }
