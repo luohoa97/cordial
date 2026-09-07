@@ -1,6 +1,35 @@
-# ADR-016: A profile can refuse to run without a VPN, brokered through `pvpn`
+# ADR-016: A profile can refuse to run without a VPN, checked by a command it names
 
-**Status:** accepted
+**Status:** accepted, amended 2026-09-08
+
+## Amendment, 2026-09-08: the check is the operator's command, not one project's
+
+**What changed.** This ADR originally brokered the check through
+[`pvpn`](https://github.com/luohoa97/protun-unblocked), a VPN wrapper by this
+project's own maintainer, and `crates/cordial-shell/src/pvpn.rs` shelled out to
+its `status` verb. That module is deleted. `Mode::VpnRequired` now runs a
+`check` command the profile's own `network.json` names -- argv, exit zero means
+the requirement is met -- and Cordial names no tool and ships no default.
+
+**Why.** A client hard-coding a dependency on its maintainer's other project
+reads as self-promotion whatever the technical merits, and the merits did not
+require it: what a separate address means is the operator's to define, and the
+only thing Cordial needed was a yes or no. `CORDIAL_PVPN_BIN` already made the
+binary configurable, which is the tell -- the coupling was to a *name*, not to
+a capability.
+
+**What did not change.** The decision below stands in full: the reason the mode
+exists, the argument that a network namespace is the right long-term answer and
+was not shippable in that pass, and the gate being enforced at both entry
+points. The namespace reasoning is kept as written even though it is phrased
+around one client's behaviour, because it is an argument about NetworkManager
+rather than about that client, and it holds for any VPN managed the same way.
+
+**One behaviour is new.** `vpn-required` with no `check` configured now refuses
+to launch. Previously the equivalent state was "the tool is not installed",
+which also refused. A check that cannot run refuses too: it has established
+nothing, and reading "I could not tell" as "yes" would be a stub lying about
+the one thing this mode exists to guarantee.
 **Extends:** [ADR-013](ADR-013-per-profile-configuration.md)
 **Related:** [ADR-007](ADR-007-host-resources-are-brokered.md), [ADR-012](ADR-012-profiles-and-instances.md)
 
@@ -21,16 +50,17 @@ project's own contributor guidance already requires the thing this ADR builds.
 A profile's `network.json` — placed per ADR-013, beside `flags.json` and
 `plugin-grants.json`, because network egress is identity-scoped in exactly the
 sense that ADR draws the line by — may set `"mode": "vpn-required"`. A profile
-in that mode refuses to start at all unless [`pvpn`](https://github.com/luohoa97/protun-unblocked)
-reports a tunnel that is actually passing traffic, checked at both of
+in that mode refuses to start at all unless the `check` command it names
+exits zero, checked at both of
 Cordial's entry points: the shell's `launch.rs`, before the engine process is
 even spawned, and `cordial-run`'s own `main`, so that starting the client
 directly — which AGENTS.md documents as fully supported — cannot bypass a
 requirement the shell would have enforced. A profile with no `network.json`,
 which is every profile that exists today, is unaffected.
 
-The check shells out to `pvpn status` and nothing else. It never calls
-`pvpn up`, `down`, or `hop` — see `crates/cordial-shell/src/pvpn.rs` for why
+The check runs the configured command and reads its exit status, and nothing
+else. Cordial never brings a tunnel up or down — see the amendment above and
+`crates/cordial-shell/src/network.rs` for why
 deciding when to connect is left to whoever is running Cordial rather than
 folded into a launch button.
 
@@ -88,34 +118,38 @@ a Flatpak in particular does not hand this out by default, and ADR-007's
 argument against broad sandbox permissions applies here exactly as it does to
 `--filesystem=host`.
 
-**`pvpn` would not scope into one even if the privilege existed.** Reading
-`bin/pvpn` in the sibling project settles this rather than assuming it:
-`cmd_up` drives Proton's own Linux client, which manages its tunnel as a
-NetworkManager connection (`nmcli con up`, `nmcli con show --active`, and the
-kill-switch device `pvpnksintrf0` NetworkManager leaves behind).
-NetworkManager is a system service running in the host's own network
-namespace; the interface it brings up is created there regardless of which
-namespace the command that asked for it was run inside. Running `pvpn up`
-under `ip netns exec cordial-<profile>` would produce the same machine-wide
-tunnel `pvpn up` always produces, asked for from a process that happened to be
-in a namespace at the time — not a tunnel scoped to that namespace. A
-namespace that could actually hold a Proton tunnel of its own would need to
-bypass NetworkManager entirely: extract the WireGuard parameters an
-established connection actually negotiated, and bring up a second,
-namespace-local interface with `wg-quick` directly. `pvpn` does not expose
-that today, and this pass did not build it.
+**And the common kind of VPN client would not scope into one even if the
+privilege existed.** This was established by reading one such client rather
+than assumed, and the conclusion is about NetworkManager rather than about that
+client: a tunnel managed as a NetworkManager connection (`nmcli con up`,
+`nmcli con show --active`, and the kill-switch device it leaves behind) is
+brought up by a system service running in the host's own network namespace.
+The interface it creates lands there regardless of which namespace the command
+that asked for it was run inside. Bringing such a tunnel up under `ip netns
+exec cordial-<profile>` would produce the same machine-wide tunnel it always
+produces, asked for from a process that happened to be in a namespace at the
+time — not a tunnel scoped to that namespace. A namespace that could hold a
+tunnel of its own would have to bypass NetworkManager entirely: extract the
+WireGuard parameters an established connection had negotiated, and bring up a
+second, namespace-local interface with `wg-quick` directly. That is a
+different piece of work and this pass did not build it.
 
 ## What this ships instead
 
 A coarser, honest guarantee, not the strong one. A `vpn-required` profile
-refuses to start at all unless `pvpn status` shows traffic actually passing —
-not merely "connected", which `pvpn`'s own `cmd_status` already distinguishes
-from a stale, post-suspend tunnel that claims to be up while dead (see
-`pvpn.rs` for why `Traffic: passing` is the only string this trusts). It does
-not isolate a running profile's traffic from a different profile running
-alongside it on the same machine at the same time — ADR-012's own demonstrated
-two-windows-at-once case — because the tunnel `pvpn` brings up is one, global,
-machine-wide route, not one per profile. What it does guarantee, at both of
+refuses to start at all unless the `check` command it names exits zero.
+
+**A lesson worth passing to whoever writes that check**, learned from the
+client this originally brokered: "connected" and "carrying traffic" are
+different questions, and a client can go on reporting the first after a suspend
+while the transport underneath is dead. A check that tests only for
+"connected" agrees with a tunnel that is not working, which is worse than no
+check, because it is acted on. Test for traffic actually passing.
+
+It does not isolate a running profile's traffic from a different profile
+running alongside it on the same machine at the same time — ADR-012's own
+demonstrated two-windows-at-once case — because a machine-wide tunnel is one
+global route, not one per profile. What it does guarantee, at both of
 Cordial's entry points: this profile will never make even its own
 client-settings request on this machine's ordinary route while believing
 itself protected, and a profile with no `network.json` behaves exactly as it
@@ -128,12 +162,14 @@ always has.
 - `unshare --net -- ip link` on the machine this was written on:
   `unshare: unshare failed: Operation not permitted` (`id` shows an
   unprivileged user; `getpcaps` shows no `CAP_NET_ADMIN`).
-- `pvpn version` and `pvpn status`, run for real against a genuinely installed
-  `pvpn`, genuinely connected to a free Proton server at the time: `Status:
-  Connected`, `Server: SG-FREE#5 in Singapore, Singapore`, `Protocol:
-  protun-tls`, `Traffic: passing`, with no ANSI escapes when piped —
-  confirming `pvpn.rs`'s parser can rely on plain text under
-  `Command::output()`.
+- The status verb of the VPN wrapper this originally brokered, run for real
+  against a genuinely connected free server at the time, reported both
+  "connected" and "traffic passing" as separate lines and emitted no ANSI
+  escapes when piped. **Kept as the record of where the connected-versus-
+  passing distinction came from**, which is the one part of that integration
+  worth carrying forward; the tool itself is no longer involved, and a check
+  command's exit status is now the whole contract, so nothing parses text any
+  more.
 - `cargo build --release` and `cargo test --workspace`, both green, including
   the new modules' tests.
 - A genuine, intermittent test-isolation bug this change's own testing
@@ -146,12 +182,14 @@ always has.
   one mutex (`crate::PROFILE_ROOT_ENV` in `main.rs`) across every file in the
   binary that touches that variable; twelve subsequent runs were clean.
 
-**Read, not run, and said so in the code that relies on it:** `pvpn`'s
-`cmd_status` only prints a `Traffic:` line inside its `if is_connected` branch,
-so a disconnected `pvpn status` produces no such line at all — this was
-confirmed by reading `bin/pvpn` directly, not by disconnecting the real tunnel
-already in use on the machine this was written on, which this session
-deliberately avoided disturbing.
+**Read, not run, and said so in the code that relied on it:** the wrapper's
+status verb only printed its traffic line while it believed it was connected,
+so a disconnected run produced no such line at all — established by reading
+that tool's source, not by disconnecting the real tunnel in use on the machine
+this was written on, which the session deliberately avoided disturbing. Kept
+because the distinction between reading and running is the kind of claim this
+project asks to be labelled, and because nothing parses text any more: the
+exit status of the operator's own command is the whole contract now.
 
 **`INFERRED`:** that curl inside the engine actually honours
 `http_proxy`/`HTTPS_PROXY` the way libcurl's documented default behaviour
@@ -171,10 +209,10 @@ same time. This is the honest limit of a machine-wide tunnel, stated plainly
 rather than implied away — see "What this ships instead," above.
 
 **Accepted:** this never brings a tunnel up or down itself, and so adds real
-friction — connect with `pvpn up` before launching a `vpn-required` profile,
-same as today, just now enforced rather than merely advised. `pvpn`'s own
-README measures ordinary connects at 12 to 45-plus seconds before its grace
-period even starts; folding that into a launch button was considered and
+friction — bring the connection up before launching a `vpn-required` profile,
+same as today, just now enforced rather than merely advised. An ordinary VPN
+connect was measured at tens of seconds on the client this was written
+against; folding that into a launch button was considered and
 rejected as a second surprising thing happening at the moment somebody
 expected only a game to open.
 
@@ -185,8 +223,8 @@ poller this pass did not build — see HANDOVER.md.
 
 **Rejected: a network namespace this pass.** Ruled out analytically rather
 than attempted and abandoned — see "Why not a network namespace, yet," above.
-Remains the right long-term mechanism once `pvpn` (or a parallel path that
-bypasses NetworkManager) can produce a tunnel scoped to one namespace, and
+Remains the right long-term mechanism once something can produce a tunnel
+scoped to one namespace — which means bypassing NetworkManager — and
 once Cordial's packaging can grant the namespace privilege this session
 measured itself not to have.
 
@@ -197,9 +235,10 @@ above.
 
 ## What would change this
 
-If `pvpn` grows a way to hand over the WireGuard parameters of an established
-connection — or if Proton's Linux client stack moves off NetworkManager for
-its tunnel — a namespace-scoped tunnel becomes buildable, and with it true
+If a VPN client grows a way to hand over the WireGuard parameters of an
+established connection — or if the common Linux clients move off
+NetworkManager for their tunnels — a namespace-scoped tunnel becomes
+buildable, and with it true
 concurrent per-profile isolation rather than the launch-time gate this ADR
 ships. If Cordial's packaging ever grants `CAP_NET_ADMIN` (or runs
 unsandboxed with root available), the privilege half of the namespace

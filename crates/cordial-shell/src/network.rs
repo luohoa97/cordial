@@ -77,34 +77,32 @@
 //! against broad sandbox permissions applies here just as much as it does to
 //! `--filesystem=host`.
 //!
-//! **`pvpn` itself would not scope into one even if the privilege existed.**
-//! Reading `bin/pvpn` in the sibling project settles this rather than
-//! assuming it: `cmd_up` drives Proton's own Linux client, which manages its
-//! tunnel as a NetworkManager connection (`nmcli con up`, `nmcli con show
-//! --active`, and the kill-switch device `pvpnksintrf0` NetworkManager leaves
-//! behind). NetworkManager is a system service running in the host's own
-//! network namespace; the interface it brings up is created there regardless
-//! of which namespace the command that asked for it was run inside. Running
-//! `pvpn up` under `ip netns exec cordial-<profile>` would not produce a
-//! tunnel scoped to that namespace — it would produce the exact same
-//! machine-wide tunnel `pvpn up` always produces, asked for from a process
+//! **And a VPN client would not scope into one even if the privilege
+//! existed.** The common shape on this desktop is a client that manages its
+//! tunnel as a NetworkManager connection. NetworkManager is a system service
+//! running in the host's own network namespace, so the interface it brings up
+//! is created there regardless of which namespace the command that asked for
+//! it was run inside. Bringing such a tunnel up under `ip netns exec
+//! cordial-<profile>` would not produce a tunnel scoped to that namespace --
+//! it would produce the same machine-wide tunnel, asked for from a process
 //! that happened to be in a namespace at the time. A namespace that could
-//! actually hold a Proton tunnel of its own would need to bypass
-//! NetworkManager entirely — extracting the WireGuard parameters an
-//! established connection actually negotiated and bringing up a second,
-//! namespace-local interface with `wg-quick` directly, which `pvpn` does not
-//! expose today and this pass did not build.
+//! hold a tunnel of its own would have to bypass NetworkManager entirely,
+//! bringing up a second namespace-local interface with `wg-quick` from
+//! parameters an established connection had already negotiated. That is a
+//! different piece of work and this pass did not build it.
 //!
 //! So a namespace remains the right long-term answer and the wrong thing to
-//! ship half-verified this pass — see ADR-016 for what would need to be true
-//! first, and HANDOVER.md for the concrete next step.
+//! ship half-verified -- see ADR-016 for what would need to be true first, and
+//! HANDOVER.md for the concrete next step.
 //!
 //! ## What this ships instead
 //!
 //! A coarser, honest guarantee: a profile marked [`Mode::VpnRequired`] refuses
-//! to start at all unless `pvpn` reports a tunnel that is actually passing
-//! traffic right now (see `pvpn.rs` for why that check is stricter than
-//! "connected"). It does not isolate a running profile's traffic from any
+//! to start at all unless the check command in its own `network.json` exits
+//! zero. Cordial names no tool and ships no default: what a separate address
+//! means is the operator's to define, and hard-coding one project's status
+//! verb into a client is a coupling this module used to have and no longer
+//! does (ADR-016's amendment says why). It does not isolate a running profile's traffic from any
 //! other profile that happens to be running alongside it on the same
 //! machine — that stronger property needs the namespace above — and it does
 //! not itself bring the tunnel up or down. What it does guarantee, and does so
@@ -140,7 +138,7 @@ pub enum Mode {
     /// No requirement — today's behaviour, and what every profile without a
     /// `network.json` gets.
     Default,
-    /// Refuse to start unless `pvpn status` reports traffic actually passing.
+    /// Refuse to start unless the profile's own `check` command exits zero.
     VpnRequired,
 }
 
@@ -154,11 +152,28 @@ impl Default for Mode {
 #[serde(default)]
 pub struct NetworkConfig {
     pub mode: Mode,
+    /// The command that decides whether this profile's egress is what it
+    /// requires. Argv, not a shell line: no quoting rules to get wrong and no
+    /// shell to inject into.
+    ///
+    /// **Cordial names no tool and ships no default.** This used to shell out
+    /// to one specific VPN wrapper, which made a client hard-code a dependency
+    /// on one project -- see ADR-016's amendment. What a separate address means
+    /// is the operator's to define: a VPN client's own status verb, a `curl`
+    /// against something that echoes the source address, a script that checks a
+    /// WireGuard handshake age. Cordial only runs it and reads the exit status.
+    ///
+    /// Exit zero means the requirement is met. Anything else, including the
+    /// command not existing, means it is not, and the profile refuses to
+    /// launch. That direction is deliberate: a check that cannot run has not
+    /// established anything, and treating "I could not tell" as "yes" would be
+    /// a stub that lies about the one thing this mode exists to guarantee.
+    pub check: Vec<String>,
 }
 
 impl Default for NetworkConfig {
     fn default() -> Self {
-        Self { mode: Mode::Default }
+        Self { mode: Mode::Default, check: Vec::new() }
     }
 }
 
@@ -209,22 +224,36 @@ pub fn save(profile_dir: &Path, config: &NetworkConfig) -> std::io::Result<()> {
 /// distinction rots later.
 #[derive(Debug)]
 pub enum Refusal {
-    PvpnNotInstalled(crate::pvpn::Error),
-    VpnNotPassing(String),
+    /// `vpn-required` with no `check` configured. Refusing is the only honest
+    /// answer: the profile asked for a guarantee and nothing was given that
+    /// could establish it.
+    NoCheck,
+    /// The check could not be run at all -- not installed, not executable.
+    CheckUnavailable { command: String, why: String },
+    /// It ran and said no.
+    CheckFailed { command: String, code: String, detail: String },
 }
 
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Refusal::PvpnNotInstalled(e) => write!(
+            Refusal::NoCheck => write!(
                 f,
-                "this profile requires a VPN (network.json: vpn-required), but {e}"
+                "this profile is set to vpn-required (network.json) but has no \"check\" \
+                 command, so nothing can establish whether the requirement is met. Add one: \
+                 an argv array that exits zero when this machine's egress is what the profile \
+                 needs, for example [\"my-vpn\", \"status\"]."
             ),
-            Refusal::VpnNotPassing(detail) => write!(
+            Refusal::CheckUnavailable { command, why } => write!(
                 f,
-                "this profile requires a VPN (network.json: vpn-required), and pvpn reports it is \
-                 not passing traffic. Run `pvpn up` first, then launch this profile again.\n\
-                 pvpn status said:\n{detail}"
+                "this profile requires a VPN (network.json: vpn-required) and its check \
+                 command could not be run: {command}\n{why}"
+            ),
+            Refusal::CheckFailed { command, code, detail } => write!(
+                f,
+                "this profile requires a VPN (network.json: vpn-required) and its check said \
+                 no. Bring the connection up, then launch again.\n{command} exited {code}\
+                 {detail}"
             ),
         }
     }
@@ -234,19 +263,55 @@ impl std::fmt::Display for Refusal {
 /// this crate and `cordial-run`'s own `main` — so that neither can start an
 /// instance a `vpn-required` profile asked not to run unprotected.
 ///
-/// [`Mode::Default`] never touches `pvpn` at all: a profile that asked for
-/// nothing pays no cost and takes no new dependency on `pvpn` being
-/// installed, which matters because most profiles, and every profile that
-/// exists before this change, will stay in that state.
+/// [`Mode::Default`] runs nothing at all: a profile that asked for no
+/// guarantee pays no cost and spawns no process, which matters because most
+/// profiles, and every profile that predates this feature, are in that state.
 pub fn ensure_launchable(profile_dir: &Path) -> Result<(), Refusal> {
-    match load(profile_dir).mode {
+    let config = load(profile_dir);
+    match config.mode {
         Mode::Default => Ok(()),
-        Mode::VpnRequired => match crate::pvpn::status() {
-            Ok(crate::pvpn::Status::Passing) => Ok(()),
-            Ok(crate::pvpn::Status::NotPassing(detail)) => Err(Refusal::VpnNotPassing(detail)),
-            Err(e) => Err(Refusal::PvpnNotInstalled(e)),
-        },
+        Mode::VpnRequired => run_check(&config.check),
     }
+}
+
+/// Run the configured check and turn its exit status into a verdict.
+///
+/// Split out so the three outcomes are testable with `true`, `false` and a
+/// path that does not exist, without a VPN or a network.
+fn run_check(argv: &[String]) -> Result<(), Refusal> {
+    let Some((program, args)) = argv.split_first() else {
+        return Err(Refusal::NoCheck);
+    };
+    let shown = argv.join(" ");
+    let output = match std::process::Command::new(program).args(args).output() {
+        Ok(o) => o,
+        Err(e) => {
+            return Err(Refusal::CheckUnavailable { command: shown, why: e.to_string() })
+        }
+    };
+    if output.status.success() {
+        return Ok(());
+    }
+    // Both streams, trimmed: a check that explains itself is worth quoting, and
+    // one that says nothing should not produce a blank line pretending to be
+    // output. Bounded, because this ends up in a dialog.
+    let mut detail = String::new();
+    for stream in [&output.stdout, &output.stderr] {
+        let text = String::from_utf8_lossy(stream);
+        let text = text.trim();
+        if !text.is_empty() {
+            detail.push('\n');
+            detail.push_str(&text.chars().take(600).collect::<String>());
+        }
+    }
+    Err(Refusal::CheckFailed {
+        command: shown,
+        code: match output.status.code() {
+            Some(c) => c.to_string(),
+            None => "on a signal".to_string(),
+        },
+        detail,
+    })
 }
 
 #[cfg(test)]
@@ -277,7 +342,7 @@ mod tests {
     #[test]
     fn a_saved_requirement_round_trips() {
         let dir = scratch("roundtrip");
-        save(&dir, &NetworkConfig { mode: Mode::VpnRequired }).unwrap();
+        save(&dir, &NetworkConfig { mode: Mode::VpnRequired, check: Vec::new() }).unwrap();
         assert_eq!(load(&dir).mode, Mode::VpnRequired);
     }
 
@@ -300,28 +365,88 @@ mod tests {
         let b = root.join("main");
         std::fs::create_dir_all(&a).unwrap();
         std::fs::create_dir_all(&b).unwrap();
-        save(&a, &NetworkConfig { mode: Mode::VpnRequired }).unwrap();
+        save(&a, &NetworkConfig { mode: Mode::VpnRequired, check: Vec::new() }).unwrap();
         assert_eq!(load(&a).mode, Mode::VpnRequired);
         assert_eq!(load(&b).mode, Mode::Default, "a neighbouring profile must not inherit this");
     }
 
+    /// A profile that asked for a guarantee and gave nothing that could
+    /// establish it must refuse, not shrug. This is the case that replaced the
+    /// hard-coded tool: previously "no VPN client installed" was the failure,
+    /// and now "you did not say how to check" is.
     #[test]
-    fn a_vpn_required_profile_is_refused_when_pvpn_is_missing_and_the_message_says_so() {
-        let dir = scratch("no-pvpn");
-        save(&dir, &NetworkConfig { mode: Mode::VpnRequired }).unwrap();
-
-        // Same override, and the same shared lock, as `pvpn.rs`'s own
-        // missing-binary test: `CORDIAL_PVPN_BIN` is process-wide, and cargo
-        // runs both files' tests in parallel threads of one process, so a
-        // second, independent mutex here would not stop this test and
-        // `pvpn.rs`'s from interleaving with each other.
-        let _g = crate::pvpn::PVPN_BIN_ENV.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("CORDIAL_PVPN_BIN", "/nonexistent/definitely-not-here/pvpn");
-        let result = ensure_launchable(&dir);
-        std::env::remove_var("CORDIAL_PVPN_BIN");
-
-        let err = result.expect_err("must refuse rather than launch unprotected");
-        assert!(matches!(err, Refusal::PvpnNotInstalled(_)), "{err}");
+    fn vpn_required_with_no_check_refuses_and_says_what_to_add() {
+        let dir = scratch("no-check");
+        save(&dir, &NetworkConfig { mode: Mode::VpnRequired, check: Vec::new() }).unwrap();
+        let err = ensure_launchable(&dir).expect_err("must refuse rather than launch unguarded");
+        assert!(matches!(err, Refusal::NoCheck), "{err}");
         assert!(err.to_string().contains("vpn-required"), "{err}");
+        assert!(err.to_string().contains("check"), "{err}");
+    }
+
+    /// Exit zero is the whole contract, so `true` is a passing check.
+    #[test]
+    fn a_check_that_exits_zero_lets_the_profile_launch() {
+        let dir = scratch("check-ok");
+        save(&dir, &NetworkConfig {
+            mode: Mode::VpnRequired,
+            check: vec!["true".into()],
+        })
+        .unwrap();
+        assert!(ensure_launchable(&dir).is_ok());
+    }
+
+    /// And anything else refuses. `false` says nothing, which is also the case
+    /// where the message must not contain a stray blank line pretending to be
+    /// output.
+    #[test]
+    fn a_check_that_fails_refuses_and_quotes_what_it_said() {
+        let dir = scratch("check-no");
+        save(&dir, &NetworkConfig {
+            mode: Mode::VpnRequired,
+            check: vec!["false".into()],
+        })
+        .unwrap();
+        let err = ensure_launchable(&dir).expect_err("a failing check must refuse");
+        assert!(matches!(err, Refusal::CheckFailed { .. }), "{err}");
+        assert!(err.to_string().contains("exited 1"), "{err}");
+
+        let dir = scratch("check-talks");
+        save(&dir, &NetworkConfig {
+            mode: Mode::VpnRequired,
+            check: vec!["sh".into(), "-c".into(), "echo tunnel is down; exit 3".into()],
+        })
+        .unwrap();
+        let err = ensure_launchable(&dir).expect_err("a failing check must refuse");
+        assert!(err.to_string().contains("tunnel is down"), "{err}");
+        assert!(err.to_string().contains("exited 3"), "{err}");
+    }
+
+    /// **A check that cannot run is a refusal, not a pass.** It has
+    /// established nothing, and reading "I could not tell" as "yes" would be a
+    /// stub that lies about the one thing this mode exists to guarantee.
+    #[test]
+    fn a_check_that_cannot_be_run_refuses_rather_than_assuming_the_best() {
+        let dir = scratch("check-missing");
+        save(&dir, &NetworkConfig {
+            mode: Mode::VpnRequired,
+            check: vec!["/nonexistent/definitely-not-here/vpn-check".into()],
+        })
+        .unwrap();
+        let err = ensure_launchable(&dir).expect_err("an unrunnable check must refuse");
+        assert!(matches!(err, Refusal::CheckUnavailable { .. }), "{err}");
+    }
+
+    /// The default mode spawns nothing at all, even with a check configured --
+    /// a profile that asked for no guarantee should pay no cost.
+    #[test]
+    fn the_default_mode_never_runs_the_check() {
+        let dir = scratch("default-mode");
+        save(&dir, &NetworkConfig {
+            mode: Mode::Default,
+            check: vec!["/nonexistent/definitely-not-here/vpn-check".into()],
+        })
+        .unwrap();
+        assert!(ensure_launchable(&dir).is_ok());
     }
 }

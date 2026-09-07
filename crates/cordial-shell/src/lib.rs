@@ -15,7 +15,7 @@
 //! it in the library half means the runtime can adopt this copy and delete its
 //! own without the code moving twice. See that module's header.
 //!
-//! [`network`] and [`pvpn`] are here for the same shape of reason as
+//! [`network`] is here for the same shape of reason as
 //! `profile`, deliberately placed rather than accidentally landing here: both
 //! of Cordial's entry points — this crate's own `launch.rs`, and
 //! `cordial-run` invoked directly, which AGENTS.md documents as fully
@@ -29,7 +29,6 @@ pub mod json_highlight;
 pub mod network;
 pub mod plugin_preferences;
 pub mod profile;
-pub mod pvpn;
 // Not pulled in by `host_window` or `network` -- registered here on its own
 // so `cordial-runtime` can reach it as `cordial_shell::refresh_watch`, which
 // `refresh_watch.rs`'s own header names as the one thing left to do before

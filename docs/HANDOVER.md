@@ -79,7 +79,7 @@ sharing an address. The risk is collateral rather than causal.
 ## Per-profile network egress (ADR-016), and what is still missing
 
 A profile's `network.json` can now say `"mode": "vpn-required"`, which refuses
-to start the client at all unless `pvpn status` reports traffic actually
+to start the client at all unless the profile's own `check` command exits zero and reports traffic actually
 passing — checked at both the shell's `launch.rs` and `cordial-run`'s own
 `main`, so starting the client directly cannot skip it. Read ADR-016 before
 touching any of this; the short version is below, with what to trust and what
@@ -88,24 +88,25 @@ not to.
 **What this actually guarantees, and does not.** A `vpn-required` profile will
 never make even Cordial's own client-settings request on the machine's
 ordinary route while believing itself protected. It does **not** isolate two
-profiles running at once from each other — `pvpn`'s tunnel is one, global,
+profiles running at once from each other — a machine-wide tunnel is one, global,
 machine-wide route, and ADR-012's own two-windows-at-once case means a second
 profile running alongside a `vpn-required` one shares whatever route is
 active, VPN or not. Read the mechanism's name literally: a launch gate, not a
 sandbox.
 
 **Why it stops at a gate rather than a namespace, and this is the load-bearing
-fact for whoever picks this up next.** `pvpn` drives Proton's own Linux client,
+fact for whoever picks this up next.** the VPN wrapper this originally brokered drove a client
 which brings its tunnel up as a NetworkManager connection — confirmed by
-reading `bin/pvpn` in the sibling project, not assumed. NetworkManager is a
+reading that client, not assumed. NetworkManager is a
 system service in the host's own network namespace, so the interface it
 creates lands there regardless of which namespace the command that asked for
-it was run inside. `ip netns exec cordial-<profile> pvpn up` would not produce
-a namespace-scoped tunnel; it would produce the same machine-wide one `pvpn up`
-always produces. A real per-profile tunnel needs `pvpn` (or something
+it was run inside. bringing such a tunnel up under `ip netns exec cordial-<profile>` would not produce
+a namespace-scoped tunnel; it would produce the same machine-wide one such a
+client always produces. A real per-profile tunnel needs a client (or something
 alongside it) to hand over the WireGuard parameters an established connection
 negotiated, so a second, namespace-local interface can be brought up directly
-with `wg-quick`, bypassing NetworkManager entirely. Nothing in `pvpn` exposes
+with `wg-quick`, bypassing NetworkManager entirely. Nothing in the client
+this was written against exposed
 that today. **This is the concrete next step**, not "make the namespace work"
 in the abstract — the namespace mechanics themselves (veth, routing, `ip netns
 exec`) are ordinary and not the hard part; extracting a usable tunnel
