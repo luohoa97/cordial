@@ -1322,6 +1322,25 @@ impl HostWindow {
     /// `wl_subsurface.set_position` is expressed in the parent's surface
     /// coordinates. Adding the two is the difference between the engine
     /// landing under the header bar and landing under the shadow.
+    /// The physical size in millimetres of the monitor this window is on.
+    ///
+    /// `None` when nothing knows -- either there is no surface yet, or the
+    /// compositor reports no physical size for the output, which is ordinary for
+    /// virtual and remote ones and is why this is an `Option` rather than a pair
+    /// of zeroes with a comment.
+    ///
+    /// The monitor the window is actually on rather than the first in the list:
+    /// the engine uses this to reason about how large its interface is in the
+    /// user's field of view, and a laptop panel beside a television are different
+    /// answers to that question.
+    pub fn monitor_physical_mm(&self) -> Option<(i32, i32)> {
+        let surface = self.window.surface()?;
+        let display = WidgetExt::display(&self.window);
+        let monitor = display.monitor_at_surface(&surface)?;
+        let (w, h) = (monitor.width_mm(), monitor.height_mm());
+        (w > 0 && h > 0).then_some((w, h))
+    }
+
     pub fn content_rect(&self) -> Option<(i32, i32, i32, i32)> {
         let bounds = self.content.compute_bounds(&self.window)?;
         let (dx, dy) = self.window.surface_transform();

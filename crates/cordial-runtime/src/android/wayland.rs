@@ -5614,6 +5614,15 @@ pub fn visible() -> Option<bool> {
     current().and_then(|w| w.host.0.visible())
 }
 
+/// The physical size in millimetres of the monitor the window is on.
+///
+/// See [`cordial_shell::host_window::HostWindow::monitor_physical_mm`], which
+/// carries the reasoning about why it is the window's own monitor rather than
+/// the first in the list.
+pub fn display_physical_mm() -> Option<(i32, i32)> {
+    current().and_then(|w| w.host.0.monitor_physical_mm())
+}
+
 /// The toplevel's whole state as a string, for the run that established what
 /// [`visible`] can see. `CORDIAL_INSTR=1` prints it beside the geometry.
 pub fn instr_toplevel_state() -> String {

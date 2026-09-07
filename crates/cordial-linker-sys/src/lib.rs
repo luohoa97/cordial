@@ -441,6 +441,7 @@ pub mod game_activity {
             n: usize,
         ) -> c_int;
         fn cordial_set_display_size(width: c_int, height: c_int);
+        fn cordial_set_display_physical_mm(width_mm: c_int, height_mm: c_int);
         fn cordial_set_ui_mode_night(night: c_int);
         fn cordial_get_fint(
             f: *mut c_void,
@@ -1403,6 +1404,17 @@ pub mod game_activity {
         // SAFETY: writes two ints behind a mutex-free but single-threaded
         // startup path, the same one `set_init_params` already runs on.
         unsafe { cordial_set_display_size(width as c_int, height as c_int) }
+    }
+
+    /// The display's physical size in millimetres, for
+    /// `DeviceUtils.getScreenPhysicalSizeInMillimeters`.
+    ///
+    /// Zero means "not known", which is a state the engine has its own branch
+    /// for -- see the class in `native/init_params.cpp`. Passing zero is
+    /// therefore correct rather than a failure to call this.
+    pub fn set_display_physical_mm(width_mm: i32, height_mm: i32) {
+        // SAFETY: two ints into a setter that only stores them.
+        unsafe { cordial_set_display_physical_mm(width_mm as c_int, height_mm as c_int) }
     }
 
     /// `FlagJniInterface.nativeGetFInt(String, int)I` — ask the engine what a

@@ -2487,6 +2487,22 @@ fn main() -> ExitCode {
                                             width as i32,
                                             height as i32,
                                         );
+                                        // And the same display in millimetres,
+                                        // for `DeviceUtils`. Beside the pixel
+                                        // size because they are one fact about
+                                        // one output and the comment above is
+                                        // about what happens when the two
+                                        // halves of such a fact drift apart.
+                                        //
+                                        // `(0, 0)` when the compositor reports
+                                        // no physical size, which the engine
+                                        // reads as null and already handles.
+                                        // The alternative is not calling this
+                                        // at all, which leaves the same zeroes
+                                        // and says less.
+                                        let (mm_w, mm_h) = cordial_runtime::android::display_physical_mm()
+                                            .unwrap_or((0, 0));
+                                        linker::game_activity::set_display_physical_mm(mm_w, mm_h);
 
                                         // The engine's own init sequence, in the
                                         // order MainGameActivity.onCreate runs it.

@@ -180,6 +180,20 @@ pub fn connection_fd() -> Option<c_int> {
 }
 
 /// TEMPORARY INSTRUMENTATION -- not for commit.
+/// The physical size of the display this window is on, in millimetres.
+///
+/// `None` when nothing knows: no window yet, no toplevel, an X11 backend that
+/// does not track it, or a compositor reporting no physical size for the
+/// output -- which is ordinary for virtual and remote ones. The caller passes
+/// zeroes on, and the engine reads those as null, which is a branch it already
+/// has a handler for. See `DeviceUtils` in `native/init_params.cpp`.
+pub fn display_physical_mm() -> Option<(i32, i32)> {
+    match backend() {
+        Backend::Wayland => wayland::display_physical_mm(),
+        Backend::X11 => None,
+    }
+}
+
 pub fn backend_instr_geometry() -> String {
     match backend() {
         Backend::Wayland => wayland::instr_geometry(),

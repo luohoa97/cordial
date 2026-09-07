@@ -111,6 +111,21 @@ void set_display_size(int width, int height) {
     g_height = height;
 }
 
+/// The display's physical size in millimetres, or zero for "nobody knows".
+///
+/// Zero is a real state and not a placeholder: a compositor is entitled to
+/// report no physical size for an output, and several do for virtual or
+/// remote ones. `DeviceUtils::getScreenPhysicalSizeInMillimeters` returns null
+/// in that case rather than a made-up number, which is the branch the engine
+/// already carries a handler for.
+std::atomic<int> g_width_mm{0};
+std::atomic<int> g_height_mm{0};
+
+void set_display_physical_mm(int width_mm, int height_mm) {
+    g_width_mm.store(width_mm, std::memory_order_relaxed);
+    g_height_mm.store(height_mm, std::memory_order_relaxed);
+}
+
 class AndroidActivity;
 std::shared_ptr<Object> make_display_metrics(ENV* env);
 /// Defined below with `Insets`; declared here so game_activity.cpp can
@@ -652,6 +667,92 @@ public:
         F(hardKeyboardHidden); F(navigation); F(navigationHidden);
         F(mcc); F(mnc); F(fontWeightAdjustment);
 #undef F
+    }
+};
+
+/// `android.graphics.Point`
+///
+/// Two int fields. The engine reads them by field id after a `FindClass`, so
+/// both have to be hooked -- an unresolved field is not a field that reads
+/// zero, and `getViewportDisplaySize` has a distinct log line for failing to
+/// get them.
+class Point : public Object {
+public:
+    jint x = 0;
+    jint y = 0;
+
+    static std::shared_ptr<Point> Create(ENV* env, jint x, jint y) {
+        auto p = std::make_shared<Point>();
+        p->x = x;
+        p->y = y;
+        jnivm::JNITypes<std::shared_ptr<Point>>::ToJNIType(env, p);
+        return p;
+    }
+
+    static void Register(ENV* env) {
+        env->GetClass<Point>("android/graphics/Point");
+        auto c = env->GetClass("android/graphics/Point");
+        c->HookInstance(env, "x", &Point::x);
+        c->HookInstance(env, "y", &Point::y);
+    }
+};
+
+/// `com.roblox.platform.util.DeviceUtils`
+///
+/// **The engine asks for this and no dex in the APK declares it.** Every run
+/// logs `getViewportDisplaySize: Failed to find class 'DeviceUtils'` twice,
+/// healthy or not -- confirmed on a 2.737.0.1584 run that reached the Landing
+/// page at 60 fps, which is also what rules it out as the cause of the crashes
+/// in #34 and #35 that were attributed to it.
+///
+/// So this is the `broken_feature` shape rather than a crash: an Android
+/// expectation nobody answers, leaving the engine without the display's
+/// physical size. The contract is read from the strings in `libroblox.so`,
+/// which carry the whole call in sequence -- find the class, find the static
+/// method, get the `Point` class, get the `x` and `y` field ids, then
+/// `(in millimeters): x = {}, y = {}`.
+///
+/// **Registered, and the engine still does not find it. Measured, not
+/// assumed.** A probe in `Register` prints; a probe in the getter never does;
+/// the engine goes on logging `Failed to find class 'DeviceUtils'` on a run
+/// that reaches the Landing page at 60 fps. So jnivm holds the class under
+/// exactly the name the engine's own strings carry -- there is no other
+/// spelling of it in the binary, bare or qualified -- and the engine's
+/// `FindClass` does not reach it.
+///
+/// That is where this stops, and the remaining question is about jnivm's
+/// lookup rather than about the contract: other Cordial classes are found, so
+/// something distinguishes this path. `--dump-classes` would name what the
+/// engine asked for and did not produce a file on the run that tried it.
+///
+/// Kept rather than reverted because the contract below is read off the
+/// engine's own strings and is right whatever the lookup turns out to need,
+/// and because returning null costs nothing while it is unreachable. What must
+/// not happen is somebody reading this as working: **the getter has never been
+/// observed to run.**
+///
+/// **Null when the size is unknown, never a guess.** The engine has a distinct
+/// handler for `returned null`, so admitting ignorance is a state it already
+/// understands; inventing a plausible screen size would be a stub that lies,
+/// and the engine would size its UI by it. A compositor that reports no
+/// physical size for an output -- common for virtual and remote ones -- gets
+/// the null.
+class DeviceUtils : public Object {
+public:
+    static std::shared_ptr<Point> getScreenPhysicalSizeInMillimeters(ENV* env, Class*) {
+        const int w = g_width_mm.load(std::memory_order_relaxed);
+        const int h = g_height_mm.load(std::memory_order_relaxed);
+        if (w <= 0 || h <= 0) {
+            return nullptr;
+        }
+        return Point::Create(env, w, h);
+    }
+
+    static void Register(ENV* env) {
+        env->GetClass<DeviceUtils>("com/roblox/platform/util/DeviceUtils");
+        auto c = env->GetClass("com/roblox/platform/util/DeviceUtils");
+        c->Hook(env, "getScreenPhysicalSizeInMillimeters",
+                &DeviceUtils::getScreenPhysicalSizeInMillimeters);
     }
 };
 
@@ -1846,6 +1947,10 @@ void register_init_params_classes(ENV* env) {
     Resources::Register(env);
     Configuration::Register(env);
     Insets::Register(env);
+    // `Point` before `DeviceUtils`, which returns one -- the ordering that
+    // `Insets::Declare` exists for, applied before it can bite again.
+    Point::Register(env);
+    DeviceUtils::Register(env);
     WindowInsetsCompatType::Register(env);
     AndroidActivity::Register(env);
     // These classes are registered by register_game_activity_classes, which runs
@@ -2532,6 +2637,15 @@ extern "C" void cordial_set_display_size(int width, int height) {
     if (width > 0 && height > 0) {
         cordial::set_display_size(width, height);
     }
+}
+
+/// Zero or negative is accepted and means "unknown", unlike its neighbour
+/// above which refuses it. The difference is deliberate: a display with no
+/// pixels is a bug, a display with no *reported millimetres* is an ordinary
+/// thing for a compositor to say.
+extern "C" void cordial_set_display_physical_mm(int width_mm, int height_mm) {
+    cordial::set_display_physical_mm(width_mm > 0 ? width_mm : 0,
+                                     height_mm > 0 ? height_mm : 0);
 }
 
 /// `FlagJniInterface.nativeGetFInt(String, int)I` — read a live `FInt` back out
