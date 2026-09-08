@@ -339,32 +339,43 @@ pub fn build(
     let initial_window =
         profile::dir(&initial_profile).ok().map(|d| window_state::load(&d, window_state::Which::Launcher)).unwrap_or_default();
 
-    // 540x340 was 720x480 while the content was two preference groups pinned to
-    // the top of it, which left the lower two thirds empty. This is a launcher's
-    // size rather than a settings window's: wide enough that a development
-    // build's title — `git describe` output, beside two header-bar buttons —
-    // does not ellipsise, and tall enough that the centred column has room
-    // around it without being adrift in it. Only the *default*, now doubly so:
-    // it is also what a profile with nothing saved yet falls back to. Kept as
-    // a pure function, the same reason `host_window.rs`'s own `fit_within` is
-    // one, so the fallback is testable without a display.
+    // Kept as a pure function, the same reason `host_window.rs`'s own
+    // `fit_within` is one, so the fallback is testable without a display.
+    // [`DEFAULT_WIDTH`] carries why the built-in size is the size it is, and
+    // why Settings rather than this window's own content is what decides it.
     let (initial_width, initial_height) = initial_size(&initial_window);
     let host = HostWindow::new(&cordial_shell::host_window::title(), initial_width, initial_height, &toasts);
 
     // **The primary menu, rightmost, because that is where GNOME users look.**
     //
-    // Packed before Settings so it ends up nearest the window controls: at the
-    // end, first packed is outermost. The HIG puts app-level actions here --
-    // the ones that are about Cordial rather than about the thing on screen --
-    // and until now Cordial had none of them anywhere, including an About
-    // dialog, which is the conventional home for the version and the licence.
+    // Packed first at the end, so it ends up nearest the window controls. The
+    // HIG puts app-level actions here -- the ones that are about Cordial rather
+    // than about the thing on screen -- and until this menu existed Cordial had
+    // none of them anywhere, including an About dialog, which is the
+    // conventional home for the version and the licence.
     //
-    // Settings keeps its own button rather than folding into this menu. It is
-    // not an app-level action here: it is where the Roblox build, the profiles
-    // and the plugins live, which is most of what anyone opens this launcher to
-    // do. A frequently used primary action earns a button; About and the rest
-    // do not.
+    // **Settings is in this menu rather than in a gear button beside it, and
+    // that is a reversal of the commit that added the menu.** That commit kept
+    // the gear, reasoning that a frequently used action earns a button and that
+    // Settings is where the Roblox build, the profiles and the plugins live.
+    // The HIG is unambiguous the other way: Preferences is a primary-menu item,
+    // and a GNOME application with a gear next to its hamburger is close to
+    // unheard of. Three unlabelled icons in a row -- update, gear, hamburger --
+    // is also the shape that leaves nothing on the header bar saying what any
+    // of it does until it is hovered.
+    //
+    // The onboarding half of the old reasoning does not survive checking
+    // either: a machine with no Roblox build gets the chooser's own status page
+    // with a Download button in the *content*, so the first run never went
+    // through the header bar to reach the installer.
     let primary_menu = gtk::gio::Menu::new();
+    // The bare trailing `::` is not a typo and not a bare action name: this
+    // action takes a string, and everything after `::` is its target, so an
+    // empty one means "open on whatever page libadwaita shows first". Naming
+    // the action without a target at all logs "can't be activated due to
+    // parameter type mismatch" and does nothing, which is what the header-bar
+    // button this replaced had to be wired around.
+    primary_menu.append(Some("_Preferences"), Some("win.settings::"));
     primary_menu.append(Some("_Report a Problem"), Some("win.settings::report"));
     primary_menu.append(Some("_About Cordial"), Some("win.about"));
     let menu_button = gtk::MenuButton::builder()
@@ -374,10 +385,6 @@ pub fn build(
         .primary(true)
         .build();
     host.header().pack_end(&menu_button);
-
-    let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
-    settings_button.set_tooltip_text(Some("Settings"));
-    host.header().pack_end(&settings_button);
 
     let window = host.window().clone();
     // `HostWindow` is deliberately application-less — the runtime has no
@@ -437,6 +444,29 @@ pub fn build(
         );
         if let Some(name) = page.and_then(|p| p.str()).filter(|n| !n.is_empty()) {
             settings.set_visible_page_name(name);
+        }
+        // **Make room for it first, if this window has not got any.**
+        //
+        // Raising [`DEFAULT_WIDTH`] fixes the cramped dialog for a profile that
+        // has never been opened, and for nobody else: `window_state` remembers
+        // a size per profile, so every existing profile carries the old 540x340
+        // and would go on crushing Settings into it for ever, with no clue that
+        // the launcher's size was the cause.
+        //
+        // So the window grows at the moment the space is needed, and only when
+        // it is short of it. Not a floor applied at startup: that would undo a
+        // small launcher somebody had deliberately chosen, every single launch.
+        // Doing it here happens once, in response to opening the thing that
+        // needs the room, and the new size is then remembered like any other.
+        //
+        // Skipped while maximised or fullscreen, where the size is the
+        // compositor's to choose and there is already more room than this asks
+        // for.
+        if !window_for_settings.is_maximized() && !window_for_settings.is_fullscreen() {
+            let (w, h) = (window_for_settings.default_width(), window_for_settings.default_height());
+            if w < settings::CONTENT_WIDTH || h < settings::CONTENT_HEIGHT {
+                window_for_settings.set_default_size(w.max(DEFAULT_WIDTH), h.max(DEFAULT_HEIGHT));
+            }
         }
         // An `AdwDialog` is presented against a parent *widget*, not shown as
         // a window of its own. That is what lets it become a bottom sheet on a
@@ -538,6 +568,17 @@ pub fn build(
                 .developer_name("The Cordial contributors")
                 .website("https://github.com/luohoa97/cordial")
                 .issue_url("https://github.com/luohoa97/cordial/issues/new/choose")
+                // The Discord, under libadwaita's own "Support Questions"
+                // heading, because that is where support actually happens and
+                // it was reachable from nowhere in the application. `README`
+                // and `SUPPORT.md` both lead with it; somebody who has already
+                // installed Cordial and hit something is reading neither.
+                //
+                // Deliberately *not* the developer line above. "Cordial HQ" is
+                // the Discord server's name, and this is where a server name
+                // belongs; the people who wrote the code are the contributors,
+                // which is what a GPL notice beside a licence has to mean.
+                .support_url("https://discord.gg/qJzU3Xfr9b")
                 // `Gpl30`, not `Gpl30Only`: the manifest says
                 // `GPL-3.0-or-later` and GTK spells that distinction in the
                 // enum. Checked against LICENSE and Cargo.toml rather than
@@ -584,6 +625,11 @@ pub fn build(
     // GNOME's own `toggle-fullscreen` and have it work for every window.
     if let Some(app) = window.application() {
         use gtk::prelude::GtkApplicationExt;
+        // Ctrl+comma is the platform's Preferences shortcut, and the menu item
+        // displays it once it is bound here. The same spelling as the menu
+        // entry, empty target and all, because an accelerator is matched
+        // against the whole detailed name.
+        app.set_accels_for_action("win.settings::", &["<Control>comma"]);
         let accel = fullscreen_accel.clone();
         if accel.is_empty() {
             app.set_accels_for_action("win.fullscreen", &[]);
@@ -591,15 +637,6 @@ pub fn build(
             app.set_accels_for_action("win.fullscreen", &[accel.as_str()]);
         }
     }
-    // The target before the name, and in that order deliberately: GTK's action
-    // helper re-checks the pair every time either changes, and naming a
-    // string-taking action while the target is still unset logs "can't be
-    // activated due to parameter type mismatch" on every startup. The empty
-    // string is "open on whatever page libadwaita shows first", which is what a
-    // press of this button has always meant.
-    settings_button.set_action_target_value(Some(&"".to_variant()));
-    settings_button.set_action_name(Some("win.settings"));
-
     // Save the fullscreen state the moment it changes, against whichever
     // profile is selected *at that moment* -- read fresh from `config` in
     // every handler below rather than captured once, so that switching the
@@ -717,10 +754,32 @@ pub fn build(
 const SIZE_SAVE_DEBOUNCE: Duration = Duration::from_millis(400);
 
 /// This shell's built-in window size, used whenever a profile has nothing
-/// saved yet -- the same 540x340 `window.rs` used before `window_state.rs`
-/// existed at all.
-const DEFAULT_WIDTH: i32 = 540;
-const DEFAULT_HEIGHT: i32 = 340;
+/// saved yet.
+///
+/// **It is set by Settings, not by the launcher's own content, and that is not
+/// a preference.** Settings is an `AdwPreferencesDialog`, and an `AdwDialog` is
+/// presented *inside* its parent window: it can never be larger than the window
+/// it floats over, whatever `content-width` and `content-height` ask for. The
+/// dialog asks for 640x720 -- 720 because the Updates page's warning row is the
+/// last thing on it and a warning below the fold is a warning nobody is shown.
+/// Against a 540x340 launcher it got 540x340 instead, and every page of it was
+/// reported as unusably cramped.
+///
+/// So this is 640x720 plus room for the sheet's own margins and shadow, which
+/// is what the previous 540x340 had traded away. That size came from the other
+/// direction -- 720x480 had left the lower two thirds of the launcher empty
+/// once the content became one centred column -- and the emptiness argument is
+/// real but it is cosmetic, while the one it was traded against is a settings
+/// window that cannot be read. The centred column is an `AdwClamp` over an
+/// `AdwStatusPage`, both of which centre themselves in whatever they are given,
+/// so the cost is padding rather than a control adrift in a corner.
+///
+/// Still only a *default*: the size is remembered per profile from here on, and
+/// `host_window::fit_within` clamps it to the smallest attached monitor before
+/// the window exists, so a laptop screen that cannot hold 800 rows gets what it
+/// can hold rather than a window running off the bottom.
+const DEFAULT_WIDTH: i32 = 760;
+const DEFAULT_HEIGHT: i32 = 800;
 
 /// What size to open the window at, given what was saved for the profile it
 /// is about to run. Pure and separate from the GTK call that uses it, the same
@@ -1404,6 +1463,25 @@ mod tests {
     fn a_profile_with_nothing_saved_opens_at_the_built_in_default() {
         let state = window_state::WindowState::default();
         assert_eq!(initial_size(&state), (DEFAULT_WIDTH, DEFAULT_HEIGHT));
+    }
+
+    /// The launcher's built-in size exists to hold Settings, so it has to keep
+    /// covering what Settings asks for. Without this, shrinking the launcher
+    /// back for the way it looks -- which is how it got to 540x340 once
+    /// already -- silently crushes every page of the dialog instead, and
+    /// nothing fails until somebody opens it.
+    #[test]
+    fn the_default_size_leaves_room_for_the_settings_dialog() {
+        assert!(
+            DEFAULT_WIDTH >= crate::settings::CONTENT_WIDTH,
+            "launcher {DEFAULT_WIDTH} is narrower than Settings asks for ({})",
+            crate::settings::CONTENT_WIDTH
+        );
+        assert!(
+            DEFAULT_HEIGHT >= crate::settings::CONTENT_HEIGHT,
+            "launcher {DEFAULT_HEIGHT} is shorter than Settings asks for ({})",
+            crate::settings::CONTENT_HEIGHT
+        );
     }
 
     #[test]

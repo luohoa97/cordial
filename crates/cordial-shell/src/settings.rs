@@ -2695,6 +2695,22 @@ fn add_get_plugins_groups(
     page.add(&marketplace_listing);
 }
 
+/// The size this dialog asks for.
+///
+/// Taller than libadwaita's default, which was chosen for the Roblox page's two
+/// rows and cut the Updates page off mid-switch: its warning row appears
+/// exactly when both download switches are off, and a warning below the fold is
+/// a warning nobody is shown.
+///
+/// **A request, and one the launcher has to be big enough to grant.** An
+/// `AdwDialog` is presented inside its parent window and cannot be larger than
+/// it, so a launcher smaller than this silently shrinks the whole of Settings
+/// instead -- which is how every page of it came to be reported as cramped.
+/// `window::DEFAULT_WIDTH` is set from these two numbers and a test in that
+/// module fails if it stops covering them.
+pub(crate) const CONTENT_WIDTH: i32 = 640;
+pub(crate) const CONTENT_HEIGHT: i32 = 720;
+
 /// Builds the settings dialog: Roblox, Updates, General, Plugins, Report, one
 /// `AdwPreferencesPage` each.
 ///
@@ -2716,14 +2732,8 @@ pub fn build_preferences_window(
     let window = adw::PreferencesDialog::builder()
         .title("Settings")
         .search_enabled(false)
-        // Taller than libadwaita's default, which was chosen for the Roblox
-        // page's two rows and cut the Updates page off mid-switch: its warning
-        // row appears exactly when both download switches are off, and a
-        // warning below the fold is a warning nobody is shown. Only a default —
-        // the window resizes, and GTK clamps this to the work area on a screen
-        // that cannot hold it.
-        .content_width(640)
-        .content_height(720)
+        .content_width(CONTENT_WIDTH)
+        .content_height(CONTENT_HEIGHT)
         .build();
 
     // First, because it is the one that has to be right before anything else
