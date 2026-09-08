@@ -23,7 +23,8 @@ import { appJwt, GitHub, importAppKey, installationToken } from "./github.ts";
 import { handle } from "./interactions.ts";
 import { Templates } from "./templates.ts";
 import { importPublicKey, verifyRequest } from "./verify.ts";
-import { relayFor, verifyGitHubSignature } from "./webhook.ts";
+import { openingFor, relayFor, verifyGitHubSignature } from "./webhook.ts";
+import { container, separator, text } from "./components.ts";
 
 /** Whatever the host calls configuration: `Deno.env.toObject()`, or a Worker's `env`. */
 export type Env = Record<string, string | undefined>;
@@ -148,25 +149,61 @@ export async function build(source: Env) {
       }
       // GitHub names the event in a header; the body alone cannot say whether
       // this is a comment or a state change.
-      const relay = relayFor(
-        JSON.parse(body),
-        selfLogin,
-        request.headers.get("x-github-event") ?? "issue_comment",
-      );
+      const payload = JSON.parse(body);
+      const eventName = request.headers.get("x-github-event") ?? "issue_comment";
+
+      // A pull request opening is the one case with no thread to relay into
+      // yet, so it is handled first and separately.
+      const opening = openingFor(payload, eventName);
+      if (opening) {
+        try {
+          await context.discord.openThread(
+            context.threadChannelId,
+            `#${opening.number} ${opening.title}`.slice(0, 100),
+            [
+              container(0xFF7A18, [
+                text(`### ${opening.title}\n${opening.url}`),
+                separator(),
+                text(
+                  `Pull request opened by ${opening.author}. Comments on it appear here, ` +
+                    `and so does it being merged or closed. To say something back, comment ` +
+                    `on the pull request itself -- review lives on GitHub.`,
+                ),
+              ]),
+            ],
+          );
+        } catch (error) {
+          // Same posture as a failed issue thread: the pull request exists
+          // either way, and a missing thread is a worse report rather than a
+          // lost one.
+          console.error(`thread for pull request #${opening.number}: ${error}`);
+        }
+        return new Response("ok");
+      }
+
+      const relay = relayFor(payload, selfLogin, eventName);
       if (relay) {
         try {
+          // A pull request the bridge did not create has no marker in its body,
+          // so the thread is found by name. One request, and it touches
+          // nobody's pull request description -- see `findThreadByNumber`.
+          const threadId = relay.threadId ??
+            (relay.number
+              ? await context.discord.findThreadByNumber(context.threadChannelId, relay.number)
+              : null);
+          if (!threadId) return new Response("ok");
           // Unarchive before posting: a message cannot go into an archived
           // thread, so a reopen has to bring it back first.
           if (relay.archive === false) {
-            await context.discord.setArchived(relay.threadId, false);
+            await context.discord.setArchived(threadId, false);
           }
-          await context.discord.post(relay.threadId, relay.content);
-          if (relay.archive) await context.discord.setArchived(relay.threadId, true);
+          await context.discord.post(threadId, relay.content);
+          if (relay.archive) await context.discord.setArchived(threadId, true);
         } catch (error) {
           // A deleted thread is the ordinary case and not an error worth
           // retrying: GitHub would redeliver forever against a channel that no
           // longer exists.
-          console.error(`relay to ${relay.threadId}: ${error}`);
+          console.error(`relay for #${relay.number ?? "?"}: ${error}`);
         }
       }
       return new Response("ok");

@@ -140,6 +140,69 @@ export class Discord {
    * serve; an archived one comes back the moment anybody posts in it. Closing
    * an issue should tidy the thread away, not seal it.
    */
+  /**
+   * The thread for issue or PR `number`, found by its name.
+   *
+   * **Why by name and not by a marker.** Every thread the bridge opens is named
+   * `#<number> <title>`, and for issues the pairing is also written into the
+   * issue body as a hidden comment -- free to read, because GitHub's webhook
+   * payload already carries the body. A pull request the bridge did not create
+   * has no such marker, and putting one there would mean editing a
+   * contributor's description: visible in their edit history, for a machine's
+   * bookkeeping. Searching Discord costs a request and touches nobody's PR.
+   *
+   * Active threads first, then the archived page, because a closed PR's thread
+   * is archived and a later comment on it still has to land somewhere.
+   */
+  async findThreadByNumber(channelId: string, number: number): Promise<string | null> {
+    const prefix = `#${number} `;
+    const named = (list: unknown): string | null => {
+      const threads = (list as { threads?: { id: string; name?: string; parent_id?: string }[] })
+        ?.threads ?? [];
+      const hit = threads.find((t) =>
+        (t.parent_id === undefined || t.parent_id === channelId) &&
+        typeof t.name === "string" && t.name.startsWith(prefix)
+      );
+      return hit?.id ?? null;
+    };
+
+    const guild = await this.#guildOf(channelId);
+    if (guild) {
+      const active = await this.#call("GET", `/guilds/${guild}/threads/active`, undefined, true);
+      const hit = named(await active.json());
+      if (hit) return hit;
+    }
+    const archived = await this.#call(
+      "GET",
+      `/channels/${channelId}/threads/archived/public?limit=100`,
+      undefined,
+      true,
+    );
+    return named(await archived.json());
+  }
+
+  /**
+   * The guild a channel belongs to, asked once and remembered.
+   *
+   * Active threads are listed per guild rather than per channel, and the
+   * bridge is configured with channel ids only. One lookup per process; on a
+   * Worker that means one per isolate, which is the right amount of caching
+   * for a value that cannot change for a given channel.
+   */
+  async #guildOf(channelId: string): Promise<string | null> {
+    if (this.#guild !== undefined) return this.#guild;
+    try {
+      const channel = await this.#call("GET", `/channels/${channelId}`, undefined, true);
+      this.#guild = ((await channel.json()) as { guild_id?: string }).guild_id ?? null;
+    } catch {
+      // Not fatal: the archived page below is still searchable without it.
+      this.#guild = null;
+    }
+    return this.#guild;
+  }
+
+  #guild: string | null | undefined;
+
   async setArchived(threadId: string, archived: boolean): Promise<void> {
     await this.#call("PATCH", `/channels/${threadId}`, { archived }, true);
   }

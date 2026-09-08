@@ -52,13 +52,32 @@ export interface CommentEvent {
     body?: string | null;
     html_url?: string;
     state_reason?: string | null;
+    /** Present when the "issue" is really a pull request. */
+    pull_request?: unknown;
+  };
+  /** `pull_request` events carry this instead of `issue`. */
+  pull_request?: {
+    number?: number;
+    title?: string;
+    body?: string | null;
+    html_url?: string;
+    merged?: boolean;
+    draft?: boolean;
+    user?: { login?: string };
   };
   comment?: { body?: string; html_url?: string; user?: { login?: string; type?: string } };
   sender?: { login?: string };
 }
 
 export interface Relay {
-  threadId: string;
+  /**
+   * Known only when the pairing was in the issue body. A pull request the
+   * bridge did not create has no marker there, so the caller resolves
+   * [`number`] against Discord instead -- see `Discord.findThreadByNumber`.
+   */
+  threadId?: string;
+  /** The issue or PR this concerns, for that lookup. */
+  number?: number;
   content: string;
   /**
    * What the thread should do afterwards: follow the issue closed, or come
@@ -84,13 +103,18 @@ export function relayFor(
   eventName = "issue_comment",
 ): Relay | null {
   if (eventName === "issues") return stateRelay(event, selfLogin);
+  if (eventName === "pull_request") return pullRelay(event, selfLogin);
   if (eventName !== "issue_comment") return null;
   if (event.action !== "created") return null;
   const login = event.comment?.user?.login ?? "";
   if (login === selfLogin || login === `${selfLogin}[bot]`) return null;
 
+  // A pull request the bridge did not create carries no marker, so the number
+  // is passed on for the caller to resolve. An ordinary issue still takes the
+  // free path: its pairing is already in the body the webhook delivered.
   const match = threadOf(event.issue?.body);
-  if (!match) return null;
+  const isPr = event.issue?.pull_request !== undefined;
+  if (!match && !isPr) return null;
 
   const text = (event.comment?.body ?? "").trim();
   if (!text) return null;
@@ -101,9 +125,63 @@ export function relayFor(
   const limit = 1500;
   const shown = text.length > limit ? text.slice(0, limit - 1).trimEnd() + "…" : text;
   return {
-    threadId: match,
+    threadId: match ?? undefined,
+    number: event.issue?.number,
     content: `**${login}** commented on #${event.issue?.number}:\n\n${shown}` +
       (event.comment?.html_url ? `\n\n<${event.comment.html_url}>` : ""),
+  };
+}
+
+/**
+ * A pull request opened, closed, merged or reopened.
+ *
+ * **Merged is not the same as closed and the thread should not say it is.** A
+ * merged PR is the good outcome and a closed one usually is not; collapsing
+ * them into "closed" is the same class of mistake as an issue tracker that
+ * cannot tell "fixed" from "not planned", which `setIssueOpen` already refuses
+ * to make on the issue side.
+ *
+ * `opened` returns nothing here: there is no thread yet, so it is not a relay.
+ * See `openingFor`, which the caller uses to create one.
+ */
+function pullRelay(event: CommentEvent, selfLogin: string): Relay | null {
+  const pr = event.pull_request;
+  if (!pr?.number) return null;
+  const login = event.sender?.login ?? "";
+  if (login === selfLogin || login === `${selfLogin}[bot]`) return null;
+
+  const open = event.action === "reopened";
+  if (event.action !== "closed" && !open) return null;
+
+  const what = open ? "reopened" : pr.merged ? "**merged**" : "closed without merging";
+  return {
+    number: pr.number,
+    content: `**${login}** ${what} #${pr.number}.` +
+      (pr.html_url ? `\n<${pr.html_url}>` : ""),
+    // A merged or closed PR's thread follows it; a reopened one comes back.
+    archive: !open,
+  };
+}
+
+/**
+ * A pull request that has just been opened, and wants a thread.
+ *
+ * Separate from [`relayFor`] because it is the one case with nothing to relay
+ * *to* yet. Kept pure -- it decides, the caller acts -- for the reason the
+ * rest of this file is: the decision is testable without a Discord token.
+ */
+export function openingFor(
+  event: CommentEvent,
+  eventName: string,
+): { number: number; title: string; url: string; author: string } | null {
+  if (eventName !== "pull_request" || event.action !== "opened") return null;
+  const pr = event.pull_request;
+  if (!pr?.number) return null;
+  return {
+    number: pr.number,
+    title: pr.title ?? `Pull request #${pr.number}`,
+    url: pr.html_url ?? "",
+    author: pr.user?.login ?? "someone",
   };
 }
 
@@ -129,7 +207,6 @@ function stateRelay(event: CommentEvent, selfLogin: string): Relay | null {
 
   const threadId = threadOf(event.issue?.body);
   if (!threadId) return null;
-
   const number = event.issue?.number;
   const fixed = event.issue?.state_reason === "completed";
   const what = open ? "reopened" : fixed ? "closed as completed" : "closed";

@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertFalse, assertStringIncludes } from "jsr:@std/assert@^1.0.8";
-import { relayFor, verifyGitHubSignature } from "./webhook.ts";
+import { openingFor, relayFor, verifyGitHubSignature } from "./webhook.ts";
 
 const SECRET = "not-the-real-one";
 
@@ -139,4 +139,76 @@ Deno.test("a comment event still routes as a comment, not a state change", () =>
   const relay = relayFor(paired, "cordial-bridge", "issue_comment")!;
   assertEquals(relay.archive, undefined, "a comment must not touch the thread's state");
   assertStringIncludes(relay.content, "commented");
+});
+
+const pr = (action: string, extra: Record<string, unknown> = {}) => ({
+  action,
+  pull_request: {
+    number: 41,
+    title: "Fix the thing",
+    html_url: "https://github.com/o/r/pull/41",
+    user: { login: "contributor" },
+    ...extra,
+  },
+  sender: { login: "maintainer" },
+});
+
+Deno.test("an opened pull request asks for a thread rather than a relay", () => {
+  const opening = openingFor(pr("opened"), "pull_request");
+  assertEquals(opening?.number, 41);
+  assertEquals(opening?.title, "Fix the thing");
+  assertEquals(opening?.author, "contributor");
+  // Nothing to relay into yet, so `relayFor` must stay out of it.
+  assertEquals(relayFor(pr("opened"), "cordial-bridge", "pull_request"), null);
+  // And it is only ever `opened`.
+  assertEquals(openingFor(pr("closed"), "pull_request"), null);
+  assertEquals(openingFor(pr("opened"), "issues"), null);
+});
+
+Deno.test("merged and closed-without-merging are not the same sentence", () => {
+  const merged = relayFor(pr("closed", { merged: true }), "cordial-bridge", "pull_request");
+  assertStringIncludes(merged!.content, "merged");
+  assertFalse(merged!.content.includes("without merging"));
+  assertEquals(merged!.archive, true);
+
+  const abandoned = relayFor(pr("closed", { merged: false }), "cordial-bridge", "pull_request");
+  assertStringIncludes(abandoned!.content, "without merging");
+  assertEquals(abandoned!.archive, true);
+
+  // Collapsing these two into "closed" is the same mistake as a tracker that
+  // cannot tell "fixed" from "not planned".
+  assert(merged!.content !== abandoned!.content);
+});
+
+Deno.test("a reopened pull request brings its thread back", () => {
+  const relay = relayFor(pr("reopened"), "cordial-bridge", "pull_request");
+  assertStringIncludes(relay!.content, "reopened");
+  assertEquals(relay!.archive, false);
+});
+
+Deno.test("the bridge's own pull request actions are not echoed back", () => {
+  const own = { ...pr("closed", { merged: true }), sender: { login: "cordial-bridge[bot]" } };
+  assertEquals(relayFor(own, "cordial-bridge", "pull_request"), null);
+});
+
+Deno.test("a pull request comment carries its number for the caller to resolve", () => {
+  // Comments on a PR arrive as `issue_comment`, and a PR the bridge did not
+  // create has no thread marker in its body -- so the number is what the
+  // caller looks up. The absence of `threadId` is the point of this test.
+  const relay = relayFor({
+    action: "created",
+    issue: { number: 41, body: "no marker here", pull_request: {} },
+    comment: { body: "looks good", user: { login: "reviewer" } },
+  }, "cordial-bridge");
+  assertEquals(relay?.threadId, undefined);
+  assertEquals(relay?.number, 41);
+  assertStringIncludes(relay!.content, "reviewer");
+});
+
+Deno.test("an ordinary issue comment still resolves for free from the body", () => {
+  // The regression guard for the change above: an issue's pairing is already
+  // in the payload, and must not start costing a Discord lookup.
+  const relay = relayFor(paired, "cordial-bridge");
+  assert(relay?.threadId, "an issue must still carry its thread id");
+  assertFalse(relay!.threadId!.length === 0);
 });
