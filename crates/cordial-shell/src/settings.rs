@@ -249,6 +249,56 @@ fn add_appearance_groups(page: &adw::PreferencesPage, config: Rc<RefCell<ShellCo
 
 }
 
+/// The small `i` button that carries what a row cannot afford to say in its
+/// subtitle.
+///
+/// **Every long subtitle in this file was defensible on its own and the sum of
+/// them was not.** Each one is commented "the half that would be misleading if
+/// omitted", and each was right: the acceleration row really would be read
+/// backwards without its second sentence, and the identity row really would
+/// imply a frame-rate claim nothing here has measured. What none of them
+/// accounted for is that a subtitle is a fixed number of lines. Four sentences
+/// squeeze the row's own control into a corner, and past
+/// `set_subtitle_lines` they are not even shown -- the MangoHUD row was
+/// reported as five lines ending in an ellipsis, which is a paragraph nobody
+/// can read attached to a switch nobody can see.
+///
+/// So the sentence that changes what you pick stays on the row, and the
+/// sentence that explains it moves in here. Nothing is deleted: it is one
+/// click away and it is legible when it arrives, which is more than it was.
+///
+/// **Only for a row that is sensitive.** GTK insensitivity propagates to
+/// children and a child cannot opt out, so a detail button on a greyed-out row
+/// is a control that cannot be pressed. Those rows -- MangoHUD with no layer
+/// installed, the device picker with no PipeWire session -- keep their reason
+/// in the subtitle, shortened instead of hidden.
+fn detail(text: &str) -> gtk::MenuButton {
+    let label = gtk::Label::builder()
+        .label(text)
+        .wrap(true)
+        // Roughly the width of the popover GNOME's own help buttons produce.
+        // Left-aligned rather than centred: this is prose, and centred prose
+        // in a tooltip-sized box is harder to read than the same words in a
+        // ragged-right block.
+        .max_width_chars(40)
+        .xalign(0.0)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    let popover = gtk::Popover::builder().child(&label).build();
+    gtk::MenuButton::builder()
+        .icon_name("help-about-symbolic")
+        .popover(&popover)
+        .valign(gtk::Align::Center)
+        // Flat, or every row grows a raised button and the page reads as a
+        // toolbar. This is the styling GNOME's own inline help buttons use.
+        .css_classes(["flat"])
+        .tooltip_text("Details")
+        .build()
+}
+
 /// Save, and say so on stderr rather than swallowing the error.
 ///
 /// A settings window that accepts a choice and silently fails to keep it is the
@@ -620,16 +670,22 @@ fn build_session_group(
     // happens when a launch arrives rather than about graphics or plugins.
     let ticket = adw::SwitchRow::builder()
         .title("Sign in from browser launches")
-        // Honest on both counts, and both matter. It moves a credential, which
-        // is the reason somebody might say no; and it is unverified, which is
-        // the reason it might do nothing. A row that promised the feature and
-        // silently failed would be the stub-that-lies shape in an interface.
-        .subtitle(
-            "Pass the sign-in ticket Roblox puts in a play link, so clicking play on the website              does not ask you to sign in again. Off by default: it hands a one-time credential to              the engine, and it is not yet confirmed that this engine accepts one.",
-        )
+        // The row says what it does; the two reasons it is off by default are
+        // behind the detail button, and both still have to be somewhere. It
+        // moves a credential, which is why somebody might say no, and it is
+        // unverified, which is why it might do nothing. A row that promised
+        // the feature and silently failed would be the stub-that-lies shape in
+        // an interface.
+        .subtitle("Clicking play on the website does not ask you to sign in again.")
         .active(config.borrow().carry_launch_ticket)
         .build();
-    ticket.set_subtitle_lines(4);
+    ticket.set_subtitle_lines(2);
+    ticket.add_suffix(&detail(
+        "Roblox puts a one-time sign-in ticket in a play link, and this passes it \
+         through to the engine.\n\nOff by default for two separate reasons: it moves a \
+         credential, and it is not yet confirmed that this engine accepts one, so it \
+         may simply do nothing.",
+    ));
     {
         let config = config.clone();
         let config_path = config_path.clone();
@@ -725,11 +781,16 @@ fn build_performance_group(
         // acceleration off system-wide will find it changes only speed. Said
         // here because the obvious reading of the title is that turning it on
         // introduces acceleration from nowhere.
-        .subtitle("Camera movement is raw by default, which is what a camera wants. Choosing both follows your desktop pointer profile instead — so if acceleration is already off system-wide, only speed changes.")
+        .subtitle("Camera movement is raw by default, which is what a camera wants.")
         .model(&accel_model)
         .selected(config.borrow().pointer_acceleration.index())
         .build();
-    accel.set_subtitle_lines(4);
+    accel.set_subtitle_lines(2);
+    accel.add_suffix(&detail(
+        "This is not an \"add acceleration\" switch. It decides whether your desktop's \
+         own pointer profile reaches the camera as well as the cursor.\n\nSo if you have \
+         already turned acceleration off system-wide, choosing both changes only speed.",
+    ));
     {
         let config = config.clone();
         let config_path = config_path.clone();
@@ -745,17 +806,19 @@ fn build_performance_group(
     let mangohud = adw::SwitchRow::builder()
         .title("MangoHUD overlay")
         .subtitle(match &layer {
-            Some(path) => format!(
-                "Frame rate, frame times and CPU/GPU load, drawn over the game by MangoHUD's \
-                 Vulkan layer.\n{}",
-                path.display()
-            ),
+            Some(_) => "Frame rate, frame times and CPU/GPU load, drawn over the game.".to_string(),
             // Named as the reason the switch is dead, with the fix. A row that
             // was simply greyed out would leave somebody toggling it and
             // wondering what they had done wrong.
+            //
+            // **The one row whose explanation cannot move into a `detail`
+            // popover**, because the row is insensitive and a button inside an
+            // insensitive row cannot be pressed. So the hint was shortened
+            // instead -- see `launch::mangohud_install_hint`, which used to run
+            // to four lines and was reported truncated mid-sentence, which is
+            // the worst of both.
             None => format!(
-                "Not available: MangoHUD's Vulkan layer is not installed on this machine, so \
-                 turning this on would do nothing.\n{}",
+                "Not available: MangoHUD's Vulkan layer is not installed.\n{}",
                 crate::launch::mangohud_install_hint()
             ),
         })
@@ -764,7 +827,16 @@ fn build_performance_group(
         .active(config.borrow().mangohud && layer.is_some())
         .sensitive(layer.is_some())
         .build();
-    mangohud.set_subtitle_lines(4);
+    mangohud.set_subtitle_lines(3);
+    // Only when it is there to describe: see `detail`, and the comment above.
+    if let Some(path) = &layer {
+        mangohud.add_suffix(&detail(&format!(
+            "Drawn by MangoHUD's Vulkan layer, which this machine has at\n{}\n\nWhat the \
+             overlay shows and where it sits is MangoHUD's own configuration, not \
+             Cordial's.",
+            path.display()
+        )));
+    }
     {
         let config = config.clone();
         let config_path = config_path.clone();
@@ -839,13 +911,13 @@ fn build_audio_group(
     if sinks.is_empty() {
         let row = adw::ActionRow::builder()
             .title("Output device")
-            .subtitle(
-                "No PipeWire audio devices found. Roblox has nowhere to send sound on this \
-                 machine either, so this is worth looking into before the setting is.",
-            )
+            // Insensitive, so this cannot move behind a `detail` button and is
+            // shortened in place instead. The half that is kept is the one
+            // that redirects: the problem is not this setting.
+            .subtitle("No PipeWire devices found, so Roblox has nowhere to send sound either.")
             .sensitive(false)
             .build();
-        row.set_subtitle_lines(3);
+        row.set_subtitle_lines(2);
         group.add(&row);
         return group;
     }
@@ -861,14 +933,17 @@ fn build_audio_group(
         // snapshot, so somebody who switches their desktop's default while
         // playing will find the game follows, which is what they want and not
         // what a picker usually implies.
-        .subtitle(
-            "System default follows your desktop's own choice, including when you change it \
-             later. Picking a device here sends only Roblox's sound to it.",
-        )
+        .subtitle("Where Roblox's sound goes. Nothing else on the desktop moves with it.")
         .model(&model)
         .selected(chosen.index_in(&names))
         .build();
-    row.set_subtitle_lines(3);
+    row.set_subtitle_lines(2);
+    row.add_suffix(&detail(
+        "System default is a standing instruction rather than a snapshot: change your \
+         desktop's default while playing and the game follows.\n\nThis is Cordial's \
+         routing, not Roblox's own device list. The in-game picker belongs to the \
+         engine's audio library and cannot be filled from here.",
+    ));
 
     {
         let config = config.clone();
@@ -1133,15 +1208,17 @@ fn build_general_page(
         // break things, and that none of this has been measured to change the
         // frame rate. The rest, including which identity roblox.com serves
         // what to, is in `GraphicsOptimization`'s own doc beside the code.
-        .subtitle(
-            "What Cordial tells Roblox it is, and how many cores the engine may use. Android \
-             tablet claims a mobile screen and has been reported to break some features. None \
-             of these has been measured to change the frame rate.",
-        )
+        .subtitle("What Cordial tells Roblox it is, and how many cores the engine may use.")
         .model(&optimisation_model)
         .selected(config.borrow().graphics_optimization_mode.index())
         .build();
-    optimisation.set_subtitle_lines(3);
+    optimisation.set_subtitle_lines(2);
+    optimisation.add_suffix(&detail(
+        "Android tablet claims a mobile screen, and has been reported to break some \
+         features.\n\nNone of these has been measured to change the frame rate. What is \
+         established is what each identity makes roblox.com serve, which is a different \
+         thing from how fast the client draws.",
+    ));
     {
         let config = config.clone();
         let config_path = config_path.clone();
@@ -1219,12 +1296,17 @@ fn build_general_page(
         // neighbouring runtime). Somebody who would rather have no controller
         // than the wrong buttons drawn should be able to see that here rather
         // than discover it in a game.
-        .subtitle(
-            "Roblox may draw the wrong brand of button glyphs; the buttons themselves work.              Turn this off if a device that is not a controller is being detected as one.",
-        )
+        .subtitle("Roblox may draw the wrong brand of button glyphs; the buttons work.")
         .active(config.borrow().gamepad)
         .build();
-    gamepad.set_subtitle_lines(3);
+    gamepad.set_subtitle_lines(2);
+    gamepad.add_suffix(&detail(
+        "Which integer selects which brand of glyph is still unestablished, so a \
+         controller can end up drawn as the wrong one. The buttons themselves are \
+         mapped correctly.\n\nTurn this off if you would rather have no controller than \
+         the wrong buttons drawn, or if a device that is not a controller is being \
+         detected as one.",
+    ));
     {
         let config = config.clone();
         let config_path = config_path.clone();
@@ -2590,7 +2672,8 @@ fn add_developer_group(
     let group = adw::PreferencesGroup::builder()
         .title("Developing a plugin")
         .description(
-            "Load a plugin from the folder you are writing it in. It reloads as you edit, and              is granted nothing until you grant it, like any other.",
+            "Load a plugin from the folder you are writing it in. It reloads as you edit, \
+             and is granted nothing until you grant it, like any other.",
         )
         .build();
 

@@ -592,15 +592,19 @@ pub fn in_flatpak() -> bool {
 ///
 /// So the hint names one, and it is chosen rather than guessed.
 pub fn mangohud_install_hint() -> &'static str {
+    // **Kept to one line each, because this is shown in a settings row that
+    // cannot be clicked.** It used to spell out why the *other* route fails --
+    // a host package is invisible to a sandboxed build, and the Flatpak
+    // extension's library path exists only inside one -- which is true, useful,
+    // and was reported rendering as five lines ending in an ellipsis. A
+    // paragraph nobody can read is worth less than the one sentence that names
+    // the right command. The reasoning lives in this function's doc instead.
     if in_flatpak() {
-        "Install the Flatpak runtime extension: flatpak install \
-         org.freedesktop.Platform.VulkanLayer.MangoHud — this build of Cordial runs inside a \
-         Flatpak sandbox, so a distribution package installed on the host will not be visible to it."
+        "Install the Flatpak extension: flatpak install \
+         org.freedesktop.Platform.VulkanLayer.MangoHud"
     } else {
-        "Install it with your package manager (Fedora: dnf install mangohud, Arch: pacman -S \
-         mangohud). This build of Cordial runs on the host, so the Flatpak runtime extension \
-         org.freedesktop.Platform.VulkanLayer.MangoHud will not work for it — that layer's library \
-         path only exists inside a Flatpak sandbox."
+        "Install it from your distribution (Fedora: dnf install mangohud, Arch: pacman -S \
+         mangohud)."
     }
 }
 
@@ -841,8 +845,12 @@ mod tests {
             assert!(!hint.contains("dnf install"), "{hint}");
         } else {
             assert!(hint.contains("dnf install"), "{hint}");
-            // It may name the Flatpak extension, but only to rule it out.
-            assert!(hint.contains("will not work"), "{hint}");
+            // It used to name the Flatpak extension in order to rule it out,
+            // and that clause was most of what made this string too long to
+            // render in the insensitive settings row it is shown in. Naming
+            // neither route is safe; naming the wrong one as an option is the
+            // failure this test exists for, so that is what is asserted now.
+            assert!(!hint.contains("flatpak install"), "{hint}");
         }
     }
 

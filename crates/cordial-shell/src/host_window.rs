@@ -1232,7 +1232,7 @@ impl HostWindow {
             // which is a state that does not last.
             if !self.opaque_unsized.replace(true) {
                 eprintln!(
-                    "[shell] no window size to build an opaque region from                      (window {ww}x{wh}, surface {sw}x{sh}); claiming nothing until it has one"
+                    "[shell] no window size to build an opaque region from (window {ww}x{wh}, surface {sw}x{sh}); claiming nothing until it has one"
                 );
             }
             #[allow(deprecated)]
