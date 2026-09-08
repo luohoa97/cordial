@@ -118,7 +118,7 @@ bool load_library() {
     if (!handle) handle = dlopen("libpipewire-0.3.so", RTLD_NOW | RTLD_GLOBAL);
     if (!handle) {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         libpipewire-0.3 not found (%s); Roblox's audio "
+            "E/Cordial-Audio           libpipewire-0.3 not found (%s); Roblox's audio "
             "has nowhere to go. Install PipeWire and its client library to enable it.\n",
             dlerror());
         return false;
@@ -156,7 +156,7 @@ bool load_library() {
         *e.slot = dlsym(handle, e.name);
         if (!*e.slot) {
             std::fprintf(stderr,
-                "E/Cordial-OpenSLES         libpipewire-0.3 is missing '%s'; treating the "
+                "E/Cordial-Audio           libpipewire-0.3 is missing '%s'; treating the "
                 "whole library as unusable rather than calling through a null pointer. "
                 "No audio output.\n", e.name);
             dlclose(handle);
@@ -227,12 +227,12 @@ Session* connect_session() {
     pw_thread_loop* loop = g_lib.thread_loop_new("cordial-pipewire", nullptr);
     if (!loop) {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         pw_thread_loop_new failed; no audio output.\n");
+            "E/Cordial-Audio           pw_thread_loop_new failed; no audio output.\n");
         return nullptr;
     }
     if (g_lib.thread_loop_start(loop) < 0) {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         pw_thread_loop_start failed; no audio output.\n");
+            "E/Cordial-Audio           pw_thread_loop_start failed; no audio output.\n");
         g_lib.thread_loop_destroy(loop);
         return nullptr;
     }
@@ -242,7 +242,7 @@ Session* connect_session() {
     pw_context* context = g_lib.context_new(g_lib.thread_loop_get_loop(loop), nullptr, 0);
     if (!context) {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         pw_context_new failed; no audio output.\n");
+            "E/Cordial-Audio           pw_context_new failed; no audio output.\n");
         g_lib.thread_loop_unlock(loop);
         g_lib.thread_loop_stop(loop);
         g_lib.thread_loop_destroy(loop);
@@ -252,7 +252,7 @@ Session* connect_session() {
     pw_core* core = g_lib.context_connect(context, nullptr, 0);
     if (!core) {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         no PipeWire session reachable (is a PipeWire "
+            "E/Cordial-Audio           no PipeWire session reachable (is a PipeWire "
             "daemon running, and is PIPEWIRE_RUNTIME_DIR/XDG_RUNTIME_DIR set?); "
             "no audio output.\n");
         g_lib.thread_loop_unlock(loop);
@@ -284,7 +284,7 @@ Session* connect_session() {
         e.error = [](void* data, uint32_t id, int, int res, const char* message) {
             auto* s = static_cast<Session*>(data);
             std::fprintf(stderr,
-                "E/Cordial-OpenSLES         PipeWire core reported an error "
+                "E/Cordial-Audio           PipeWire core reported an error "
                 "(id=%u res=%d %s).\n", id, res, message ? message : "");
             s->sync_failed = true;
             g_lib.thread_loop_signal(s->loop, false);
@@ -300,7 +300,7 @@ Session* connect_session() {
     if (!reachable) {
         if (!session->sync_failed) {
             std::fprintf(stderr,
-                "E/Cordial-OpenSLES         PipeWire did not answer within 3s; treating "
+                "E/Cordial-Audio           PipeWire did not answer within 3s; treating "
                 "the session as unreachable. No audio output.\n");
         }
         g_lib.thread_loop_lock(loop);
@@ -314,9 +314,23 @@ Session* connect_session() {
         return nullptr;
     }
 
+    // **What this line may say is what just happened, and no more.** It used to
+    // finish "OpenSL ES audio players will play through it", tagged
+    // `Cordial-OpenSLES`, and both halves were wrong on most runs: this session
+    // is the one shared session, `pipewire_available()` is what
+    // `supportsAAudio()` and the device enumeration in `audio_classes.cpp` both
+    // ask, and either of those brings it up. So a run that had selected AAudio
+    // and would never call `slCreateEngine` printed a promise about OpenSL ES
+    // two lines under "audio backend: aaudio", which is exactly the kind of
+    // reading that has to be believed before it can be checked.
+    //
+    // Nothing is lost by dropping the promise: which backend is in use is
+    // announced by `cordial_audio_backend_announce` on its own line, from the
+    // place that actually decides it.
     std::fprintf(stderr,
-        "I/Cordial-OpenSLES         PipeWire session confirmed reachable; OpenSL ES "
-        "audio players will play through it.\n");
+        "I/Cordial-Audio           PipeWire session reachable: the client library loaded "
+        "and a core round trip completed. This one session is shared by every audio path "
+        "that reaches PipeWire.\n");
     return session;
 }
 
@@ -1582,8 +1596,9 @@ namespace cordial::audio {
 bool pipewire_available() {
     static const bool warned = [] {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         built without pipewire-devel present at configure "
-            "time (see native/CMakeLists.txt); OpenSL ES audio is unavailable. Install "
+            "E/Cordial-Audio           built without pipewire-devel present at configure "
+            "time (see native/CMakeLists.txt); there is no audio at all, by either the "
+            "OpenSL ES or the AAudio path -- both reach PipeWire through this. Install "
             "pipewire-devel and reconfigure to enable it.\n");
         return true;
     }();

@@ -1602,8 +1602,9 @@ uint32_t slCreateEngine(void** engine, uint32_t numOptions, const void* pEngineO
     // this at all is the first question about Cordial's audio and it has been
     // answered "not at the Landing screen" only — with no line printed on the
     // way in, an absent engine and a refused one looked identical in a log, and
-    // the PipeWire "session confirmed reachable" line below is not a substitute
-    // because it is also printed by device enumeration.
+    // the PipeWire "session reachable" line below is not a substitute because
+    // it is also printed by device enumeration and by `supportsAAudio()` --
+    // which is why that line no longer claims anything about OpenSL ES.
     std::fprintf(stderr,
         "I/Cordial-OpenSLES         slCreateEngine called by the engine (%u option(s), %u "
         "interface(s) requested).\n", numOptions, numInterfaces);

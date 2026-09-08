@@ -3711,6 +3711,10 @@ bug in it.
 > Three 30-second runs to the Landing screen with the backend genuinely
 > compiled in produced no `slCreateEngine` call at all (the backend prints
 > `PipeWire session confirmed reachable` on its first use; it never appeared),
+> [that line is now `PipeWire session reachable` and tagged `Cordial-Audio`,
+> because the session is shared and the old wording claimed OpenSL ES would be
+> used on runs that had selected AAudio; the conclusion is unaffected, since
+> what was observed was its complete absence],
 > so audio initialisation really is lazy and really does need something past
 > sign-in. What changed is that this is now a statement about Roblox rather
 > than, unknowingly, a statement about the build.
