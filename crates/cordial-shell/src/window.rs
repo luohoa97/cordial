@@ -351,6 +351,30 @@ pub fn build(
     let (initial_width, initial_height) = initial_size(&initial_window);
     let host = HostWindow::new(&cordial_shell::host_window::title(), initial_width, initial_height, &toasts);
 
+    // **The primary menu, rightmost, because that is where GNOME users look.**
+    //
+    // Packed before Settings so it ends up nearest the window controls: at the
+    // end, first packed is outermost. The HIG puts app-level actions here --
+    // the ones that are about Cordial rather than about the thing on screen --
+    // and until now Cordial had none of them anywhere, including an About
+    // dialog, which is the conventional home for the version and the licence.
+    //
+    // Settings keeps its own button rather than folding into this menu. It is
+    // not an app-level action here: it is where the Roblox build, the profiles
+    // and the plugins live, which is most of what anyone opens this launcher to
+    // do. A frequently used primary action earns a button; About and the rest
+    // do not.
+    let primary_menu = gtk::gio::Menu::new();
+    primary_menu.append(Some("_Report a Problem"), Some("win.settings::report"));
+    primary_menu.append(Some("_About Cordial"), Some("win.about"));
+    let menu_button = gtk::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .tooltip_text("Main Menu")
+        .menu_model(&primary_menu)
+        .primary(true)
+        .build();
+    host.header().pack_end(&menu_button);
+
     let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
     settings_button.set_tooltip_text(Some("Settings"));
     host.header().pack_end(&settings_button);
@@ -491,7 +515,44 @@ pub fn build(
         });
     }
 
+    // **About, with the diagnostics block as its Troubleshooting section.**
+    //
+    // `AdwAboutDialog` carries a Troubleshooting page with a copy button and a
+    // "Save as" built in, and `debug_info` is what fills it. That is the same
+    // text `Settings -> Report a Problem` shows and `--diagnostics` prints, from
+    // the one function, so the three can never drift.
+    //
+    // It is here because three separate reporters could not find the block at
+    // all. One typed `flatpak run cordial --diagnostic` and got "Invalid id";
+    // another ran `cordial --diagnostics`, got "command not found", and wrote
+    // *that* into the diagnostics field of their report. Settings -> Report a
+    // Problem is not where anyone looks for it. About -> Troubleshooting is.
+    let about_action = gtk::gio::SimpleAction::new("about", None);
+    {
+        let window = window.clone();
+        about_action.connect_activate(move |_, _| {
+            let dialog = adw::AboutDialog::builder()
+                .application_name(cordial_shell::branding::current().name())
+                .application_icon(cordial_shell::branding::current().icon())
+                .version(cordial_shell::version::full())
+                .developer_name("The Cordial contributors")
+                .website("https://github.com/luohoa97/cordial")
+                .issue_url("https://github.com/luohoa97/cordial/issues/new/choose")
+                // `Gpl30`, not `Gpl30Only`: the manifest says
+                // `GPL-3.0-or-later` and GTK spells that distinction in the
+                // enum. Checked against LICENSE and Cargo.toml rather than
+                // assumed -- a licence stated wrongly in an About dialog is
+                // worse than one not stated at all, because it is believed.
+                .license_type(gtk::License::Gpl30)
+                .debug_info(crate::diagnostics::report())
+                .debug_info_filename("cordial-diagnostics.txt")
+                .build();
+            dialog.present(Some(&window));
+        });
+    }
+
     let actions = gtk::gio::SimpleActionGroup::new();
+    actions.add_action(&about_action);
     actions.add_action(&launch_action);
     actions.add_action(&settings_action);
     actions.add_action(&profile_action);
