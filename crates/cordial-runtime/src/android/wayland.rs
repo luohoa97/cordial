@@ -4402,13 +4402,20 @@ unsafe extern "C" fn keyboard_enter(
     surface: *mut c_void,
     _keys: *const WlArray,
 ) {
-    // Keyboard focus lands on the *toplevel*, never on the subsurface — a
-    // subsurface has no keyboard focus of its own in the protocol — so the
-    // surface named here is GTK's, not the canvas. Checking it anyway rather
-    // than accepting any surface, because this client now owns more than one
-    // window's worth of surfaces (GTK's dialogs, its cursor surfaces) and
-    // "some surface of ours has focus" is not the same claim as "the window
-    // the engine is in has focus".
+    // **"Keyboard focus lands on the toplevel, never on the subsurface" is what
+    // this comment used to say, and it is not true of every compositor.** The
+    // reasoning was that a subsurface has no keyboard focus of its own in the
+    // protocol, so the surface named here must be GTK's rather than the canvas.
+    // Issue #31's reporter instrumented both handlers on Hyprland and the first
+    // `enter` names the toplevel while the one after a refocus names
+    // `w.surface`, the engine's own canvas subsurface, with GTK's live surface
+    // still equal to the captured one. Whatever the protocol permits, that is
+    // what arrives.
+    //
+    // Checked against a specific set rather than accepted outright, because
+    // this client owns more than one window's worth of surfaces (GTK's dialogs,
+    // its cursor surfaces) and "some surface of ours has focus" is not the same
+    // claim as "the window the engine is in has focus".
     // Remembered unconditionally, because this can arrive before the window
     // exists to compare against. `wl_keyboard.enter` fires on a focus *change*,
     // so a client whose surface is registered while the compositor already
@@ -4440,8 +4447,17 @@ unsafe extern "C" fn keyboard_enter(
     // aimed at another window never reach the game -- a `Ctrl+C` typed into a
     // terminal once appeared in Cordial's own trace -- and accepting any
     // surface would give that back to save a downcast.
+    //
+    // **The canvas is in the set, and that is the half that fixes Hyprland.**
+    // The previous attempt added only GTK's live surface, on the theory that
+    // GTK had recreated its toplevel -- and #31's trace rules that out
+    // directly: `live` equals `parent` on the failing enter, and the surface
+    // named is the canvas. Both are surfaces of the game window, so this does
+    // not widen the gate to a dialog, a cursor surface or another client.
+    // Found and fixed by the reporter of #31; this is their one-line change.
     let live = w.host.0.wl_surface();
     let ours = std::ptr::eq(surface, w.parent_surface)
+        || std::ptr::eq(surface, w.surface)
         || live.is_some_and(|s| std::ptr::eq(surface, s));
     if ours {
         KEYBOARD_FOCUSED.store(true, Ordering::Release);
@@ -4461,12 +4477,19 @@ unsafe extern "C" fn keyboard_enter(
     // whole session, and the case that needs them is the one where nobody
     // thought to turn tracing on.
     if ours && !std::ptr::eq(surface, w.parent_surface) {
-        // Worth one line: it means GTK's surface is not the one this struct
-        // captured, which is the Hyprland case and would otherwise be
-        // invisible now that it no longer breaks anything.
+        // Worth one line, and worth saying *which*: the two accepted
+        // alternatives mean different things, and this message used to name
+        // only one of them. The canvas is the Hyprland case from #31; GTK's
+        // current surface differing from the captured one would mean the
+        // toplevel had been recreated, which nothing has yet observed.
+        let which = if std::ptr::eq(surface, w.surface) {
+            "the engine's canvas subsurface"
+        } else {
+            "GTK's current toplevel surface"
+        };
         println!(
-            "[android] wayland: keyboard enter named GTK's current surface {surface:p}, \
-             not the one captured at start-up ({:p}); accepted",
+            "[android] wayland: keyboard enter named {which} {surface:p}, not the toplevel \
+             captured at start-up ({:p}); accepted",
             w.parent_surface
         );
     }
