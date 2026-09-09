@@ -1374,9 +1374,16 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     // leaving that real cursor free, which is the observed escape bug.
     let capture_pointer = host.wl_pointer().unwrap_or(std::ptr::null_mut());
     if !capture_pointer.is_null() {
+        // **Not "the KWin workaround", which is what this used to say.** The
+        // branch has no compositor test in it -- it fires wherever GDK exposes
+        // a pointer, which is everywhere -- so a GNOME session's log claimed a
+        // workaround for a compositor it was not running, in a report about
+        // something else entirely. The reason is the one in the comment above,
+        // and it is not specific to any compositor.
         eprintln!(
-            "[android] wayland: pointer capture uses GDK's wl_pointer on the GTK toplevel \
-             (KWin subsurface workaround)"
+            "[android] wayland: pointer capture uses GDK's own wl_pointer on the GTK \
+             toplevel; locking any other pointer object is acknowledged while leaving the \
+             desktop cursor free"
         );
     }
     let (cx, cy, cw, ch) =
