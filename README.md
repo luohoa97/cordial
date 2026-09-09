@@ -858,6 +858,29 @@ own table stores it without one, which is why the `grep` above drops it.
 To choose a graphics backend, use Settings rather than a flag — Cordial decides
 that before the engine starts, and the setting is what it reads.
 
+**Raising the frame rate takes two separate levers, and neither is in Roblox's
+own menu.** The in-game settings have no frame-rate row because the *Android*
+client has none — the Windows client does, and so do the desktop menus people
+remember, but Cordial runs the Android build and nothing here can add a row the
+client does not draw. Reported as a missing feature, which is a fair reading of
+an interface that simply has no such control.
+
+| What you want | Where it is |
+|---|---|
+| Stop drawing being pinned to your display's refresh | **Settings → General → Graphics → Frame pacing**, or the FPS Flex plugin — the same lever, so use one or the other |
+| Raise the engine's own target frame rate | the `DFIntTaskSchedulerTargetFps` FastFlag |
+
+They are not the same setting and neither substitutes for the other: Frame pacing
+is `VkSwapchainCreateInfoKHR::presentMode`, which decides whether a finished
+frame waits for the next refresh, and the flag is what the engine's scheduler
+aims at. Leaving the first on FIFO caps you at your panel's rate whatever the
+flag says.
+
+**One report of the flag not holding**, on a machine that reached 240 and fell
+back to 60 after a few minutes. Not reproduced here and not explained; if you
+see the same, [say so on the tracker](https://github.com/luohoa97/cordial/issues)
+rather than assuming your value was wrong.
+
 Values may be written as booleans, numbers or strings — Roblox stores them all
 as strings and Cordial converts. The overrides are merged into the settings
 document the engine is given at startup, and the launch log reports how many
@@ -933,7 +956,7 @@ Plugins; they are listed there whether or not you have ever installed anything.
 
 | | What it does | On by default |
 |---|---|---|
-| **FPS Flex** | Takes the frame-rate cap off. Roblox's Android build asks for FIFO, which pins drawing to your display's refresh — right on a phone, wrong on a desktop with a faster panel. | **No** |
+| **FPS Flex** | Stops drawing being pinned to your display's refresh. Roblox's Android build asks Vulkan for FIFO, which is right on a phone and wrong on a desktop with a faster panel. The same lever as **Frame pacing** in Settings, not a second one — and not the engine's own target frame rate, which is a FastFlag. | **No** |
 | **Discord Presence** | Shows on your Discord profile what you are playing: the experience's name, its creator, its cover art, and buttons to join the same server or open the game's page. A game that speaks BloxstrapRPC sets its own text and picture instead. The application it appears as is configurable in the plugin's settings. | No |
 | **Flag Inspector** | Logs which FastFlags are in effect and where each came from. A diagnostic, not a feature. | No |
 
