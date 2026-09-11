@@ -71,6 +71,51 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
         f!("fprintf", legacy_fprintf),
         f!("vfprintf", legacy_vfprintf),
     ];
+
+    // FreeBSD's libc has no FORTIFY (_chk) family; on Linux these are borrowed
+    // from the host glibc. native/fortify_chk.c provides them; register here.
+    #[cfg(target_os = "freebsd")]
+    {
+        extern "C" {
+            fn __memcpy_chk();
+            fn __memmove_chk();
+            fn __memset_chk();
+            fn __strcpy_chk();
+            fn __strcat_chk();
+            fn __strncpy_chk();
+            fn __read_chk();
+            fn __pread64_chk();
+            fn __sendto_chk();
+            fn __fwrite_chk();
+            fn __vsnprintf_chk();
+            fn __vsprintf_chk();
+            fn __FD_SET_chk();
+            fn __FD_CLR_chk();
+            fn __FD_ISSET_chk();
+            fn __ctype_get_mb_cur_max();
+            fn bionic_syscall();
+        }
+        v.extend_from_slice(&[
+            f!("__ctype_get_mb_cur_max", __ctype_get_mb_cur_max),
+            f!("syscall", bionic_syscall),
+            f!("__memcpy_chk", __memcpy_chk),
+            f!("__memmove_chk", __memmove_chk),
+            f!("__memset_chk", __memset_chk),
+            f!("__strcpy_chk", __strcpy_chk),
+            f!("__strcat_chk", __strcat_chk),
+            f!("__strncpy_chk", __strncpy_chk),
+            f!("__read_chk", __read_chk),
+            f!("__pread64_chk", __pread64_chk),
+            f!("__sendto_chk", __sendto_chk),
+            f!("__fwrite_chk", __fwrite_chk),
+            f!("__vsnprintf_chk", __vsnprintf_chk),
+            f!("__vsprintf_chk", __vsprintf_chk),
+            f!("__FD_SET_chk", __FD_SET_chk),
+            f!("__FD_CLR_chk", __FD_CLR_chk),
+            f!("__FD_ISSET_chk", __FD_ISSET_chk),
+        ]);
+    }
+
     // sigset_t is 8 bytes in bionic and 128 in glibc; struct sigaction is 32
     // against 152, with a different field order. Passing either through is a
     // 120-byte overrun of the caller's object.

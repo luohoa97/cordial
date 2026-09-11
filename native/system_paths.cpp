@@ -21,6 +21,7 @@
 // real `open` is the one thing C does better here — the same reason liblog.cpp
 // is C++.
 
+#include "os_compat.h"
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
@@ -63,7 +64,7 @@ void trace(const char* call, const char* path, const char* result) {
     // threads, and a single interleaved log invites reading two unrelated calls
     // as cause and effect.
     std::fprintf(stderr, "[paths] tid=%ld %s(\"%s\") = %s\n",
-                 (long)::syscall(SYS_gettid), call, path ? path : "(null)", result);
+                 cordial_gettid(), call, path ? path : "(null)", result);
 }
 
 void trace_i(const char* call, const char* path, long r) {

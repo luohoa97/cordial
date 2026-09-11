@@ -177,12 +177,25 @@ pub fn build(host_libc: bool) -> SymbolTable {
     // throws during static initialisation; with it stubbed the unwinder cannot
     // find a handler, calls std::terminate, and the whole load aborts inside
     // DT_INIT_ARRAY. The ABI is standard, so the host's is the right one.
+    #[cfg(not(target_os = "freebsd"))]
     let candidates: &[(&'static str, &'static str)] = &[
         ("libm.so.6", "libm.so"),
         ("libz.so.1", "libz.so"),
         ("libGLESv2.so.2", "libGLESv2.so"),
         ("libEGL.so.1", "libEGL.so"),
         ("libstdc++.so.6", "libc.so"),
+        ("libgcc_s.so.1", "libc.so"),
+    ];
+    // FreeBSD spells the libc-family sonames differently, and the Itanium C++
+    // ABI personality (__gxx_personality_v0) lives in libcxxrt, not libstdc++.
+    // GLESv2/EGL keep their sonames (mesa/nvidia use the same).
+    #[cfg(target_os = "freebsd")]
+    let candidates: &[(&'static str, &'static str)] = &[
+        ("libm.so.5", "libm.so"),
+        ("libz.so.6", "libz.so"),
+        ("libGLESv2.so.2", "libGLESv2.so"),
+        ("libEGL.so.1", "libEGL.so"),
+        ("libcxxrt.so.1", "libc.so"),
         ("libgcc_s.so.1", "libc.so"),
     ];
 
@@ -200,8 +213,22 @@ pub fn build(host_libc: bool) -> SymbolTable {
             None => missing_host_libs.push(*soname),
         }
     }
+    #[cfg(target_os = "freebsd")]
+    let host_libc_soname = "libc.so.7";
+    #[cfg(not(target_os = "freebsd"))]
+    let host_libc_soname = "libc.so.6";
+    // On FreeBSD the host libm does not re-export libc through dlsym the way
+    // glibc's does, so the ABI-safe generics (memset, newlocale, mbtowc, …) have
+    // nowhere to resolve from. Open the host libc unconditionally and let the
+    // Generic fall-through below consult it, minus an ABI-unsafe denylist.
+    #[cfg(target_os = "freebsd")]
+    let libc = HostLib::open(host_libc_soname, "libc.so").or_else(|| {
+        let _ = host_libc;
+        None
+    });
+    #[cfg(not(target_os = "freebsd"))]
     let libc = host_libc
-        .then(|| HostLib::open("libc.so.6", "libc.so"))
+        .then(|| HostLib::open(host_libc_soname, "libc.so"))
         .flatten();
 
     let mut table = SymbolTable {
@@ -233,10 +260,21 @@ pub fn build(host_libc: bool) -> SymbolTable {
 
                 Class::Generic => match lookup(&host_libs, symbol) {
                     Some((provides, addr)) => (provides, addr, Source::Host),
-                    None => match libc.as_ref().and_then(|l| l.lookup(symbol)) {
-                        Some(addr) => ("libc.so", addr, Source::Host),
-                        None => ("libc.so", stub_addr, Source::Stub),
-                    },
+                    None => {
+                        // Fall through to the host libc, except where the host's
+                        // ABI differs from bionic's: mutex/rwlock objects have a
+                        // different size and layout, and syscall(2) numbers are
+                        // not the same. Those stay stubbed until translated.
+                        let hit = if abi_unsafe_generic(symbol) {
+                            None
+                        } else {
+                            libc.as_ref().and_then(|l| l.lookup(symbol))
+                        };
+                        match hit {
+                            Some(addr) => ("libc.so", addr, Source::Host),
+                            None => ("libc.so", stub_addr, Source::Stub),
+                        }
+                    }
                 },
             }
         };
@@ -332,6 +370,30 @@ pub fn build(host_libc: bool) -> SymbolTable {
     }
 
     table
+}
+
+/// Generic symbols whose host (FreeBSD) libc ABI differs from bionic's, so
+/// resolving them from the host would corrupt state rather than help: mutex and
+/// rwlock objects have a different size and layout, and syscall(2) numbers are
+/// not the same. These stay stubbed until given a real bionic-side translation.
+fn abi_unsafe_generic(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "syscall"
+            | "pthread_mutex_init"
+            | "pthread_mutex_lock"
+            | "pthread_mutex_unlock"
+            | "pthread_mutex_trylock"
+            | "pthread_mutex_timedlock"
+            | "pthread_mutex_destroy"
+            | "pthread_rwlock_init"
+            | "pthread_rwlock_destroy"
+            | "pthread_rwlock_rdlock"
+            | "pthread_rwlock_tryrdlock"
+            | "pthread_rwlock_wrlock"
+            | "pthread_rwlock_trywrlock"
+            | "pthread_rwlock_unlock"
+    )
 }
 
 fn lookup(libs: &[HostLib], symbol: &str) -> Option<(&'static str, *mut c_void)> {

@@ -3,6 +3,7 @@
 // As with shim.cpp: translation only, no policy.
 
 #include <jnivm.h>
+#include "os_compat.h"
 
 extern "C" void cordial_register_android_classes(void* env);
 namespace cordial {
@@ -54,7 +55,7 @@ void dump_classes_now() {
 }
 
 [[noreturn]] void report_terminate() {
-    fprintf(stderr, "\n*** uncaught C++ exception on thread %ld ***\n", (long)gettid());
+    fprintf(stderr, "\n*** uncaught C++ exception on thread %ld ***\n", cordial_gettid());
     if (auto e = std::current_exception()) {
         try {
             std::rethrow_exception(e);

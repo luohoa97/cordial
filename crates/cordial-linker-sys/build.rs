@@ -46,10 +46,26 @@ fn main() {
     // archive only satisfies symbols from archives listed after it.
     println!("cargo:rustc-link-lib=static=logger");
     println!("cargo:rustc-link-lib=static=linker");
-    println!("cargo:rustc-link-lib=dylib=stdc++");
+    // The C++ runtime: FreeBSD (and macOS) use libc++; glibc/Linux use libstdc++.
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "freebsd" || target_os == "macos" || target_os == "openbsd" {
+        println!("cargo:rustc-link-lib=dylib=c++");
+    } else {
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+    }
     println!("cargo:rustc-link-lib=dylib=z");
-    println!("cargo:rustc-link-lib=dylib=dl");
+    // On FreeBSD dlopen/dlsym live in libc; there is a libdl compat stub but no
+    // need to name it. Linux keeps them in a separate libdl.
+    if target_os != "freebsd" {
+        println!("cargo:rustc-link-lib=dylib=dl");
+    }
     println!("cargo:rustc-link-lib=dylib=pthread");
+    // FreeBSD has no epoll; libepoll-shim (a package) provides epoll_* over
+    // kqueue. It lives under /usr/local, which is not on the default link path.
+    if target_os == "freebsd" {
+        println!("cargo:rustc-link-search=native=/usr/local/lib");
+        println!("cargo:rustc-link-lib=dylib=epoll-shim");
+    }
 
     println!("cargo:rerun-if-env-changed=CORDIAL_JNI_TRACE");
 

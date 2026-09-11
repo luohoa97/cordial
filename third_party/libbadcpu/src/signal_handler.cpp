@@ -1,4 +1,5 @@
 #include "badcpu.h"
+#include "mcontext_compat.h"
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -16,7 +17,7 @@ static void sigill_handler(int sig, siginfo_t* info, void* ucontext) {
     }
 
     auto* ctx = static_cast<ucontext_t*>(ucontext);
-    auto* ip = reinterpret_cast<uint8_t*>(ctx->uc_mcontext.gregs[REG_RIP]);
+    auto* ip = reinterpret_cast<uint8_t*>(mc_rip(ctx));
 
     EmulationResult result = emulate_instruction(ip, g_cpu_features, ctx);
 

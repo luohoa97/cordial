@@ -25,6 +25,7 @@
 // warning about the two streams buffering differently under redirection
 // applies here as much as it did there.
 
+#include "os_compat.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -94,7 +95,7 @@ void* trampoline(void* raw) {
     ThreadTraceCtx* ctx = static_cast<ThreadTraceCtx*>(raw);
     // SAFETY: gettid() takes no pointer arguments; this is the new thread's
     // own id, read before it does anything else, which is the point.
-    long tid = (long)::syscall(SYS_gettid);
+    long tid = cordial_gettid();
 
     char caller_s[64];
     char start_s[64];

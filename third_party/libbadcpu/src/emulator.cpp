@@ -1,31 +1,14 @@
 #include "badcpu.h"
+#include "mcontext_compat.h"
 #include <cstdio>
 #include <cstring>
 #include <ucontext.h>
+#include <unistd.h>
 
 namespace badcpu {
 
 static uint64_t* get_reg_ptr(ucontext_t* ctx, uint8_t reg) {
-    auto& gregs = ctx->uc_mcontext.gregs;
-    switch (reg) {
-        case 0: return reinterpret_cast<uint64_t*>(&gregs[REG_RAX]);
-        case 1: return reinterpret_cast<uint64_t*>(&gregs[REG_RCX]);
-        case 2: return reinterpret_cast<uint64_t*>(&gregs[REG_RDX]);
-        case 3: return reinterpret_cast<uint64_t*>(&gregs[REG_RBX]);
-        case 4: return reinterpret_cast<uint64_t*>(&gregs[REG_RSP]);
-        case 5: return reinterpret_cast<uint64_t*>(&gregs[REG_RBP]);
-        case 6: return reinterpret_cast<uint64_t*>(&gregs[REG_RSI]);
-        case 7: return reinterpret_cast<uint64_t*>(&gregs[REG_RDI]);
-        case 8: return reinterpret_cast<uint64_t*>(&gregs[REG_R8]);
-        case 9: return reinterpret_cast<uint64_t*>(&gregs[REG_R9]);
-        case 10: return reinterpret_cast<uint64_t*>(&gregs[REG_R10]);
-        case 11: return reinterpret_cast<uint64_t*>(&gregs[REG_R11]);
-        case 12: return reinterpret_cast<uint64_t*>(&gregs[REG_R12]);
-        case 13: return reinterpret_cast<uint64_t*>(&gregs[REG_R13]);
-        case 14: return reinterpret_cast<uint64_t*>(&gregs[REG_R14]);
-        case 15: return reinterpret_cast<uint64_t*>(&gregs[REG_R15]);
-        default: return nullptr;
-    }
+    return mc_gpr(ctx, reg);
 }
 
 static uint64_t get_reg(ucontext_t* ctx, uint8_t reg) {
@@ -84,12 +67,12 @@ static EmulationResult emulate_popcnt(ucontext_t* ctx,
 
     *get_reg_ptr(ctx, inst.reg) = count;
 
-    uint64_t& flags = *reinterpret_cast<uint64_t*>(&ctx->uc_mcontext.gregs[REG_EFL]);
+    uint64_t& flags = mc_rflags(ctx);
     // POPCNT clears CF, PF, AF, ZF, SF, OF
     flags &= ~static_cast<uint64_t>(0x8D5); // bits 0(CF),2(PF),4(AF),6(ZF),7(SF),11(OF)
     if (count == 0) flags |= 0x40; // ZF
 
-    ctx->uc_mcontext.gregs[REG_RIP] += inst.len;
+    mc_rip(ctx) += inst.len;
     return EmulationResult::Success;
 }
 
@@ -129,7 +112,7 @@ static EmulationResult emulate_movbe(ucontext_t* ctx,
         }
     }
 
-    ctx->uc_mcontext.gregs[REG_RIP] += inst.len;
+    mc_rip(ctx) += inst.len;
     return EmulationResult::Success;
 }
 
@@ -161,7 +144,7 @@ static EmulationResult emulate_lzcnt_tzcnt(ucontext_t* ctx,
         }
     }
 
-    uint64_t& flags = *reinterpret_cast<uint64_t*>(&ctx->uc_mcontext.gregs[REG_EFL]);
+    uint64_t& flags = mc_rflags(ctx);
     // LZCNT/TZCNT clear OF, SF, AF, PF, CF; ZF set if src==0
     flags &= ~static_cast<uint64_t>(0x8D1); // bits 0(CF),4(AF),6(ZF),7(SF),11(OF) ... wait PF is bit 2
     // Actually: CF=0, PF=0, AF=0, SF=0, OF=0, ZF=1 if src==0
@@ -169,7 +152,7 @@ static EmulationResult emulate_lzcnt_tzcnt(ucontext_t* ctx,
     if (src == 0) flags |= 0x40; // ZF
 
     *get_reg_ptr(ctx, inst.reg) = result;
-    ctx->uc_mcontext.gregs[REG_RIP] += inst.len;
+    mc_rip(ctx) += inst.len;
     return EmulationResult::Success;
 }
 
@@ -204,13 +187,13 @@ static EmulationResult emulate_bmi(uint8_t op3, ucontext_t* ctx,
 
     *get_reg_ptr(ctx, inst.reg) = result;
 
-    uint64_t& flags = *reinterpret_cast<uint64_t*>(&ctx->uc_mcontext.gregs[REG_EFL]);
+    uint64_t& flags = mc_rflags(ctx);
     // BMI1 clears OF, SF, AF, PF, CF; ZF set if result==0, SF set from MSB of result
     flags &= ~static_cast<uint64_t>(0x8D5); // clear CF, PF, AF, ZF, SF, OF
     if (result == 0) flags |= 0x40; // ZF
     if (result & (is_64bit ? (1ull << 63) : (1u << 31))) flags |= 0x80; // SF
 
-    ctx->uc_mcontext.gregs[REG_RIP] += inst.len;
+    mc_rip(ctx) += inst.len;
     return EmulationResult::Success;
 }
 

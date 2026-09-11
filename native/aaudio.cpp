@@ -98,6 +98,7 @@
 #include <memory>
 
 #include <pthread.h>
+#include "os_compat.h"
 
 #include <atomic>
 #include <chrono>
@@ -465,7 +466,7 @@ float buffer_peak(const void* data, uint32_t frames, uint32_t channels, uint32_t
 /// variable, and the reason it is a switch rather than a default.
 bool fill_from_engine(void* dst, uint32_t frames, void* user) {
     auto* s = static_cast<Stream*>(user);
-    s->callback_thread.store(static_cast<unsigned long>(pthread_self()),
+    s->callback_thread.store(cordial_pthread_id(pthread_self()),
                              std::memory_order_relaxed);
     auto cb = s->data_callback;
     if (!cb) return false;
@@ -524,7 +525,7 @@ void sleep_ns(int64_t ns) {
 
 bool on_callback_thread(Stream* s) {
     unsigned long t = s->callback_thread.load(std::memory_order_relaxed);
-    return t != 0 && t == static_cast<unsigned long>(pthread_self());
+    return t != 0 && t == cordial_pthread_id(pthread_self());
 }
 
 /// `AAudioStreamBuilder_openStream` for `AAUDIO_DIRECTION_INPUT`.

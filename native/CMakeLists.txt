@@ -250,7 +250,7 @@ if(PIPEWIRE_FOUND)
   add_dependencies(cordial_liblog cordial_pipewire_backend_test)
 endif()
 
-add_library(cordial_linker_shim STATIC shim.cpp)
+add_library(cordial_linker_shim STATIC shim.cpp freebsd_libc_compat.c fortify_chk.c)
 target_link_libraries(cordial_linker_shim PUBLIC linker)
 
 install(TARGETS cordial_linker_shim cordial_liblog linker ARCHIVE DESTINATION lib)
