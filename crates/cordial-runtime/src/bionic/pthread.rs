@@ -410,24 +410,15 @@ pub extern "C" fn once(control: *mut c_int, init_routine: Option<extern "C" fn()
     // forwarding bionic's zero-initialised control makes FreeBSD's pthread_once
     // treat it as already-run and SKIP the init routine. That silently breaks
     // every lazily-initialised subsystem (memory-category tracking, TSD keys).
-    // Run the once protocol ourselves on the 4-byte slot instead (2 = done).
+    // Run the once protocol on the 4-byte slot itself, via _umtx_op — NO global
+    // guard. A single lock held across the init routine deadlocks when an init
+    // routine nests another pthread_once (OpenSSL and the reflection init do).
     #[cfg(target_os = "freebsd")]
     {
-        use core::sync::atomic::{AtomicI32, Ordering};
-        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        // SAFETY: `control` is a live 4-byte slot; we only ever CAS it.
-        let ctrl = unsafe { &*(control as *const AtomicI32) };
-        if ctrl.load(Ordering::Acquire) == 2 {
-            return 0;
+        extern "C" {
+            fn bionic_pthread_once(control: *mut c_int, init: Option<extern "C" fn()>) -> c_int;
         }
-        let _g = GUARD.lock().unwrap_or_else(|e| e.into_inner());
-        if ctrl.load(Ordering::Relaxed) != 2 {
-            if let Some(f) = init_routine {
-                f();
-            }
-            ctrl.store(2, Ordering::Release);
-        }
-        return 0;
+        return unsafe { bionic_pthread_once(control, init_routine) };
     }
     #[cfg(not(target_os = "freebsd"))]
     // SAFETY: `control` points at 4 bytes in both libcs, and a bionic

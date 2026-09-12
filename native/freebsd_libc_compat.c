@@ -86,6 +86,47 @@ int bionic_pthread_mutex_unlock(void *m) { return pthread_mutex_unlock(&bm_looku
 int bionic_pthread_mutex_trylock(void *m) { return pthread_mutex_trylock(&bm_lookup(m)->real); }
 int bionic_pthread_mutex_destroy(void *m) { (void)m; return 0; }
 
+// bionic pthread_rwlock_t (56 bytes) has no relation to FreeBSD's (an 8-byte
+// pointer). Same side-table treatment as the mutex: a real FreeBSD rwlock keyed
+// off the bionic object's address. Left stubbed, OpenSSL's OBJ_NAME table lock
+// (crypto/objects/o_names.c) either no-ops or blocks on garbage — a deadlock.
+struct br_entry {
+    const void *key;
+    pthread_rwlock_t real;
+    struct br_entry *next;
+};
+static struct br_entry *br_tab[BM_SLOTS];
+static pthread_mutex_t br_guard = PTHREAD_MUTEX_INITIALIZER;
+
+static pthread_rwlock_t *br_lookup(const void *key) {
+    unsigned h = (unsigned)(((uintptr_t)key >> 4) & (BM_SLOTS - 1));
+    for (struct br_entry *e = __atomic_load_n(&br_tab[h], __ATOMIC_ACQUIRE); e;
+         e = e->next)
+        if (e->key == key)
+            return &e->real;
+    pthread_mutex_lock(&br_guard);
+    for (struct br_entry *e = br_tab[h]; e; e = e->next)
+        if (e->key == key) {
+            pthread_mutex_unlock(&br_guard);
+            return &e->real;
+        }
+    struct br_entry *e = calloc(1, sizeof *e);
+    pthread_rwlock_init(&e->real, NULL);
+    e->key = key;
+    e->next = br_tab[h];
+    __atomic_store_n(&br_tab[h], e, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&br_guard);
+    return &e->real;
+}
+
+int bionic_pthread_rwlock_init(void *l, const void *attr) { (void)attr; br_lookup(l); return 0; }
+int bionic_pthread_rwlock_rdlock(void *l) { return pthread_rwlock_rdlock(br_lookup(l)); }
+int bionic_pthread_rwlock_wrlock(void *l) { return pthread_rwlock_wrlock(br_lookup(l)); }
+int bionic_pthread_rwlock_tryrdlock(void *l) { return pthread_rwlock_tryrdlock(br_lookup(l)); }
+int bionic_pthread_rwlock_trywrlock(void *l) { return pthread_rwlock_trywrlock(br_lookup(l)); }
+int bionic_pthread_rwlock_unlock(void *l) { return pthread_rwlock_unlock(br_lookup(l)); }
+int bionic_pthread_rwlock_destroy(void *l) { (void)l; return 0; }
+
 // FORTIFY open with no mode arg, and a registered prctl (unsupported).
 int __open_2(const char *path, int flags) { return open(path, flags); }
 
@@ -225,6 +266,38 @@ static long do_futex(void *uaddr, int op, unsigned int val, const struct timespe
     // Any other op (requeue, PI, wake_op): report unsupported rather than lie
     // with 0, which would busy-spin the caller.
     return -ENOSYS;
+}
+
+// bionic pthread_once on the 4-byte control word, using the real futex for
+// waiting — NO global guard. A single global lock held across the init routine
+// deadlocks when an init routine itself calls pthread_once (OpenSSL and the
+// engine's reflection init both nest them).
+#include <limits.h>
+#define ONCE_NOT_STARTED 0
+#define ONCE_IN_PROGRESS 1
+#define ONCE_DONE 2
+int bionic_pthread_once(int *control, void (*init)(void)) {
+    for (;;) {
+        int old = __atomic_load_n(control, __ATOMIC_ACQUIRE);
+        if (old == ONCE_DONE)
+            return 0;
+        if (old == ONCE_NOT_STARTED) {
+            int expected = ONCE_NOT_STARTED;
+            if (__atomic_compare_exchange_n(control, &expected, ONCE_IN_PROGRESS,
+                                            0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+                if (init)
+                    init();
+                __atomic_store_n(control, ONCE_DONE, __ATOMIC_RELEASE);
+                do_futex(control, LX_FUTEX_WAKE, INT_MAX, NULL); // wake waiters
+                return 0;
+            }
+            // Lost the race to start it; re-read and act on the new state.
+        } else {
+            // In progress on another thread: block on the control word until it
+            // transitions (bionic's own protocol, via _umtx_op).
+            do_futex(control, LX_FUTEX_WAIT, ONCE_IN_PROGRESS, NULL);
+        }
+    }
 }
 
 // Translate a Linux clockid to FreeBSD's — they disagree: Linux CLOCK_MONOTONIC

@@ -99,6 +99,13 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             fn bionic_pthread_mutex_unlock();
             fn bionic_pthread_mutex_trylock();
             fn bionic_pthread_mutex_destroy();
+            fn bionic_pthread_rwlock_init();
+            fn bionic_pthread_rwlock_rdlock();
+            fn bionic_pthread_rwlock_wrlock();
+            fn bionic_pthread_rwlock_tryrdlock();
+            fn bionic_pthread_rwlock_trywrlock();
+            fn bionic_pthread_rwlock_unlock();
+            fn bionic_pthread_rwlock_destroy();
             fn __open_2();
             fn prctl();
             fn bionic_sysinfo();
@@ -115,6 +122,13 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             f!("pthread_mutex_unlock", bionic_pthread_mutex_unlock),
             f!("pthread_mutex_trylock", bionic_pthread_mutex_trylock),
             f!("pthread_mutex_destroy", bionic_pthread_mutex_destroy),
+            f!("pthread_rwlock_init", bionic_pthread_rwlock_init),
+            f!("pthread_rwlock_rdlock", bionic_pthread_rwlock_rdlock),
+            f!("pthread_rwlock_wrlock", bionic_pthread_rwlock_wrlock),
+            f!("pthread_rwlock_tryrdlock", bionic_pthread_rwlock_tryrdlock),
+            f!("pthread_rwlock_trywrlock", bionic_pthread_rwlock_trywrlock),
+            f!("pthread_rwlock_unlock", bionic_pthread_rwlock_unlock),
+            f!("pthread_rwlock_destroy", bionic_pthread_rwlock_destroy),
             f!("__open_2", __open_2),
             f!("prctl", prctl),
             f!("sysinfo", bionic_sysinfo),
