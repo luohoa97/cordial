@@ -257,3 +257,40 @@ but the engine doesn't register flags as loaded before TaskScheduler init. This
 is the `nativeInitializeNativeFlags` / `onFlagsFailed` problem cordial's own
 docs/analysis/flag-init.md documents as not-fully-solved (§6.3). Next: determine
 if it's the same cordial bug or a FreeBSD-specific variant of the flag delivery.
+
+---
+
+## Session 2 (cont. 5) — PAST the TaskScheduler crash; deep threading spin remains
+
+The TaskScheduler-vs-flags crash is an ORDERING race, not a parse failure:
+- `sub_2380400` (TaskScheduler ctor) aborts if the "flags loaded" byte at VA
+  `0x75a8250` is 0. It's set by `initClientSettingsAndroid` (`sub_2C2BC07`) on
+  success ("SettingsLoad Success-Android", store `movb $1,[0x75a8250]` @0x2c2bfb6).
+- Trigger: `LocalStorage::flush` (`sub_255B4A2`) on the MAIN thread touches the
+  TaskScheduler while the flag parse runs on a WORKER thread (#14). On FreeBSD
+  the main thread wins the race; on Linux the parse does.
+
+**Fix that clears the crash: `CORDIAL_EARLY_SETTINGS=1`** — cordial delivers the
+settings synchronously after constructors but before `initializeNativeCode`
+(load.rs ~2196), so the flag is set before the race. (Deferred-ctors paths do
+NOT work: post-ctors still races; `CORDIAL_DEFER_PAST_SETTINGS` SEGVs because
+the parser reads constructor-initialised globals that don't exist yet.)
+
+Required for defer paths at all: **patch `patches/0003` into the linker**
+(`cd third_party/mcpelauncher-linker/bionic && patch -p1 < ../../../patches/0003-*.patch`)
+— it was NOT applied; without it CORDIAL_DEFER_CTORS silently no-ops.
+
+### New wall: the flag parse spin-waits (with EARLY_SETTINGS)
+No crash, but hangs at "flags applied": ~2 threads busy-spin on `clock_gettime`
+(923k calls/2s). The spinning thread is inside `initClientSettingsAndroid`
+itself, polling a timestamp getter (`sub_2C4B8A2`, a `__cxa_guard` static) in a
+timed loop — waiting on a condition (a parallel parse worker / a lock) that
+never resolves on FreeBSD. Same class as the earlier cond/mutex livelock, one
+layer deeper. mutex(now lock-free reads), cond(real-mutex translation), futex
+(_umtx_op), once, sem all check out individually — so it's a subtle timing/
+ordering interaction, or a TaskScheduler worker-wake primitive still off.
+
+### This chunk's improvements (kept)
+- mutex side-table: lock-free reads (append-only list) — the global guard was
+  serialising every lock; the parse locks tens of thousands of times.
+- patch 0003 applied to the linker (deferral now actually works).

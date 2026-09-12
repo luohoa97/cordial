@@ -34,21 +34,30 @@ static pthread_mutex_t bm_guard = PTHREAD_MUTEX_INITIALIZER;
 
 static struct bm_entry *bm_lookup(const void *key) {
     unsigned h = (unsigned)(((uintptr_t)key >> 4) & (BM_SLOTS - 1));
+    // The list is append-only (entries are never removed or reordered), so an
+    // existing key is found lock-free — critical because the flag parser locks
+    // mutexes tens of thousands of times and a global guard here would serialise
+    // all of it and lose the flag-load race against the main thread.
+    for (struct bm_entry *e = __atomic_load_n(&bm_tab[h], __ATOMIC_ACQUIRE); e;
+         e = e->next)
+        if (e->key == key)
+            return e;
+    // Miss: take the guard, re-check (someone may have added it), then append.
     pthread_mutex_lock(&bm_guard);
-    struct bm_entry *e = bm_tab[h];
-    while (e && e->key != key)
-        e = e->next;
-    if (!e) {
-        e = calloc(1, sizeof *e);
-        pthread_mutexattr_t a;
-        pthread_mutexattr_init(&a);
-        pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
-        pthread_mutex_init(&e->real, &a);
-        pthread_mutexattr_destroy(&a);
-        e->key = key;
-        e->next = bm_tab[h];
-        bm_tab[h] = e;
-    }
+    for (struct bm_entry *e = bm_tab[h]; e; e = e->next)
+        if (e->key == key) {
+            pthread_mutex_unlock(&bm_guard);
+            return e;
+        }
+    struct bm_entry *e = calloc(1, sizeof *e);
+    pthread_mutexattr_t a;
+    pthread_mutexattr_init(&a);
+    pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&e->real, &a);
+    pthread_mutexattr_destroy(&a);
+    e->key = key;
+    e->next = bm_tab[h];
+    __atomic_store_n(&bm_tab[h], e, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&bm_guard);
     return e;
 }
