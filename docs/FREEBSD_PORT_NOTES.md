@@ -62,3 +62,53 @@ first thing to try.
 - **syscall**: `bionic_syscall` handles gettid/getpid/getrandom/clock_gettime/gettimeofday/sched_yield/
   nanosleep; `futex` returns 0 (no real `_umtx_op` translation yet); rest → `-ENOSYS`.
 - **rwlock**: same treatment as mutex when it surfaces.
+
+---
+
+## Session 2 update — environ fixed, now a memory-category abort
+
+**The init-order theory was wrong.** IDA (now installed + working headless on
+FreeBSD under linuxulator; DB at `~/libroblox_2.721.so.i64`) named the crashing
+global directly:
+- `0x701c770` = **`environ_ptr`** (.got) → the `environ` data symbol.
+The SIGBUS was the engine iterating `environ` (char**), which cordial resolved
+to a **function stub** — because on FreeBSD `environ` lives in crt startup, not
+`libc.so`, so cordial's host-libc `defines()` check rejects it.
+
+### Fixes landed this session (past the SIGBUS)
+- **`environ`**: data override → address of the real `environ` (bionic/mod.rs).
+- **pthread_mutex**: real impl via a pointer-keyed side-table of recursive
+  FreeBSD mutexes (`native/freebsd_libc_compat.c`), registered for
+  `pthread_mutex_{init,lock,unlock,trylock,destroy}`. Sidesteps bionic's 4-byte
+  vs FreeBSD's pointer-sized `pthread_mutex_t`.
+- **`__open_2`** (FORTIFY open) and **`prctl`** registered.
+
+Result: **`no stubs were called`** — every symbol resolves. `--game-activity`
+brings up the full framework (audio, accessibility, **X11 backend**, 700-symbol
+table), loads libroblox, runs deep init (71 mutex locks) — then `abort()`.
+
+### The current wall — "invalid memory category" HardAssert
+Backtrace (via lldb + IDA symbolication): the engine calls `abort()` from
+Roblox's **per-allocation memory-accounting** hook `sub_1F24103`:
+- category array base `0x75a8bc0`, 64-byte entries, valid range `[0, 1024)`.
+- it aborts because a **category descriptor's ID field `[descriptor+8]` is ≥ 1024**.
+- descriptor comes from `sub_1F24310` → `sub_2C18D80(0x706d228)` (a guarded static).
+So a memory-category descriptor has a garbage/invalid ID during early static init.
+
+### Next diagnostics
+1. Trace `sub_2C18D80` (guarded-static getter) + the descriptor at `0x706d228`:
+   how is the category ID (`+8`) assigned? Likely a global registration counter.
+2. Is that counter in .bss (should be 0) or set by a constructor that hasn't run
+   / ran wrong on FreeBSD? Check for an uninitialized global or a `__cxa_guard`
+   issue in the bionic-loaded lib.
+3. Suspect list: any remaining mis-resolved **data** symbol (audit like environ),
+   or bionic TLS setup under cordial's linker on FreeBSD.
+
+### IDA headless recipe (works)
+```sh
+cd ~/ida93 && TVHEADLESS=1 HOME=/home/pascal TERM=xterm \
+  ./idat -A -S"script.idc" -Lout.log ~/libroblox_2.721.so.i64 </dev/null
+```
+IDC helpers: `get_name(ea)`, `get_qword(ea)`, `get_segm_name(ea)`,
+`get_func_name(ea)`, `get_first_dref_to/from`, `get_strlit_contents(ea,-1,0)`.
+(IDAPython needs libpython3.14 + `idapyswitch`; not set up — IDC is enough.)

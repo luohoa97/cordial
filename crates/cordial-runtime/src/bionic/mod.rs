@@ -94,10 +94,24 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             fn __FD_ISSET_chk();
             fn __ctype_get_mb_cur_max();
             fn bionic_syscall();
+            fn bionic_pthread_mutex_init();
+            fn bionic_pthread_mutex_lock();
+            fn bionic_pthread_mutex_unlock();
+            fn bionic_pthread_mutex_trylock();
+            fn bionic_pthread_mutex_destroy();
+            fn __open_2();
+            fn prctl();
         }
         v.extend_from_slice(&[
             f!("__ctype_get_mb_cur_max", __ctype_get_mb_cur_max),
             f!("syscall", bionic_syscall),
+            f!("pthread_mutex_init", bionic_pthread_mutex_init),
+            f!("pthread_mutex_lock", bionic_pthread_mutex_lock),
+            f!("pthread_mutex_unlock", bionic_pthread_mutex_unlock),
+            f!("pthread_mutex_trylock", bionic_pthread_mutex_trylock),
+            f!("pthread_mutex_destroy", bionic_pthread_mutex_destroy),
+            f!("__open_2", __open_2),
+            f!("prctl", prctl),
             f!("__memcpy_chk", __memcpy_chk),
             f!("__memmove_chk", __memmove_chk),
             f!("__memset_chk", __memset_chk),
@@ -114,6 +128,16 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             f!("__FD_CLR_chk", __FD_CLR_chk),
             f!("__FD_ISSET_chk", __FD_ISSET_chk),
         ]);
+
+        // `environ` is a *data* symbol defined in crt startup, not in libc.so,
+        // so cordial's host-libc lookup rejects it and it falls to a function
+        // stub — and the engine, reading `environ` as `char**`, dereferences
+        // that stub and SIGBUSes. A data override's value is the symbol's
+        // address, so hand it the address of the real environ variable.
+        extern "C" {
+            static mut environ: *mut *mut core::ffi::c_char;
+        }
+        v.push(("environ", unsafe { core::ptr::addr_of_mut!(environ) } as *mut c_void));
     }
 
     // sigset_t is 8 bytes in bionic and 128 in glibc; struct sigaction is 32

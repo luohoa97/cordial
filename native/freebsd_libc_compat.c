@@ -16,6 +16,52 @@
 // not, but its MB_CUR_MAX macro yields the same value for the current locale.
 size_t __ctype_get_mb_cur_max(void) { return MB_CUR_MAX; }
 
+// ── bionic pthread_mutex via a pointer-keyed side-table ─────────────────────
+// bionic's pthread_mutex_t (a few bytes) and FreeBSD's (a pointer to an opaque
+// struct) have incompatible layouts, so we cannot forward the bionic object to
+// FreeBSD's pthread. Instead, key a real FreeBSD (recursive) mutex off the
+// bionic object's *address*. The engine only ever touches the bionic mutex
+// through these calls, so its bytes are never interpreted — the address is a
+// stable identity. Recursive avoids self-deadlock from bionic type differences.
+#define BM_SLOTS 8192
+struct bm_entry {
+    const void *key;
+    pthread_mutex_t real;
+    struct bm_entry *next;
+};
+static struct bm_entry *bm_tab[BM_SLOTS];
+static pthread_mutex_t bm_guard = PTHREAD_MUTEX_INITIALIZER;
+
+static struct bm_entry *bm_lookup(const void *key) {
+    unsigned h = (unsigned)(((uintptr_t)key >> 4) & (BM_SLOTS - 1));
+    pthread_mutex_lock(&bm_guard);
+    struct bm_entry *e = bm_tab[h];
+    while (e && e->key != key)
+        e = e->next;
+    if (!e) {
+        e = calloc(1, sizeof *e);
+        pthread_mutexattr_t a;
+        pthread_mutexattr_init(&a);
+        pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
+        pthread_mutex_init(&e->real, &a);
+        pthread_mutexattr_destroy(&a);
+        e->key = key;
+        e->next = bm_tab[h];
+        bm_tab[h] = e;
+    }
+    pthread_mutex_unlock(&bm_guard);
+    return e;
+}
+
+int bionic_pthread_mutex_init(void *m, const void *attr) { (void)attr; bm_lookup(m); return 0; }
+int bionic_pthread_mutex_lock(void *m) { return pthread_mutex_lock(&bm_lookup(m)->real); }
+int bionic_pthread_mutex_unlock(void *m) { return pthread_mutex_unlock(&bm_lookup(m)->real); }
+int bionic_pthread_mutex_trylock(void *m) { return pthread_mutex_trylock(&bm_lookup(m)->real); }
+int bionic_pthread_mutex_destroy(void *m) { (void)m; return 0; }
+
+// FORTIFY open with no mode arg, and a registered prctl (unsupported).
+int __open_2(const char *path, int flags) { return open(path, flags); }
+
 // ── bionic syscall(2) shim ──────────────────────────────────────────────────
 // libroblox calls syscall() with *Linux* numbers. FreeBSD's syscall uses
 // different numbers, so forwarding raw would be catastrophic. Dispatch the
