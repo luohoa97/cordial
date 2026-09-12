@@ -294,3 +294,72 @@ ordering interaction, or a TaskScheduler worker-wake primitive still off.
 - mutex side-table: lock-free reads (append-only list) — the global guard was
   serialising every lock; the parse locks tens of thousands of times.
 - patch 0003 applied to the linker (deferral now actually works).
+
+---
+
+## Session: crash-free to the event loop (Opus 4.8, commit a1f7b38)
+
+Two ABI bugs fixed; the engine now runs natively with **no crashes** all the way
+into its event loop and opens a 1280x720 window. It renders black because the
+app-settings verdict fails (see below) — a cordial-upstream mystery, not a
+FreeBSD ABI problem.
+
+### Fix 1 — getauxval AT_ crosswiring
+bionic passes *Linux* AT_* numbers; only 0..14 match FreeBSD. The killer:
+Linux `AT_RANDOM=25` == FreeBSD `AT_HWCAP=25`. bionic's `__libc_init` asks
+AT_RANDOM for a pointer to 16 stack-canary bytes, got a hwcap bitmask, and
+dereferenced it → SIGSEGV (`rax=0x3ffff0`, fault `0x3ffff8` — the value is the
+hwcap bits & 0x3ffff0 running through jemalloc's small-region math). Now
+translate the numbers and hand AT_RANDOM a real 16-byte arc4random buffer.
+`native/freebsd_libc_compat.c` getauxval().
+
+### Fix 2 — bionic pthread_attr_t vs FreeBSD (the big one)
+bionic `pthread_attr_t` is a by-value 56-byte struct; FreeBSD's is an opaque
+`struct pthread_attr *`. On glibc both are by-value, so cordial forwarded attrs
+untouched — correct on Linux, fatal on FreeBSD:
+- `pthread_getattr_np`/`pthread_attr_getstack` were stubbed (left the bionic
+  struct uninitialised); `pthread_attr_destroy` resolved to host libthr, which
+  did `free(*attr)` = `free(bionic flags qword)` = `free(0xffffffff)` →
+  jemalloc walked into unmapped memory (`_pthread_create`/`attr_destroy` on the
+  stack right above the free frame gave it away).
+Fix: implement the whole bionic `pthread_attr_*` family over bionic's layout
+(`native/freebsd_libc_compat.c`, registered in `bionic/mod.rs`), AND translate a
+bionic attr → a real FreeBSD attr inside `cordial_pthread_create`
+(`native/thread_trace.cpp`, FreeBSD-only). Roblox creates its worker threads with
+a configured bionic attr; without translation host `pthread_create` deref'd it
+(`_pthread_create+274`, fault 0x31).
+
+### Boot now reaches: initializeNativeCode → GameActivity_register →
+webview protocol vocabulary → window placement (1280x720) → nativeRetryInit.
+
+### The nativeEngineState_ state machine (retryInit assertion)
+`nativeRetryInit` asserts `nativeEngineState_ ∈ {ReadyToBootstrap=1,
+FailedAppSettings=0xb}` and segfaults the assert otherwise. Under EARLY_SETTINGS
+cordial drives natives synchronously and calls retryInit while the state is still
+`2` (an intermediate "processing" state) — hence the abort.
+
+The state is real engine memory at `*(base+0x70811c8)->[0x38]->[0x10]` (i32) on
+2.721 (base = `symbol("JNI_OnLoad") - 0x22addd7`). `CORDIAL_PROBE_STATE=1` reads
+it; `CORDIAL_STATE_POLL_MS=<n>` polls before retryInit. An async worker flips the
+state `2 → 0xb` within ~25 ms — so a short poll makes retryInit pass. **The
+verdict is 0xb = FailedAppSettings, not 1 = ReadyToBootstrap.** These offsets are
+2.721-specific magic, so the probe stays env-gated, not a default.
+
+### Remaining wall (upstream, not FreeBSD): FailedAppSettings
+`nativeInitClientSettings` returns 0, but the engine's async validator sets
+`result->error` (`+0x8` of the settings-result object) non-null → state 0xb and
+`onFlagsFailed`. cordial's own comment: "what the verdict actually tests is still
+unknown" (docs/analysis/flag-init.md). Same wall on Linux. The window opens but
+stays black because content won't load without a passing verdict.
+
+- With globals run (`call_globals("late")` → `nativeGameGlobalInit`) execution
+  *blocks* after activity-lifecycle at 32% CPU. `CORDIAL_NO_GLOBAL_INIT=1` skips
+  it and advances into the app-bridge/init-params/webview-vocab region (still no
+  content, FailedAppSettings). Both are bootstrap-sequencing puzzles downstream
+  of the settings verdict.
+
+### Next
+Crack the FailedAppSettings verdict — trace what sets `result->error` in the
+async settings handler (the failure store is at file offset `0x2c5cd4e`,
+`movl $0xb,0x10(%rax)`; entered when `[result+0x8]` != 0). That's the gate to a
+non-black window. It is a cordial-wide problem, so a fix helps Linux too.

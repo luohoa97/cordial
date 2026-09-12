@@ -3514,6 +3514,49 @@ fn main() -> ExitCode {
                                         }
 
 
+                                        // Diagnostic: read the engine's own
+                                        // nativeEngineState_ before retryInit
+                                        // asserts on it. retryInit wants it at
+                                        // ReadyToBootstrap(1) or FailedApp
+                                        // Settings(0xb); a segfaulting assert
+                                        // otherwise. State lives at
+                                        // *(base+0x70811c8)->[0x38]->[0x10] on
+                                        // 2.721. `CORDIAL_PROBE_STATE=1`, and it
+                                        // optionally polls for up to N ms
+                                        // (`CORDIAL_STATE_POLL_MS`) waiting for
+                                        // the async settings handshake to land.
+                                        if std::env::var_os("CORDIAL_PROBE_STATE").is_some() {
+                                            let read_state = || -> Option<i32> {
+                                                let jni = lib.symbol("JNI_OnLoad")? as usize;
+                                                let base = jni.wrapping_sub(0x22addd7);
+                                                unsafe {
+                                                    let singleton = *((base + 0x70811c8) as *const usize);
+                                                    if singleton == 0 { return None; }
+                                                    let stateobj = *((singleton + 0x38) as *const usize);
+                                                    if stateobj == 0 { return None; }
+                                                    Some(*((stateobj + 0x10) as *const i32))
+                                                }
+                                            };
+                                            println!("  [state] before retryInit: {:?}", read_state());
+                                            if let Some(ms) = std::env::var("CORDIAL_STATE_POLL_MS")
+                                                .ok().and_then(|v| v.parse::<u64>().ok())
+                                            {
+                                                let start = std::time::Instant::now();
+                                                while start.elapsed().as_millis() < ms as u128 {
+                                                    match read_state() {
+                                                        Some(1) | Some(0xb) => break,
+                                                        _ => {}
+                                                    }
+                                                    std::thread::sleep(std::time::Duration::from_millis(25));
+                                                }
+                                                println!(
+                                                    "  [state] after polling {}ms: {:?}",
+                                                    start.elapsed().as_millis(),
+                                                    read_state()
+                                                );
+                                            }
+                                        }
+
                                         // Kicks the engine's initialisation once
                                         // everything it depends on is in place.
                                         if let Some(f) = lib.symbol(
