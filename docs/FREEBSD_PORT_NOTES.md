@@ -224,3 +224,36 @@ ALooper_addFd(fd=14 ...) / ALooper_addFd(fd=16 ...)   <- Android event loop live
 ### All fixes (branch freebsd-port)
 environ · pthread_mutex side-table · pthread_once · __open_2 · prctl ·
 sysconf page-size · sysinfo · **mmap flag translation** · getauxval.
+
+---
+
+## Session 2 (cont. 4) — a WINDOW opens; through the full native bootstrap
+
+Chain of fixes past the event loop to a real window + full engine bootstrap:
+- **profile lock**: `adopt_handed_lock` verified the handed fd via
+  `/proc/self/fd` (absent on FreeBSD) -> fell back to re-locking -> collided
+  with the shell's flock. Now verifies by fstat identity (dev+ino).
+  (cordial-shell/src/profile.rs). Rebuild cordial-RUN too — it links the shell.
+- **futex**: real `_umtx_op` WAIT/WAKE (was returning 0 = busy-spin).
+- **mmap fd**: force `fd=-1` for `MAP_ANON` (FreeBSD rejects fd=0).
+- **cond/mutex livelock (the big one)**: cordial's `pthread_cond_wait` handed
+  FreeBSD's cond the *bionic* mutex, but bionic mutexes are backed by our
+  side-table of real FreeBSD mutexes — so the wait never blocked/signalled ->
+  ~2 threads spun on `clock_gettime` forever. Fix: `bionic_mutex_real()` exposes
+  the side-table's real mutex; cond_wait/cond_timedwait translate to it.
+- **struct stat**: bionic `struct stat` (Linux x86-64, ~144B) vs FreeBSD's
+  (~224B). cordial's `s_stat`/`s_lstat` wrote the native struct into the
+  engine's bionic buffer -> stack-canary trip in boost::filesystem::status.
+  Added a `bionic_stat` translation + registered `fstat` (system_paths.cpp).
+
+Result: window 1280x720 opens, and the engine runs its ENTIRE native bootstrap
+(engine version, device info, refresh, battery, storage manager, and every
+nativeSet*Directory / policy / assets / channel call = ok).
+
+### Current wall — TaskScheduler vs flags (cordial-internal, documented)
+`RBXCRASH: FatalRuntimeError (Can't initialize the TaskScheduler before flags
+have been loaded)`. cordial delivers the client settings ("1281909 bytes cache")
+but the engine doesn't register flags as loaded before TaskScheduler init. This
+is the `nativeInitializeNativeFlags` / `onFlagsFailed` problem cordial's own
+docs/analysis/flag-init.md documents as not-fully-solved (§6.3). Next: determine
+if it's the same cordial bug or a FreeBSD-specific variant of the flag delivery.

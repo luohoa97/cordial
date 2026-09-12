@@ -216,8 +216,20 @@ pub extern "C" fn cond_wait(cond: *mut c_void, mutex: *mut c_void) -> c_int {
     let Some(backing) = cond_backing(cond) else {
         return libc_einval();
     };
-    // SAFETY: `mutex` is a bionic pthread_mutex_t, which is layout-identical to
-    // glibc's on x86-64 (both 40 bytes) and so passes straight through.
+    // On FreeBSD the engine's bionic mutexes are backed by a side-table of real
+    // FreeBSD mutexes (bionic's layout is not FreeBSD's), so pthread_cond_wait
+    // must operate on that same real mutex — the one mutex_lock/unlock use — not
+    // the bionic object. Handing it the bionic bytes makes the wait never truly
+    // block or signal, which livelocks the engine.
+    #[cfg(target_os = "freebsd")]
+    let mutex = unsafe {
+        extern "C" {
+            fn bionic_mutex_real(m: *mut c_void) -> *mut c_void;
+        }
+        bionic_mutex_real(mutex)
+    };
+    // SAFETY: `mutex` is now a real host mutex (FreeBSD) or the bionic/glibc
+    // pthread_mutex_t which is layout-identical on x86-64 (Linux).
     unsafe { pthread_cond_wait(backing, mutex) }
 }
 
@@ -228,6 +240,14 @@ pub extern "C" fn cond_timedwait(
 ) -> c_int {
     let Some(backing) = cond_backing(cond) else {
         return libc_einval();
+    };
+    // Same bionic-mutex -> real-mutex translation as cond_wait (see there).
+    #[cfg(target_os = "freebsd")]
+    let mutex = unsafe {
+        extern "C" {
+            fn bionic_mutex_real(m: *mut c_void) -> *mut c_void;
+        }
+        bionic_mutex_real(mutex)
     };
     // SAFETY: as above; `struct timespec` is identical between the two libcs.
     unsafe { pthread_cond_timedwait(backing, mutex, abstime) }

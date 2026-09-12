@@ -268,8 +268,24 @@ fn adopt_handed_lock(dir: &Path) -> Option<File> {
 
     let fd: c_int = raw.trim().parse().ok().filter(|fd| *fd >= 0)?;
     let expected = std::fs::canonicalize(dir.join(".lock")).ok()?;
-    let actual = std::fs::read_link(format!("/proc/self/fd/{fd}")).ok();
-    if actual.as_deref() != Some(expected.as_path()) {
+    // Linux: the descriptor's `/proc/self/fd` link names the file directly.
+    // FreeBSD has no such link, so fall back to comparing the descriptor's
+    // identity (device + inode) against the lock file — the fd names the lock
+    // iff `fstat` on it matches `stat` on the path.
+    let names_lock = {
+        let via_proc = std::fs::read_link(format!("/proc/self/fd/{fd}")).ok();
+        if via_proc.as_deref() == Some(expected.as_path()) {
+            true
+        } else {
+            use std::os::unix::fs::MetadataExt;
+            let want = std::fs::metadata(&expected).ok();
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            let ok = unsafe { libc::fstat(fd, &mut st) } == 0;
+            matches!((want, ok), (Some(m), true)
+                if st.st_dev as u64 == m.dev() as u64 && st.st_ino as u64 == m.ino() as u64)
+        }
+    };
+    if !names_lock {
         // Loud, because it means the launcher and the client disagree about
         // which profile is being run, and the launch continues on the client's
         // answer. Taking our own lock is the honest response: if the shell's

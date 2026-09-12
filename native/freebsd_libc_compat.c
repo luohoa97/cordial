@@ -53,6 +53,11 @@ static struct bm_entry *bm_lookup(const void *key) {
     return e;
 }
 
+// The real FreeBSD mutex backing a bionic mutex object — so pthread_cond_wait,
+// which must operate on the same lock the engine's mutex_lock/unlock use, gets
+// the side-table entry rather than the (uninterpreted) bionic bytes.
+pthread_mutex_t *bionic_mutex_real(void *m) { return &bm_lookup(m)->real; }
+
 int bionic_pthread_mutex_init(void *m, const void *attr) { (void)attr; bm_lookup(m); return 0; }
 int bionic_pthread_mutex_lock(void *m) { return pthread_mutex_lock(&bm_lookup(m)->real); }
 int bionic_pthread_mutex_unlock(void *m) { return pthread_mutex_unlock(&bm_lookup(m)->real); }
@@ -141,6 +146,45 @@ int bionic_sysinfo(struct linux_sysinfo *info) {
 #include <sys/random.h>
 #include <time.h>
 
+// Real futex over FreeBSD's _umtx_op. Returning 0 from a FUTEX_WAIT (as a stub
+// does) makes every thread that should block busy-spin, livelocking the engine.
+struct fbsd_umtx_time {
+    struct timespec _timeout;
+    unsigned int _flags;
+    unsigned int _clockid;
+};
+extern int _umtx_op(void *obj, int op, unsigned long val, void *uaddr, void *uaddr2);
+#define FBSD_UMTX_OP_WAIT_UINT_PRIVATE 15
+#define FBSD_UMTX_OP_WAKE_PRIVATE 16
+#define LX_FUTEX_WAIT 0
+#define LX_FUTEX_WAKE 1
+#define LX_FUTEX_CMD_MASK (~(128 | 256)) // strip PRIVATE_FLAG | CLOCK_REALTIME
+
+static long do_futex(void *uaddr, int op, unsigned int val, const struct timespec *to) {
+    int cmd = op & LX_FUTEX_CMD_MASK;
+    if (cmd == LX_FUTEX_WAIT) {
+        struct fbsd_umtx_time ut;
+        void *tptr = NULL;
+        unsigned long tsz = 0;
+        if (to) {
+            ut._timeout = *to;
+            ut._flags = 0;      // relative timeout
+            ut._clockid = 4;    // CLOCK_MONOTONIC
+            tptr = &ut;
+            tsz = sizeof(ut);
+        }
+        int r = _umtx_op(uaddr, FBSD_UMTX_OP_WAIT_UINT_PRIVATE,
+                         (unsigned long)val, (void *)tsz, tptr);
+        return r == 0 ? 0 : -errno;
+    }
+    if (cmd == LX_FUTEX_WAKE) {
+        int r = _umtx_op(uaddr, FBSD_UMTX_OP_WAKE_PRIVATE,
+                         (unsigned long)val, NULL, NULL);
+        return r == 0 ? (long)val : -errno;
+    }
+    return 0; // requeue/other ops: succeed as a no-op for now
+}
+
 // Linux x86-64 syscall numbers.
 #define LX_getpid          39
 #define LX_gettid          186
@@ -178,9 +222,9 @@ long bionic_syscall(long number, ...) {
     case LX_nanosleep:
         return nanosleep((const struct timespec *)a0, (struct timespec *)a1);
     case LX_futex:
-        // Not yet translated to _umtx_op; report "would block / done" as 0 so
-        // callers do not treat it as a hard error. Revisit for real contention.
-        return 0;
+        // futex(uaddr=a0, op=a1, val=a2, timeout=a3) -> real _umtx_op wait/wake.
+        return do_futex((void *)a0, (int)a1, (unsigned int)a2,
+                        (const struct timespec *)a3);
     default:
         errno = ENOSYS;
         return -1;

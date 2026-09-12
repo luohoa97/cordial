@@ -100,6 +100,70 @@ const char* remap(const char* path, char* buf, size_t n) {
     const char* _p = remap(path, _buf, sizeof _buf); \
     const char* real = _p ? _p : (path)
 
+#if defined(__FreeBSD__)
+// bionic's `struct stat` on x86-64 is the Linux kernel layout (~144 bytes);
+// FreeBSD's is larger (~224 bytes, extra st_birthtim/st_flags/st_gen). Writing a
+// FreeBSD struct into the engine's bionic-sized buffer overruns it and trips the
+// caller's stack canary (seen in boost::filesystem::status). Translate.
+struct bionic_stat {
+    unsigned long st_dev;
+    unsigned long st_ino;
+    unsigned long st_nlink;
+    unsigned int st_mode;
+    unsigned int st_uid;
+    unsigned int st_gid;
+    unsigned int __pad0;
+    unsigned long st_rdev;
+    long st_size;
+    long st_blksize;
+    long st_blocks;
+    struct timespec st_atim;
+    struct timespec st_mtim;
+    struct timespec st_ctim;
+    long __reserved3[3];
+};
+static void to_bionic_stat(const struct stat* s, bionic_stat* b) {
+    memset(b, 0, sizeof(*b));
+    b->st_dev = s->st_dev;
+    b->st_ino = s->st_ino;
+    b->st_nlink = s->st_nlink;
+    b->st_mode = s->st_mode;
+    b->st_uid = s->st_uid;
+    b->st_gid = s->st_gid;
+    b->st_rdev = s->st_rdev;
+    b->st_size = s->st_size;
+    b->st_blksize = s->st_blksize;
+    b->st_blocks = s->st_blocks;
+    b->st_atim = s->st_atim;
+    b->st_mtim = s->st_mtim;
+    b->st_ctim = s->st_ctim;
+}
+
+int s_stat(const char* path, void* out) {
+    REMAP(path);
+    struct stat native;
+    int r = ::stat(real, &native);
+    trace_i("stat", real, r);
+    if (r == 0) to_bionic_stat(&native, (bionic_stat*)out);
+    return r;
+}
+
+int s_lstat(const char* path, void* out) {
+    REMAP(path);
+    struct stat native;
+    int r = ::lstat(real, &native);
+    trace_i("lstat", real, r);
+    if (r == 0) to_bionic_stat(&native, (bionic_stat*)out);
+    return r;
+}
+
+int s_fstat(int fd, void* out) {
+    struct stat native;
+    int r = ::fstat(fd, &native);
+    if (r == 0) to_bionic_stat(&native, (bionic_stat*)out);
+    return r;
+}
+#else
 int s_stat(const char* path, struct stat* out) {
     REMAP(path);
     int r = ::stat(real, out);
@@ -113,6 +177,7 @@ int s_lstat(const char* path, struct stat* out) {
     trace_i("lstat", real, r);
     return r;
 }
+#endif
 
 int s_access(const char* path, int mode) {
     REMAP(path);
@@ -300,6 +365,9 @@ extern "C" const CordialSystemSymbol* cordial_system_symbols(size_t* count) {
     static const CordialSystemSymbol table[] = {
         {"stat", (void*)&s_stat},
         {"lstat", (void*)&s_lstat},
+#if defined(__FreeBSD__)
+        {"fstat", (void*)&s_fstat},
+#endif
         {"access", (void*)&s_access},
         {"opendir", (void*)&s_opendir},
         {"realpath", (void*)&s_realpath},
