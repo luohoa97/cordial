@@ -62,6 +62,19 @@ static struct bm_entry *bm_lookup(const void *key) {
     return e;
 }
 
+// Create a cond whose clock is CLOCK_MONOTONIC. bionic's conds use monotonic
+// deadlines for pthread_cond_timedwait; FreeBSD's default is CLOCK_REALTIME, so
+// a monotonic absolute deadline (~seconds since boot) reads as long past →
+// timedwait returns ETIMEDOUT instantly and every wait_for loop busy-spins.
+int bionic_cond_init_monotonic(void *cond) {
+    pthread_condattr_t a;
+    pthread_condattr_init(&a);
+    pthread_condattr_setclock(&a, 4 /* CLOCK_MONOTONIC on FreeBSD */);
+    int r = pthread_cond_init((pthread_cond_t *)cond, &a);
+    pthread_condattr_destroy(&a);
+    return r;
+}
+
 // The real FreeBSD mutex backing a bionic mutex object — so pthread_cond_wait,
 // which must operate on the same lock the engine's mutex_lock/unlock use, gets
 // the side-table entry rather than the (uninterpreted) bionic bytes.

@@ -107,6 +107,22 @@ unsafe fn free_backing(ptr: *mut c_void) {
 /// `init` is called exactly once, with the freshly allocated backing store.
 ///
 /// SAFETY: `state` and `real` must belong to the same live wrapper object.
+/// Initialise a backing condition variable. On FreeBSD it is forced to
+/// CLOCK_MONOTONIC to match bionic's timedwait deadlines (a REALTIME cond makes
+/// every monotonic-deadline `timedwait` time out instantly and busy-spin).
+unsafe fn make_cond(p: *mut c_void, attr: *const c_void) {
+    #[cfg(target_os = "freebsd")]
+    {
+        let _ = attr;
+        extern "C" {
+            fn bionic_cond_init_monotonic(cond: *mut c_void) -> c_int;
+        }
+        bionic_cond_init_monotonic(p);
+    }
+    #[cfg(not(target_os = "freebsd"))]
+    pthread_cond_init(p, attr);
+}
+
 unsafe fn resolve(
     state: &AtomicU64,
     real: &AtomicUsize,
@@ -151,7 +167,7 @@ pub extern "C" fn cond_init(cond: *mut c_void, attr: *const c_void) -> c_int {
     c.state.store(UNINIT, Ordering::Release);
     let backing = unsafe {
         resolve(&c.state, &c.real, |p| {
-            pthread_cond_init(p, attr);
+            make_cond(p, attr);
         })
     };
     if backing.is_null() {
@@ -198,7 +214,7 @@ macro_rules! cond_op {
             let c = unsafe { &mut *(cond as *mut BionicCond) };
             let backing = unsafe {
                 resolve(&c.state, &c.real, |p| {
-                    pthread_cond_init(p, std::ptr::null());
+                    make_cond(p, std::ptr::null());
                 })
             };
             if backing.is_null() {
@@ -261,7 +277,7 @@ fn cond_backing(cond: *mut c_void) -> Option<*mut c_void> {
     let c = unsafe { &mut *(cond as *mut BionicCond) };
     let backing = unsafe {
         resolve(&c.state, &c.real, |p| {
-            pthread_cond_init(p, std::ptr::null());
+            make_cond(p, std::ptr::null());
         })
     };
     (!backing.is_null()).then_some(backing)
