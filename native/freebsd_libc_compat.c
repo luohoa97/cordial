@@ -8,9 +8,12 @@
 #include <pthread.h>
 #include <pthread_np.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/auxv.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 // glibc's locale-aware MB_CUR_MAX accessor. bionic exports it too; FreeBSD does
 // not, but its MB_CUR_MAX macro yields the same value for the current locale.
@@ -380,13 +383,58 @@ int *__errno_location(void) { return __error(); }
 // Linux gettid(2). FreeBSD's documented equivalent returns the same small tid.
 pid_t gettid(void) { return (pid_t)pthread_getthreadid_np(); }
 
-// glibc getauxval(3) over FreeBSD's elf_aux_info(3). The AT_* type numbers the
-// linker asks for (AT_HWCAP, AT_PAGESZ, AT_PHDR, …) share values on both.
+// glibc/bionic getauxval(3) over FreeBSD's elf_aux_info(3).
+//
+// Callers here are bionic, so `type` is a *Linux* AT_* number. Only 0..14 share
+// values with FreeBSD; from 15 up they diverge and a blind passthrough is a
+// silent corruption:
+//   Linux AT_HWCAP=16   == FreeBSD AT_CANARY=16
+//   Linux AT_RANDOM=25  == FreeBSD AT_HWCAP=25
+// So a bionic caller asking AT_RANDOM (a pointer to 16 entropy bytes for the
+// stack canary) would get a hwcap bitmask and dereference it -> SIGSEGV.
+//
+// We translate the numbers we care about and, for the pointer-valued ones,
+// hand back a real pointer of our own rather than whatever elf_aux_info copies.
+enum {
+    LX_AT_PHDR   = 3,  LX_AT_PHENT = 4,  LX_AT_PHNUM = 5,
+    LX_AT_PAGESZ = 6,  LX_AT_BASE  = 7,  LX_AT_ENTRY = 9,
+    LX_AT_HWCAP  = 16, LX_AT_SECURE = 23, LX_AT_RANDOM = 25, LX_AT_HWCAP2 = 26,
+    FB_AT_HWCAP  = 25, FB_AT_HWCAP2 = 26,
+};
 unsigned long getauxval(unsigned long type) {
-    unsigned long value = 0;
-    if (elf_aux_info((int)type, &value, sizeof(value)) != 0)
+    switch (type) {
+    case LX_AT_RANDOM: {
+        // Bionic wants a pointer to 16 random bytes (stack-guard seed). FreeBSD
+        // exposes a canary via AT_CANARY, but elf_aux_info *copies* it rather
+        // than returning a pointer, so just own the buffer ourselves.
+        static unsigned char rnd[16];
+        static int seeded = 0;
+        if (!seeded) { arc4random_buf(rnd, sizeof(rnd)); seeded = 1; }
+        return (unsigned long)rnd;
+    }
+    case LX_AT_HWCAP: {
+        unsigned long v = 0;
+        if (elf_aux_info(FB_AT_HWCAP, &v, sizeof(v)) != 0) return 0;
+        return v;
+    }
+    case LX_AT_HWCAP2: {
+        unsigned long v = 0;
+        if (elf_aux_info(FB_AT_HWCAP2, &v, sizeof(v)) != 0) return 0;
+        return v;
+    }
+    case LX_AT_SECURE:
+        // No FreeBSD auxv equivalent; report "not a setuid exec" (safe default).
         return 0;
-    return value;
+    case LX_AT_PHDR: case LX_AT_PHENT: case LX_AT_PHNUM:
+    case LX_AT_PAGESZ: case LX_AT_BASE: case LX_AT_ENTRY: {
+        // Shared numbers (0..14) — forward straight through.
+        unsigned long v = 0;
+        if (elf_aux_info((int)type, &v, sizeof(v)) != 0) return 0;
+        return v;
+    }
+    default:
+        return 0;
+    }
 }
 
 // glibc's LFS alias. FreeBSD's off_t is already 64-bit, so open64 == open.
@@ -408,6 +456,94 @@ int prctl(int option, ...) {
     (void)option;
     errno = ENOSYS;
     return -1;
+}
+
+// --- bionic pthread_attr_t family ------------------------------------------
+//
+// This is the single nastiest ABI mismatch in the port. bionic's
+// `pthread_attr_t` is a *by-value* 56-byte struct (LP64 layout below); FreeBSD's
+// is an *opaque pointer* (`struct pthread_attr *`). libroblox hands bionic attr
+// structs to these symbols, so every one of them MUST be owned here — routing
+// even one to host libthr means libthr reads bionic's first qword (`flags`) as a
+// `struct pthread_attr *` and free()s it. Observed exactly that: a stubbed
+// pthread_getattr_np left the struct uninitialised, then libthr's
+// pthread_attr_destroy did free(0xffffffff) and jemalloc walked off into
+// unmapped memory. Keep the whole family self-consistent over this one layout.
+struct bionic_pthread_attr {
+    uint32_t flags;          // 0x00
+    uint32_t _pad;           // 0x04
+    void*    stack_base;     // 0x08
+    size_t   stack_size;     // 0x10
+    size_t   guard_size;     // 0x18
+    int32_t  sched_policy;   // 0x20
+    int32_t  sched_priority; // 0x24
+    char     __reserved[16]; // 0x28..0x38  (total 0x38 = 56 bytes)
+};
+#define BIONIC_ATTR_FLAG_DETACHED 1u
+
+int bionic_pthread_attr_init(void* attr) {
+    struct bionic_pthread_attr* a = attr;
+    memset(a, 0, sizeof *a);
+    a->stack_size = 8u * 1024u * 1024u;  // Roblox threads are heavy; 8 MiB.
+    a->guard_size = (size_t)getpagesize();
+    a->sched_policy = 0;                 // SCHED_OTHER / bionic SCHED_NORMAL
+    return 0;
+}
+
+// bionic attr owns no heap, so destroy just scrubs the struct. Critically this
+// keeps the pointer-vs-struct mismatch from ever reaching free().
+int bionic_pthread_attr_destroy(void* attr) {
+    memset(attr, 0, sizeof(struct bionic_pthread_attr));
+    return 0;
+}
+
+// glibc/bionic extension: fill `attr` with a live thread's real attributes.
+// `thread` is a genuine FreeBSD pthread_t here — every handle libroblox holds
+// came from host pthread_create/pthread_self — so FreeBSD's pthread_attr_get_np
+// accepts it directly. We copy the stack bounds into the bionic layout.
+int bionic_pthread_getattr_np(pthread_t thread, void* attr) {
+    struct bionic_pthread_attr* a = attr;
+    memset(a, 0, sizeof *a);
+    pthread_attr_t fa;
+    if (pthread_attr_init(&fa) != 0)
+        return ENOMEM;
+    void* base = NULL;
+    size_t size = 0, guard = 0;
+    if (pthread_attr_get_np(thread, &fa) == 0) {
+        pthread_attr_getstack(&fa, &base, &size);
+        pthread_attr_getguardsize(&fa, &guard);
+    }
+    pthread_attr_destroy(&fa);
+    a->stack_base = base;
+    a->stack_size = size;
+    a->guard_size = guard;
+    return 0;
+}
+
+int bionic_pthread_attr_getstack(const void* attr, void** base, size_t* size) {
+    const struct bionic_pthread_attr* a = attr;
+    if (base) *base = a->stack_base;
+    if (size) *size = a->stack_size;
+    return 0;
+}
+
+int bionic_pthread_attr_setstacksize(void* attr, size_t stacksize) {
+    ((struct bionic_pthread_attr*)attr)->stack_size = stacksize;
+    return 0;
+}
+
+int bionic_pthread_attr_setdetachstate(void* attr, int state) {
+    struct bionic_pthread_attr* a = attr;
+    if (state) a->flags |= BIONIC_ATTR_FLAG_DETACHED;
+    else       a->flags &= ~BIONIC_ATTR_FLAG_DETACHED;
+    return 0;
+}
+
+// struct sched_param leads with `int sched_priority` on both bionic and FreeBSD,
+// so reading the first int is layout-safe.
+int bionic_pthread_attr_setschedparam(void* attr, const void* param) {
+    ((struct bionic_pthread_attr*)attr)->sched_priority = *(const int*)param;
+    return 0;
 }
 
 #endif /* __FreeBSD__ */

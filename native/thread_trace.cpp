@@ -26,6 +26,7 @@
 // applies here as much as it did there.
 
 #include "os_compat.h"
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -33,9 +34,57 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#if defined(__FreeBSD__)
+#include <pthread_np.h>
+#ifndef PTHREAD_STACK_MIN
+#define PTHREAD_STACK_MIN (2 * 4096)
+#endif
+#endif
+
 namespace {
 
 bool g_trace = false;
+
+#if defined(__FreeBSD__)
+// bionic's `pthread_attr_t` is a by-value 56-byte struct; FreeBSD's is an opaque
+// pointer. On glibc both are by-value structs, so forwarding `attr` untouched is
+// correct (and stays the default off-FreeBSD) — but on FreeBSD a bionic attr
+// handed to host pthread_create is dereferenced as a `struct pthread_attr *` and
+// derefs its `flags` qword as a pointer -> SIGSEGV in _pthread_create. So on
+// FreeBSD we read the bionic layout and build a real FreeBSD attr from it.
+struct BionicPthreadAttr {
+    uint32_t flags;          // 0x00  bit0 DETACHED, bit1 USER_ALLOCATED_STACK
+    uint32_t _pad;           // 0x04
+    void*    stack_base;     // 0x08
+    size_t   stack_size;     // 0x10
+    size_t   guard_size;     // 0x18
+    int32_t  sched_policy;   // 0x20
+    int32_t  sched_priority; // 0x24
+    char     __reserved[16]; // 0x28
+};
+
+// Fill `out` (an initialised FreeBSD attr) from a bionic attr. Returns true if a
+// translation was built (caller must pthread_attr_destroy(out)); false when
+// `battr` is NULL and the caller should just pass NULL through.
+bool bionic_attr_to_freebsd(const pthread_attr_t* battr, pthread_attr_t* out) {
+    if (!battr) return false;
+    const BionicPthreadAttr* b = reinterpret_cast<const BionicPthreadAttr*>(battr);
+    pthread_attr_init(out);
+    size_t ss = b->stack_size;
+    if (ss != 0 && ss < (size_t)PTHREAD_STACK_MIN) ss = (size_t)PTHREAD_STACK_MIN;
+    // Only trust a caller-provided stack base when the flag says it owns one;
+    // otherwise stack_base may be stale (e.g. copied from getattr_np) and using
+    // it as a real stack would fault. Common case: caller sets size only.
+    if ((b->flags & 2u) && b->stack_base) {
+        pthread_attr_setstack(out, b->stack_base, ss);
+    } else if (ss != 0) {
+        pthread_attr_setstacksize(out, ss);
+    }
+    if (b->guard_size) pthread_attr_setguardsize(out, b->guard_size);
+    if (b->flags & 1u) pthread_attr_setdetachstate(out, PTHREAD_CREATE_DETACHED);
+    return true;
+}
+#endif
 
 // libroblox.so is loaded by Cordial's own bionic linker, not the host
 // dynamic loader, so the host's `dladdr` has never heard of it and cannot
@@ -114,23 +163,34 @@ void* trampoline(void* raw) {
 
 extern "C" int cordial_pthread_create(pthread_t* thread, const pthread_attr_t* attr,
                                        void* (*start_routine)(void*), void* arg) {
+    const pthread_attr_t* eff = attr;
+#if defined(__FreeBSD__)
+    pthread_attr_t fa;
+    bool xlated = bionic_attr_to_freebsd(attr, &fa);
+    if (xlated) eff = &fa;
+#endif
+    int rc;
     if (!g_trace) {
-        return ::pthread_create(thread, attr, start_routine, arg);
+        rc = ::pthread_create(thread, eff, start_routine, arg);
+    } else {
+        // `__builtin_return_address(0)` reads the address `call` pushed for this
+        // frame — a compiler-known fixed slot, not a walk of the frame-pointer
+        // chain, so it is exact regardless of `-fomit-frame-pointer` and does
+        // not run into the "no frame pointers" caveat that makes anything past
+        // the innermost frame guesswork elsewhere in this codebase.
+        void* caller = __builtin_return_address(0);
+        ThreadTraceCtx* ctx = new ThreadTraceCtx{
+            start_routine, arg, (uintptr_t)caller, (uintptr_t)start_routine};
+        rc = ::pthread_create(thread, eff, trampoline, ctx);
+        if (rc != 0) {
+            // The thread never started, so nothing will reach the `delete`
+            // inside `trampoline`.
+            delete ctx;
+        }
     }
-    // `__builtin_return_address(0)` reads the address `call` pushed for this
-    // frame — a compiler-known fixed slot, not a walk of the frame-pointer
-    // chain, so it is exact regardless of `-fomit-frame-pointer` and does not
-    // run into the "no frame pointers" caveat that makes anything past the
-    // innermost frame guesswork elsewhere in this codebase.
-    void* caller = __builtin_return_address(0);
-    ThreadTraceCtx* ctx = new ThreadTraceCtx{
-        start_routine, arg, (uintptr_t)caller, (uintptr_t)start_routine};
-    int rc = ::pthread_create(thread, attr, trampoline, ctx);
-    if (rc != 0) {
-        // The thread never started, so nothing will reach the `delete` inside
-        // `trampoline`.
-        delete ctx;
-    }
+#if defined(__FreeBSD__)
+    if (xlated) pthread_attr_destroy(&fa);
+#endif
     return rc;
 }
 

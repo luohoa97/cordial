@@ -113,6 +113,13 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             fn getauxval();
             fn bionic_clock_gettime();
             fn bionic_clock_getres();
+            fn bionic_pthread_attr_init();
+            fn bionic_pthread_attr_destroy();
+            fn bionic_pthread_getattr_np();
+            fn bionic_pthread_attr_getstack();
+            fn bionic_pthread_attr_setstacksize();
+            fn bionic_pthread_attr_setdetachstate();
+            fn bionic_pthread_attr_setschedparam();
         }
         v.extend_from_slice(&[
             f!("__ctype_get_mb_cur_max", __ctype_get_mb_cur_max),
@@ -137,6 +144,16 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             f!("getauxval", getauxval),
             f!("clock_gettime", bionic_clock_gettime),
             f!("clock_getres", bionic_clock_getres),
+            // bionic pthread_attr_t is a by-value 56-byte struct; FreeBSD's is an
+            // opaque pointer. Own the whole family so no bionic attr ever reaches
+            // host libthr (which would free() its first qword as a pointer).
+            f!("pthread_attr_init", bionic_pthread_attr_init),
+            f!("pthread_attr_destroy", bionic_pthread_attr_destroy),
+            f!("pthread_getattr_np", bionic_pthread_getattr_np),
+            f!("pthread_attr_getstack", bionic_pthread_attr_getstack),
+            f!("pthread_attr_setstacksize", bionic_pthread_attr_setstacksize),
+            f!("pthread_attr_setdetachstate", bionic_pthread_attr_setdetachstate),
+            f!("pthread_attr_setschedparam", bionic_pthread_attr_setschedparam),
             f!("__memcpy_chk", __memcpy_chk),
             f!("__memmove_chk", __memmove_chk),
             f!("__memset_chk", __memset_chk),
