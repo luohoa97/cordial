@@ -104,6 +104,8 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             fn bionic_sysinfo();
             fn bionic_mmap();
             fn getauxval();
+            fn bionic_clock_gettime();
+            fn bionic_clock_getres();
         }
         v.extend_from_slice(&[
             f!("__ctype_get_mb_cur_max", __ctype_get_mb_cur_max),
@@ -119,6 +121,8 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             f!("mmap", bionic_mmap),
             f!("mmap64", bionic_mmap),
             f!("getauxval", getauxval),
+            f!("clock_gettime", bionic_clock_gettime),
+            f!("clock_getres", bionic_clock_getres),
             f!("__memcpy_chk", __memcpy_chk),
             f!("__memmove_chk", __memmove_chk),
             f!("__memset_chk", __memset_chk),

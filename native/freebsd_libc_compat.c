@@ -178,33 +178,80 @@ struct fbsd_umtx_time {
 extern int _umtx_op(void *obj, int op, unsigned long val, void *uaddr, void *uaddr2);
 #define FBSD_UMTX_OP_WAIT_UINT_PRIVATE 15
 #define FBSD_UMTX_OP_WAKE_PRIVATE 16
+#define FBSD_UMTX_ABSTIME 1
+#define FBSD_CLOCK_REALTIME 0
+#define FBSD_CLOCK_MONOTONIC 4
 #define LX_FUTEX_WAIT 0
 #define LX_FUTEX_WAKE 1
-#define LX_FUTEX_CMD_MASK (~(128 | 256)) // strip PRIVATE_FLAG | CLOCK_REALTIME
+#define LX_FUTEX_WAIT_BITSET 9  // bionic's timed waits use this — absolute deadline
+#define LX_FUTEX_WAKE_BITSET 10
+#define LX_FUTEX_PRIVATE_FLAG 128
+#define LX_FUTEX_CLOCK_REALTIME 256
 
 static long do_futex(void *uaddr, int op, unsigned int val, const struct timespec *to) {
-    int cmd = op & LX_FUTEX_CMD_MASK;
-    if (cmd == LX_FUTEX_WAIT) {
+    // Strip the PRIVATE / CLOCK_REALTIME flag bits to get the base command.
+    int cmd = op & ~(LX_FUTEX_PRIVATE_FLAG | LX_FUTEX_CLOCK_REALTIME);
+    if (cmd == LX_FUTEX_WAIT || cmd == LX_FUTEX_WAIT_BITSET) {
         struct fbsd_umtx_time ut;
         void *tptr = NULL;
         unsigned long tsz = 0;
         if (to) {
             ut._timeout = *to;
-            ut._flags = 0;      // relative timeout
-            ut._clockid = 4;    // CLOCK_MONOTONIC
+            if (cmd == LX_FUTEX_WAIT_BITSET) {
+                // BITSET carries an *absolute* deadline (this is how bionic's
+                // pthread_cond / lock timeouts are implemented — treating it as
+                // a no-op returning 0 was the flag-parse busy-spin).
+                ut._flags = FBSD_UMTX_ABSTIME;
+                ut._clockid = (op & LX_FUTEX_CLOCK_REALTIME) ? FBSD_CLOCK_REALTIME
+                                                             : FBSD_CLOCK_MONOTONIC;
+            } else {
+                ut._flags = 0; // plain WAIT is a relative timeout
+                ut._clockid = FBSD_CLOCK_MONOTONIC;
+            }
             tptr = &ut;
             tsz = sizeof(ut);
         }
         int r = _umtx_op(uaddr, FBSD_UMTX_OP_WAIT_UINT_PRIVATE,
                          (unsigned long)val, (void *)tsz, tptr);
+        // bionic's __futex checks the raw negative-errno convention (-ETIMEDOUT,
+        // -EAGAIN, -EINTR), so return -errno rather than -1.
         return r == 0 ? 0 : -errno;
     }
-    if (cmd == LX_FUTEX_WAKE) {
+    if (cmd == LX_FUTEX_WAKE || cmd == LX_FUTEX_WAKE_BITSET) {
         int r = _umtx_op(uaddr, FBSD_UMTX_OP_WAKE_PRIVATE,
                          (unsigned long)val, NULL, NULL);
         return r == 0 ? (long)val : -errno;
     }
-    return 0; // requeue/other ops: succeed as a no-op for now
+    // Any other op (requeue, PI, wake_op): report unsupported rather than lie
+    // with 0, which would busy-spin the caller.
+    return -ENOSYS;
+}
+
+// Translate a Linux clockid to FreeBSD's — they disagree: Linux CLOCK_MONOTONIC
+// is 1, but FreeBSD 1 is CLOCK_VIRTUAL (process user-CPU time); FreeBSD's
+// monotonic is 4. Untranslated, every engine timer reads CPU time, not wall
+// time, and timed loops never satisfy their deadlines.
+static int fbsd_clockid(int lx) {
+    switch (lx) {
+    case 0: return 0;   // CLOCK_REALTIME
+    case 1: return 4;   // CLOCK_MONOTONIC        -> FreeBSD 4
+    case 2: return 15;  // CLOCK_PROCESS_CPUTIME  -> FreeBSD 15
+    case 3: return 14;  // CLOCK_THREAD_CPUTIME   -> FreeBSD 14
+    case 4: return 4;   // CLOCK_MONOTONIC_RAW    -> monotonic
+    case 5: return 10;  // CLOCK_REALTIME_COARSE  -> REALTIME_FAST
+    case 6: return 12;  // CLOCK_MONOTONIC_COARSE -> MONOTONIC_FAST
+    case 7: return 4;   // CLOCK_BOOTTIME         -> monotonic
+    default: return lx;
+    }
+}
+
+// clock_gettime / clock_getres translating the clockid. The engine imports
+// these directly (not only via syscall), so both need an override.
+int bionic_clock_gettime(int lx_clockid, struct timespec *ts) {
+    return clock_gettime(fbsd_clockid(lx_clockid), ts);
+}
+int bionic_clock_getres(int lx_clockid, struct timespec *ts) {
+    return clock_getres(fbsd_clockid(lx_clockid), ts);
 }
 
 // Linux x86-64 syscall numbers.
@@ -236,7 +283,7 @@ long bionic_syscall(long number, ...) {
     case LX_getrandom:
         return (long)getrandom((void *)a0, (size_t)a1, (unsigned)a2);
     case LX_clock_gettime:
-        return clock_gettime((clockid_t)a0, (struct timespec *)a1);
+        return bionic_clock_gettime((int)a0, (struct timespec *)a1);
     case LX_gettimeofday:
         return gettimeofday((struct timeval *)a0, (struct timezone *)a1);
     case LX_sched_yield:
