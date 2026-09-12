@@ -149,3 +149,43 @@ nearby function; breakpoints proved it never runs). Real chain, via lldb
    `_SC_PAGESIZE`/`_SC_PHYS_PAGES` can make the arena sizing compute to 0.
 4. Pool state global `0x7012a00`: is its init constructor running? (partially
    set up — freelist head non-null but empty — so arena refill is the gap.)
+
+---
+
+## Session 2 (cont. 2) — sysconf page-size + sysinfo fixed; allocator still NULLs
+
+Two more real blockers found and fixed (the abort MOVED past each):
+- **`sysconf` page size**: cordial's table maps bionic _SC_* → *glibc* numbers,
+  but FreeBSD's differ from glibc's too (bionic _SC_PAGESIZE 39 → glibc 30, but
+  FreeBSD's is **47**). The allocator asked the page size, got a non-power-of-two,
+  aborted (cordial's own comment predicted exactly this). Fixed: `bionic_sysconf`
+  maps the critical selectors (PAGESIZE 47, NPROCESSORS 57/58, PHYS_PAGES 121,
+  CLK_TCK 3) straight to FreeBSD numbers, cfg-gated. mod.rs.
+- **`sysinfo`**: Linux-only, fills `struct sysinfo` (totalram etc.); the allocator
+  sizes arenas from it. Stub → garbage → abort. Implemented via sysctl
+  (`hw.physmem`, `vm.stats.vm.v_free_count`) in `native/freebsd_libc_compat.c`.
+  NB: bionic `struct sysinfo` is **104 bytes** on LP64 (trailing `_f` pad is 0);
+  an oversized struct here overruns the caller and trips its stack canary.
+
+### Still stuck: Roblox's pool/slab allocator returns NULL at first alloc
+After both fixes the abort returns to the SAME spot (`0x2c18f30` in
+`sub_2C18D80`): `sub_1F24322` (per-thread pool) → `sub_1F251FA` (slab) →
+`sub_6A80FB1` still yields NULL for a 128-byte request. `sub_6A80FB1` uses
+`arc4random_buf`/`clock_gettime`/`pthread_getspecific` (all resolve fine); it
+manages existing slabs rather than creating them, so the arena/slab that should
+back it was never set up. Pool global is `0x7012a00` (partially initialised:
+freelist head non-null but empty).
+
+### Next
+1. Runtime-trace `sub_1F251FA`/`sub_6A80FB1`: break at `base+0x1f251fa`, step to
+   the NULL return, see which call/branch fails.
+2. Find where pool `0x7012a00`'s slabs are first reserved (the arena mmap) — it
+   was NOT the file-mapping mmap at `0x23b40ad` (that's JNI). Look for an
+   anonymous mmap in the pool-init path.
+3. Consider whether cordial's bundled mimalloc is meant to back this and the
+   hookup differs on FreeBSD.
+
+### Fixes committed this session (branch freebsd-port)
+environ · pthread_mutex (side-table) · __open_2 · prctl · pthread_once
+(FreeBSD once protocol) · sysconf page-size · sysinfo. Engine now loads and runs
+deep static init before the allocator NULLs.

@@ -101,6 +101,7 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             fn bionic_pthread_mutex_destroy();
             fn __open_2();
             fn prctl();
+            fn bionic_sysinfo();
         }
         v.extend_from_slice(&[
             f!("__ctype_get_mb_cur_max", __ctype_get_mb_cur_max),
@@ -112,6 +113,7 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             f!("pthread_mutex_destroy", bionic_pthread_mutex_destroy),
             f!("__open_2", __open_2),
             f!("prctl", prctl),
+            f!("sysinfo", bionic_sysinfo),
             f!("__memcpy_chk", __memcpy_chk),
             f!("__memmove_chk", __memmove_chk),
             f!("__memset_chk", __memset_chk),
@@ -577,6 +579,28 @@ extern "C" {
 /// power of two, so the allocator that asked aborts. Nothing about that failure
 /// points back at `sysconf`, which is why the translation is worth its table.
 extern "C" fn bionic_sysconf(name: c_int) -> i64 {
+    // FreeBSD's _SC_* numbers differ from BOTH bionic's and glibc's, so the
+    // glibc-valued table below asks FreeBSD the wrong question (e.g. bionic
+    // _SC_PAGESIZE=39 -> glibc 30, but FreeBSD's _SC_PAGESIZE is 47). The
+    // allocator asks the page size at init and, told a non-power-of-two, aborts.
+    // Map the selectors that actually matter straight to FreeBSD's numbers.
+    #[cfg(target_os = "freebsd")]
+    {
+        let fbsd: Option<c_int> = match name {
+            39 | 40 => Some(47), // _SC_PAGESIZE / _SC_PAGE_SIZE
+            96 => Some(57),      // _SC_NPROCESSORS_CONF
+            97 => Some(58),      // _SC_NPROCESSORS_ONLN
+            98 => Some(121),     // _SC_PHYS_PAGES
+            99 => Some(122),     // _SC_AVPHYS_PAGES
+            6 => Some(3),        // _SC_CLK_TCK
+            _ => None,
+        };
+        if let Some(sel) = fbsd {
+            // SAFETY: `sel` is a valid FreeBSD selector.
+            return unsafe { sysconf(sel) };
+        }
+    }
+
     if let Some(&(_, glibc, _)) = sysconf_table::SYSCONF_MAP
         .iter()
         .find(|(bionic, _, _)| *bionic == name)

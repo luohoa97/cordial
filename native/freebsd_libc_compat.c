@@ -62,6 +62,46 @@ int bionic_pthread_mutex_destroy(void *m) { (void)m; return 0; }
 // FORTIFY open with no mode arg, and a registered prctl (unsupported).
 int __open_2(const char *path, int flags) { return open(path, flags); }
 
+// Linux sysinfo(2): fills total/free RAM etc. Roblox's allocator sizes its
+// arenas from totalram, so a stub (garbage) makes it abort. FreeBSD has no
+// sysinfo; source the same numbers from sysctl.
+#include <sys/sysctl.h>
+struct linux_sysinfo {
+    long uptime;
+    unsigned long loads[3];
+    unsigned long totalram, freeram, sharedram, bufferram, totalswap, freeswap;
+    unsigned short procs, pad;
+    unsigned long totalhigh, freehigh;
+    unsigned int mem_unit;
+    // bionic's trailing pad `_f` is `20 - 2*sizeof(long) - sizeof(int)` = 0 bytes
+    // on LP64, making sizeof(struct sysinfo) == 104. A larger struct here makes
+    // memset() overrun the caller's buffer and trips its stack canary.
+};
+int bionic_sysinfo(struct linux_sysinfo *info) {
+    memset(info, 0, sizeof(*info));
+    unsigned long physmem = 0;
+    size_t len = sizeof(physmem);
+    // FreeBSD sysconf selector numbers (BSD_VISIBLE macros aren't exposed under
+    // the build's strict feature flags, so spell them out): _SC_PAGESIZE=47,
+    // _SC_PHYS_PAGES=121, _SC_NPROCESSORS_ONLN=58.
+    long pgsz = sysconf(47);
+    if (pgsz <= 0)
+        pgsz = 4096;
+    if (sysctlbyname("hw.physmem", &physmem, &len, NULL, 0) != 0)
+        physmem = (unsigned long)sysconf(121) * (unsigned long)pgsz;
+    unsigned long freepg = 0;
+    len = sizeof(freepg);
+    sysctlbyname("vm.stats.vm.v_free_count", &freepg, &len, NULL, 0);
+    info->mem_unit = 1;
+    info->totalram = physmem;
+    info->freeram = freepg * (unsigned long)pgsz;
+    if (info->freeram == 0 || info->freeram > physmem)
+        info->freeram = physmem / 2;
+    long ncpu = sysconf(58);
+    info->procs = (unsigned short)(ncpu > 0 ? ncpu : 1);
+    return 0;
+}
+
 // ── bionic syscall(2) shim ──────────────────────────────────────────────────
 // libroblox calls syscall() with *Linux* numbers. FreeBSD's syscall uses
 // different numbers, so forwarding raw would be catastrophic. Dispatch the
