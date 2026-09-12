@@ -62,6 +62,35 @@ int bionic_pthread_mutex_destroy(void *m) { (void)m; return 0; }
 // FORTIFY open with no mode arg, and a registered prctl (unsupported).
 int __open_2(const char *path, int flags) { return open(path, flags); }
 
+// mmap(2) flag translation. The engine passes *Linux* MAP_* flag numbers, but
+// this reaches FreeBSD's mmap, which numbers them differently — most fatally
+// Linux MAP_ANONYMOUS=0x20 vs FreeBSD MAP_ANON=0x1000, and Linux
+// MAP_NORESERVE=0x4000 which is FreeBSD's MAP_EXCL. Untranslated, every
+// anonymous allocation fails EINVAL and the engine's allocator gets no memory.
+#include <sys/mman.h>
+#define LX_MAP_SHARED    0x01
+#define LX_MAP_PRIVATE   0x02
+#define LX_MAP_FIXED     0x10
+#define LX_MAP_ANONYMOUS 0x20
+#define LX_MAP_STACK     0x20000
+void *bionic_mmap(void *addr, size_t len, int prot, int lx, int fd, off_t off) {
+    int f = 0;
+    if (lx & LX_MAP_SHARED)    f |= MAP_SHARED;
+    if (lx & LX_MAP_PRIVATE)   f |= MAP_PRIVATE;
+    if (lx & LX_MAP_FIXED)     f |= MAP_FIXED;
+    if (lx & LX_MAP_ANONYMOUS) {
+        f |= MAP_ANON;
+        // Linux ignores fd for anonymous maps; FreeBSD requires fd == -1 and
+        // returns EINVAL otherwise (the engine passes fd 0 for some of them).
+        fd = -1;
+    }
+    if (lx & LX_MAP_STACK)     f |= MAP_STACK;
+    // Linux-only advisory flags (NORESERVE, POPULATE, DENYWRITE, GROWSDOWN,
+    // LOCKED, HUGETLB, NONBLOCK) have no FreeBSD equivalent — drop them.
+    // PROT_* bits match between the two, so prot passes through unchanged.
+    return mmap(addr, len, prot, f, fd, off);
+}
+
 // Linux sysinfo(2): fills total/free RAM etc. Roblox's allocator sizes its
 // arenas from totalram, so a stub (garbage) makes it abort. FreeBSD has no
 // sysinfo; source the same numbers from sysctl.

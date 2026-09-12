@@ -189,3 +189,38 @@ freelist head non-null but empty).
 environ · pthread_mutex (side-table) · __open_2 · prctl · pthread_once
 (FreeBSD once protocol) · sysconf page-size · sysinfo. Engine now loads and runs
 deep static init before the allocator NULLs.
+
+---
+
+## Session 2 (cont. 3) — BREAKTHROUGH: mmap flag translation → the engine RUNS
+
+ktrace showed the smoking gun: `mmap(...,0x4022,-1,0) → EINVAL`. The engine uses
+**Linux MAP_* flag numbers**, which reach FreeBSD's mmap unchanged:
+- Linux `MAP_ANONYMOUS=0x20` vs FreeBSD `MAP_ANON=0x1000`
+- Linux `MAP_NORESERVE=0x4000` == FreeBSD `MAP_EXCL` (wrong meaning)
+- anonymous maps passed `fd=0`; FreeBSD's MAP_ANON needs `fd=-1`.
+So every anonymous allocation failed EINVAL → allocator got no memory.
+
+Fix: `bionic_mmap` (native/freebsd_libc_compat.c) translates Linux→FreeBSD mmap
+flags and forces fd=-1 for MAP_ANON; registered for `mmap`/`mmap64`. Also
+registered the real `getauxval`.
+
+### Result — Roblox's engine runs on FreeBSD (native)
+`--game-activity` now reaches, with **no crash** (runs to the timer):
+```
+LOADED in 30ms (107.1 MB)
+JNI_OnLoad returned JNI 1.6
+nativeSetFilesDirectory/CacheDirectory ok · bootstrapTheApp installed
+GameActivity.initializeNativeCode → GameActivity_register, SDK 33
+ALooper_addFd(fd=14 ...) / ALooper_addFd(fd=16 ...)   <- Android event loop live
+```
+
+### Next: from "event loop running" to pixels
+- It settles into ALooper; confirm a Vulkan/GLES3 surface is created and whether
+  a window maps on X11 (watch for eglCreateWindowSurface / vkCreateSwapchain).
+- `madvise` advice numbers differ Linux↔FreeBSD — translate if the engine trips.
+- Remaining trivial stubs: `pthread_setname_np` (name a thread; harmless no-op).
+
+### All fixes (branch freebsd-port)
+environ · pthread_mutex side-table · pthread_once · __open_2 · prctl ·
+sysconf page-size · sysinfo · **mmap flag translation** · getauxval.
