@@ -369,6 +369,31 @@ pub extern "C" fn once(control: *mut c_int, init_routine: Option<extern "C" fn()
     if control.is_null() {
         return libc_einval();
     }
+    // FreeBSD's `pthread_once_t` is a struct (int state + mutex pointer) with
+    // different init semantics than bionic's / glibc's 4-byte atomic int:
+    // forwarding bionic's zero-initialised control makes FreeBSD's pthread_once
+    // treat it as already-run and SKIP the init routine. That silently breaks
+    // every lazily-initialised subsystem (memory-category tracking, TSD keys).
+    // Run the once protocol ourselves on the 4-byte slot instead (2 = done).
+    #[cfg(target_os = "freebsd")]
+    {
+        use core::sync::atomic::{AtomicI32, Ordering};
+        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        // SAFETY: `control` is a live 4-byte slot; we only ever CAS it.
+        let ctrl = unsafe { &*(control as *const AtomicI32) };
+        if ctrl.load(Ordering::Acquire) == 2 {
+            return 0;
+        }
+        let _g = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        if ctrl.load(Ordering::Relaxed) != 2 {
+            if let Some(f) = init_routine {
+                f();
+            }
+            ctrl.store(2, Ordering::Release);
+        }
+        return 0;
+    }
+    #[cfg(not(target_os = "freebsd"))]
     // SAFETY: `control` points at 4 bytes in both libcs, and a bionic
     // once-control that has never been passed to bionic's implementation holds
     // a state glibc's understands. `init_routine` is a plain `void (*)(void)`.

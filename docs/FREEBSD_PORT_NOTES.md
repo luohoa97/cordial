@@ -112,3 +112,40 @@ cd ~/ida93 && TVHEADLESS=1 HOME=/home/pascal TERM=xterm \
 IDC helpers: `get_name(ea)`, `get_qword(ea)`, `get_segm_name(ea)`,
 `get_func_name(ea)`, `get_first_dref_to/from`, `get_strlit_contents(ea,-1,0)`.
 (IDAPython needs libpython3.14 + `idapyswitch`; not set up — IDC is enough.)
+
+---
+
+## Session 2 (cont.) — the abort is Roblox's allocator, not memory categories
+
+Corrected the earlier "invalid memory category" guess (that string was in a
+nearby function; breakpoints proved it never runs). Real chain, via lldb
+(break `mcpelauncher_linker_notifylldb` → read base in `rsi` → break
+`base+off`) + IDA symbolication:
+
+- `abort` is called at **`0x2c18f30`**, inside `sub_2C18D80` — a **per-thread
+  storage getter** (lazy-init via `pthread_once` + a mutex-locked section).
+- It aborts because `call sub_1F24322` (a **per-thread pool allocator**)
+  returned **NULL** for a 128-byte request during first-time init.
+- `sub_1F24322`: size ≤ 1024 → pool freelist at `pool[0xe8 + sizeclass]`
+  (default pool global `0x7012a00`); empty freelist → `jmp sub_1F251FA`.
+- `sub_1F251FA`: the **slab backing allocator** over pool `0x7012a00`; it
+  returns NULL → the whole chain fails. So Roblox's own allocator can't get
+  backing memory at early init on FreeBSD.
+
+### Also fixed this session (real latent bug, kept)
+- **`pthread_once`**: cordial forwarded bionic's 4-byte once-control straight to
+  FreeBSD's `pthread_once`, whose `pthread_once_t` is a *struct* (int + mutex
+  ptr) — so bionic's zero-init looked "already run" and the init routine was
+  SKIPPED. Now implemented directly on the 4-byte slot (2 = done) in
+  `pthread.rs::once`, cfg-gated to FreeBSD. Did NOT clear this abort (the
+  allocator failure is upstream of it), but it was breaking every
+  `pthread_once`-guarded init silently.
+
+### Next: why Roblox's slab allocator returns NULL at init
+1. Disassemble `sub_1F251FA` fully + its callee `sub_6A80FB1` — find the
+   backing memory source (mmap? sbrk? a global arena?).
+2. If mmap: check flags/addr FreeBSD rejects under the bionic linker.
+3. Check `sysconf` values cordial returns (`bionic_sysconf`) — a wrong
+   `_SC_PAGESIZE`/`_SC_PHYS_PAGES` can make the arena sizing compute to 0.
+4. Pool state global `0x7012a00`: is its init constructor running? (partially
+   set up — freelist head non-null but empty — so arena refill is the gap.)
