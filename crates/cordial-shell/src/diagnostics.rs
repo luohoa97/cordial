@@ -5,11 +5,12 @@
 //! user to find -- it is not in the window title, not in Settings, and the only
 //! place it was written down was a dotfile in a cache directory. The
 //! distribution and the package format matter because Cordial ships in five and
-//! they fail differently: a `.deb` on Ubuntu 24.04 cannot start at all (GTK
-//! 4.20 against the LTS's 4.14), the AppImage's web view needs WebKitGTK on the
-//! host while the Flatpak carries its own, and one glibc symbol made the `.rpm`
-//! uninstallable on everything but rawhide. None of those is diagnosable from
-//! "it doesn't work on Linux".
+//! they fail differently: a `.deb` could not start on Ubuntu 24.04 at all
+//! until the GTK feature floor came down from 4.20 to 4.12, which the LTS's
+//! 4.14.5 clears (ADR-032), the AppImage's web view needs WebKitGTK on the
+//! host while the Flatpak carries its own, and one glibc symbol made the
+//! `.rpm` uninstallable on everything but rawhide. None of those is
+//! diagnosable from "it doesn't work on Linux".
 //!
 //! ## What it deliberately does not carry
 //!
