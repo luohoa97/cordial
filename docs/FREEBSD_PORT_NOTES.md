@@ -535,3 +535,36 @@ IDA headless on FreeBSD: `idapyswitch` → pick Python 3.9; IDAPython works, use
 via `idat -A -Sscript.py db.i64` (TVHEADLESS=1). Analyze a COPY of the .i64 —
 never the user's original (it had live unpacked .id0/.id1 files). The Hex-Rays
 decompiler is the key tool; nearest-export names in objdump are misleading.
+
+### The producer never runs (no network, no I/O) — dispatch/marshalling deadlock
+ktrace during the hang: ZERO connect/socket/sendto and ZERO file namei — the whole
+process is idle. So getFlags's ClientAppSettings fetch is not a slow/hung network
+call; the producer that should fulfill its boost future never even starts. The
+"HttpClient" thread (`sub_23449DA`, `sub_22AD799("HttpClient")`, thread #15) is
+alive but idle-blocked in libthr; the ~16 pool workers are parked.
+
+Topology recap: cordial calls nativeGameGlobalInit from ITS OWN thread (not the
+engine's FunctionMarshaller = `qword_7081868`), so `sub_2339452` marshals the work
+onto the FM thread and waits. getFlags then runs ON the FM thread and dispatches
+its own fetch — and whatever it dispatches to is never serviced. On Android,
+GameGlobalInit is invoked FROM the engine's main thread, so `pthread_self() ==
+qword_7081868` is true and it runs inline with no marshalling — which likely also
+keeps getFlags's fetch on a thread that can service it.
+
+### Two concrete fix directions for next session
+1. **Run nativeGameGlobalInit on the engine's own main thread.** If cordial can
+   post GameGlobalInit onto the FunctionMarshaller queue (or otherwise call it
+   such that `pthread_self() == qword_7081868`), sub_2339452 runs it inline and the
+   self-marshalling wait disappears. Investigate how the queue is fed
+   (`sub_2C7E640` posts; `stru_70818A0`/`cond`/`xmmword_7081890` are the queue) —
+   cordial may be able to enqueue GameGlobalInit itself.
+2. **Short-circuit getFlags's fetch.** getFlags (`sub_2C5CAF2`) takes the fast path
+   when its "loaded" string `xmmword_7081250` is non-empty. If cordial can make the
+   engine believe ClientAppSettings is already resident (populate that state, or
+   fulfill the pending future directly), getFlags returns without dispatching. The
+   store `qword_72893D8` (filled by nativeInitClientSettings) is read by the Lua
+   flag APIs but NOT consulted by getFlags's async path — that disconnect is the
+   bug to close.
+
+Either path unblocks GameGlobalInit and should finally render. The whole sync/ABI
+layer beneath is proven sound; this is the last structural gap.
