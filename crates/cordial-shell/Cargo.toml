@@ -67,10 +67,20 @@ cordial-linker-sys = { path = "../cordial-linker-sys" }
 cordial-update = { path = "../cordial-update" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# `v4_10` for `GtkFileDialog`, which the settings window uses to pick the APK
-# and the engine directory. GTK 4.10 is this project's floor already, and the
-# alternative — `GtkFileChooserNative` — is deprecated as of that same version.
-gtk4 = { version = "0.11", features = ["v4_20"] }
+# `v4_12`, and that number is measured rather than chosen. The pin said
+# `v4_20` while the comment beside it said 4.10, and the code needed neither:
+# lowering it to `v4_10` fails on exactly three call sites, two uses of
+# `CssProvider::load_from_string` and one of `ToplevelState::SUSPENDED`, both
+# GTK 4.12. `v4_12` builds the workspace clean.
+#
+# **The eight versions between 4.12 and the old pin are what broke the
+# AppImage.** A floor of 4.20 admits only a very new build base, that base was
+# Fedora 44, and everything the image bundles came out of it stamped
+# GLIBC_2.43 -- so the format whose entire contract is self-containment ran on
+# Fedora 44 and nothing older. At 4.12 the base can be Ubuntu 24.04, whose
+# glibc 2.39 is exactly the floor `packaging/check-glibc-floor.sh` declares.
+# See ADR-032.
+gtk4 = { version = "0.11", features = ["v4_12"] }
 # Getting `libroblox.so` out of the APK. On a split build it is inside
 # `split_config.x86_64.apk` rather than `base.apk`, so the shell has to open a
 # zip to set a user up rather than telling them to run `unzip` first. Same
@@ -96,7 +106,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # that these environments differ and a stale build that still runs is this
 # project's most expensive mistake; a floor that only one of them meets is the
 # same mistake at configure time.
-libadwaita = { version = "0.9", features = ["v1_8"] }
+libadwaita = { version = "0.9", features = ["v1_5"] }
 # Optional: see [features] above.
 webkit6 = { version = "0.6", optional = true }
 # `gdk_wayland_surface_get_wl_surface`/`gdk_wayland_display_get_wl_display`,
