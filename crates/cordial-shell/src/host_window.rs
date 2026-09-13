@@ -581,9 +581,30 @@ impl HostWindow {
         );
         if compact {
             sheet.push_str(
+                // The close button's right margin is one pixel short of its
+                // other three, and that asymmetry is deliberate. Reported as
+                // the x sitting too far left, with the gap to the right edge
+                // visibly larger than the gap above and below it -- which it
+                // was, by exactly one pixel. The two gaps are computed
+                // differently: the horizontal one is a sum of paddings
+                // (`windowhandle` insets its `GtkCenterBox` child equally on
+                // both sides, and the button's own margin adds to that), while
+                // the vertical one is whatever centring leaves over once the
+                // bar's height is settled by something else entirely -- the
+                // title label, not this sheet, which is also why the
+                // `min-height` below does not bind. Measured with
+                // `examples/compact_bar_offsets.rs`: 8/8/9 before, 8/8/8
+                // after, against the unmodified sheet in the same session.
+                //
+                // A pixel off one margin is the smallest change that squares
+                // them. Equalising them properly would mean driving the bar's
+                // height from this sheet rather than the label's, which is the
+                // aggressive compaction 3d67e59 already tried and got reverted
+                // for.
                 " .cordial-engine-host headerbar { min-height: 30px; padding: 0 6px; } \
                  .cordial-engine-host headerbar windowcontrols button { \
-                     min-width: 24px; min-height: 24px; padding: 0; margin: 2px; \
+                     min-width: 24px; min-height: 24px; padding: 0; \
+                     margin: 2px 1px 2px 2px; \
                  }",
             );
         }
