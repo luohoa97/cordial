@@ -187,6 +187,17 @@ jobs:
         # filenames come from the tag and the binary comes from the manifest, so
         # the two must not drift.
         if: startsWith(github.ref, 'refs/tags/v')
+        # **`bash`, explicitly, and this is the step that proved it necessary.**
+        # v0.14.0's AppImage built to completion and then died here on
+        # `set: Illegal option -o pipefail`: the runner ran the step as
+        # `sh -e {0}`, and Ubuntu's /bin/sh is dash, which has no `pipefail`.
+        # The job failing took `publish` with it, so the .deb, .rpm and Arch
+        # package all built green and were attached to nothing -- the same
+        # shape of loss as v0.13.1. The two other `pipefail` steps in this file
+        # are in the Arch container, where /bin/sh *is* bash, which is why this
+        # was the only one to break and why the other two are declared below
+        # rather than left to luck.
+        shell: bash
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
@@ -351,6 +362,7 @@ jobs:
         # a full makepkg run; it does execute the file's top-level code, which
         # is accepted here because this is Cordial's own first-party file, not
         # one fetched from elsewhere.
+        shell: bash
         run: |
           set -euo pipefail
           mapfile -t pkgs < <(
@@ -370,6 +382,7 @@ jobs:
           # documents for .SRCINFO, and CI should not depend on that having
           # happened yet.
           CORDIAL_PKGBUILD_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'main' }}
+        shell: bash
         run: |
           set -euo pipefail
           useradd --create-home builder
