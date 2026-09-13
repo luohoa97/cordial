@@ -728,3 +728,40 @@ and it resolves both the StartupController crash and the getFlags deadlock at on
 Complete map: android_main sub_2C53602 | loop sub_2C54790 (ALooper_pollOnce) |
 cmd dispatch sub_2C5894E (case 3) | sub_2C589B2 -> sub_2F35C72 -> sub_23CD346
 StartupController 0x70b3c20 | app thread sub_278D8E0 | spawner sub_278C7D0.
+
+---
+
+## Session 6: CORRECTION — android_main DOES run; the app-thread command pipe is starved
+
+Last session concluded "android_main never runs." That was WRONG — an lldb unwind
+failure (the app thread has no frame pointers) hid it. procstat on the live hung
+process shows the app thread's KERNEL stack is:
+  sys_ppoll -> kern_poll -> seltdwait -> _cv_timedwait_sig
+i.e. it is sitting in an ALooper poll — it IS inside android_main's event loop
+(sub_2C54790 -> ALooper_pollOnce), waiting for commands.
+
+### The real gap
+The StartupController is created when the app thread processes NativeActivity
+command 3 (sub_2C5894E case 3 -> sub_2C589B2 -> sub_23CD346). Those commands are
+written to the app thread's command pipe by the engine's GameActivity surface/
+lifecycle natives (onSurfaceCreatedNative, onSurfaceChangedNative, onStartNative,
+onResumeNative, onWindowFocusChangedNative, ...). Those natives are NOT exported —
+they are registered via RegisterNatives INSIDE initializeNativeCode, and on real
+AGDK the Java GameActivity class invokes them on lifecycle events.
+
+cordial only ever calls `Java_..._GameActivity_initializeNativeCode` (verified:
+it is the sole GameActivity symbol in both cordial's source and the engine's export
+list) and drives the engine's OTHER natives directly. It never runs the GameActivity
+lifecycle, so the app thread's command pipe gets NO commands — it polls an empty pipe
+forever, never processes command 3, never creates the StartupController.
+
+mocktail (which renders) DOES feed this pipe: looper.rs:873 records a mocktail run
+where "nine events [were] delivered" to the command pipe. That is the difference.
+
+### The fix direction (tractable, not a thread redesign)
+Feed the app thread's command pipe with the GameActivity command sequence — either
+by invoking the RegisterNatives-registered surface/lifecycle natives (cordial's
+libjnivm captures those function pointers) the way the Java GameActivity would, or by
+writing the command bytes to the pipe's write end directly. The app thread's command
+pipe read-end is the fd passed to ALooper_addFd with callback=yes (fd 14 in the
+observed run). Command 3 must arrive before StartApp so the StartupController exists.
