@@ -3883,10 +3883,17 @@ fn main() -> ExitCode {
                                         // the real FM thread. A left-overwritten handle misroutes subsystem
                                         // inits — e.g. the AppBridge singleton at 0x70b3c20, whose absence
                                         // null-derefs nativeAppBridgeV2StartAppWithParams.
+                                        // Restore is opt-in: with it, later calls marshal to the real FM
+                                        // thread (which can hang); without it, everything runs inline on
+                                        // cordial's thread. Testing which reaches further.
                                         #[cfg(all(target_os = "freebsd", feature = "unsafe-experiments"))]
-                                        if let Some((slot, old)) = hijack_restore {
-                                            unsafe { *(slot as *mut usize) = old; }
-                                            println!("  [hijack] restored qword_7081868 -> {old:#x}");
+                                        if std::env::var_os("CORDIAL_HIJACK_RESTORE").is_some() {
+                                            if let Some((slot, old)) = hijack_restore {
+                                                unsafe { *(slot as *mut usize) = old; }
+                                                println!("  [hijack] restored qword_7081868 -> {old:#x}");
+                                            }
+                                        } else {
+                                            let _ = hijack_restore;
                                         }
 
                                         // EXPERIMENTAL, `CORDIAL_POST_BEFORE_BRIDGE=<ms>`:
