@@ -16,6 +16,12 @@ path = "src/bin/load.rs"
 # `WebKitWebView` -- sits behind this.
 [features]
 webview = ["cordial-shell/webview"]
+# Off by default and NOT in the shipped binary. Gates the diagnostic primitives
+# that write engine memory (CORDIAL_FORCE_STATE, CORDIAL_HIJACK_MARSHALLER). Per
+# ADR-001 the protection is the absence of the primitive: a build without this
+# feature contains no arbitrary-write path to extract. Build with
+# `--features unsafe-experiments` for local bring-up debugging only.
+unsafe-experiments = []
 
 [dependencies]
 cordial-linker-sys = { path = "../cordial-linker-sys" }

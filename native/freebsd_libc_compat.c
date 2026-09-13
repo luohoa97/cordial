@@ -492,11 +492,17 @@ int prctl(int option, ...) {
 // policy, so scheduling stays uniform and no inversion is possible.
 int sched_setscheduler(pid_t pid, int policy, const struct sched_param *param) {
     (void)pid; (void)policy; (void)param;
-    return 0;
+    // Report the honest unprivileged result ("could not set the policy") rather
+    // than a fake success. bionic treats these as best-effort and does not check
+    // the return, so EPERM changes nothing behaviourally but never lies that the
+    // thread became real-time (verified: does not affect the boot either way).
+    errno = EPERM;
+    return -1;
 }
 int sched_setparam(pid_t pid, const struct sched_param *param) {
     (void)pid; (void)param;
-    return 0;
+    errno = EPERM;
+    return -1;
 }
 
 // --- bionic pthread_attr_t family ------------------------------------------
@@ -548,13 +554,22 @@ int bionic_pthread_getattr_np(pthread_t thread, void* attr) {
     pthread_attr_t fa;
     if (pthread_attr_init(&fa) != 0)
         return ENOMEM;
+    // If we cannot get the real bounds, DO NOT return success with a NULL/zero
+    // stack — a bionic caller (jemalloc, the GC stack scanner) would trust those
+    // and walk off a zero-length stack, the exact class of stack-attr lie the
+    // header comment above records biting us before.
+    int rc = pthread_attr_get_np(thread, &fa);
+    if (rc != 0) {
+        pthread_attr_destroy(&fa);
+        return rc;
+    }
     void* base = NULL;
     size_t size = 0, guard = 0;
-    if (pthread_attr_get_np(thread, &fa) == 0) {
-        pthread_attr_getstack(&fa, &base, &size);
-        pthread_attr_getguardsize(&fa, &guard);
-    }
+    pthread_attr_getstack(&fa, &base, &size);
+    pthread_attr_getguardsize(&fa, &guard);
     pthread_attr_destroy(&fa);
+    if (base == NULL || size == 0)
+        return EINVAL;
     a->stack_base = base;
     a->stack_size = size;
     a->guard_size = guard;

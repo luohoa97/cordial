@@ -643,8 +643,17 @@ extern "C" fn bionic_sysconf(name: c_int) -> i64 {
             // SAFETY: `sel` is a valid FreeBSD selector.
             return unsafe { sysconf(sel) };
         }
+        // An unmapped selector must NOT fall through to the glibc-valued table
+        // below: querying FreeBSD's sysconf with a glibc number is the exact
+        // wrong-question failure this function exists to prevent, and can return
+        // worse-than-nothing garbage. Report unknown, and name it so a real caller
+        // gets the selector added to the FreeBSD table above. (Verified not to
+        // affect the current boot either way.)
+        eprintln!("[bionic] sysconf({name}) has no FreeBSD mapping; returning -1");
+        return -1;
     }
 
+    #[cfg(not(target_os = "freebsd"))]
     if let Some(&(_, glibc, _)) = sysconf_table::SYSCONF_MAP
         .iter()
         .find(|(bionic, _, _)| *bionic == name)

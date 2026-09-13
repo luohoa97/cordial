@@ -69,7 +69,8 @@ usage: cordial-load --lib-dir <dir> [options]
                     rather than falling back to a visible window if cage is
                     missing. Pair with CORDIAL_DEV_CONTROL=1 or nothing can see
                     the client at all
-  --host-libc       also resolve libc from the host (ABI-unsafe; diagnostic only)
+  --host-libc       also resolve libc from the host (ABI-unsafe; diagnostic only;
+                    ignored on FreeBSD, where host libc is always consulted)
   --jni-onload      stand up a JavaVM and call JNI_OnLoad
   --game-activity   implies --jni-onload; bring Roblox up and hand it a surface
   --join-url <url>  a roblox-player:// or roblox:// link from a browser click,
@@ -3560,6 +3561,10 @@ fn main() -> ExitCode {
                                             // whether the downstream GameGlobalInit block is a cascade
                                             // from the FailedAppSettings(0xb) verdict: if forcing 1
                                             // unblocks the chain, the verdict is the lever.
+                                            // ADR-001: this writes engine memory, so it is compiled in
+                                            // ONLY under the `unsafe-experiments` feature — the shipped
+                                            // binary contains no such write path.
+                                            #[cfg(feature = "unsafe-experiments")]
                                             if let Some(n) = std::env::var("CORDIAL_FORCE_STATE")
                                                 .ok().and_then(|v| v.parse::<i32>().ok())
                                             {
@@ -3844,9 +3849,14 @@ fn main() -> ExitCode {
                                         // cordial's own thread makes GameGlobalInit run inline here, freeing
                                         // the real FM to service the fetch. Hacky test of that hypothesis.
                                         // Base = symbol("JNI_OnLoad") - 0x22addd7 (2.721-specific offsets).
-                                        #[cfg(target_os = "freebsd")]
+                                        // ADR-001: the hijack writes engine memory, so it is compiled in
+                                        // ONLY under `unsafe-experiments`; the shipped binary has no such
+                                        // path. This is validated proof of fix direction #1 (run
+                                        // GameGlobalInit on the engine's own marshaller thread), not the
+                                        // ship fix.
+                                        #[cfg(all(target_os = "freebsd", feature = "unsafe-experiments"))]
                                         let mut hijack_restore: Option<(usize, usize)> = None;
-                                        #[cfg(target_os = "freebsd")]
+                                        #[cfg(all(target_os = "freebsd", feature = "unsafe-experiments"))]
                                         if std::env::var_os("CORDIAL_HIJACK_MARSHALLER").is_some() {
                                             if let Some(jni) = lib.symbol("JNI_OnLoad") {
                                                 let base = (jni as usize).wrapping_sub(0x22addd7);
@@ -3873,7 +3883,7 @@ fn main() -> ExitCode {
                                         // the real FM thread. A left-overwritten handle misroutes subsystem
                                         // inits — e.g. the AppBridge singleton at 0x70b3c20, whose absence
                                         // null-derefs nativeAppBridgeV2StartAppWithParams.
-                                        #[cfg(target_os = "freebsd")]
+                                        #[cfg(all(target_os = "freebsd", feature = "unsafe-experiments"))]
                                         if let Some((slot, old)) = hijack_restore {
                                             unsafe { *(slot as *mut usize) = old; }
                                             println!("  [hijack] restored qword_7081868 -> {old:#x}");

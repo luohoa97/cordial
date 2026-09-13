@@ -376,6 +376,20 @@ pub fn build(host_libc: bool) -> SymbolTable {
 /// resolving them from the host would corrupt state rather than help: mutex and
 /// rwlock objects have a different size and layout, and syscall(2) numbers are
 /// not the same. These stay stubbed until given a real bionic-side translation.
+/// Symbols that must NOT be satisfied by the generic host-libc fall-through.
+///
+/// These have bionic-ABI-compatible overrides registered **only on FreeBSD**
+/// (`bionic::function_overrides`, `#[cfg(target_os = "freebsd")]`). There, the
+/// host-libc fall-through would otherwise hand back FreeBSD's own libc version —
+/// whose `pthread_mutex_t`/`pthread_rwlock_t` layout and `syscall` numbering are
+/// incompatible with bionic — and let it win by lookup order, so it is denied
+/// here and the override wins.
+///
+/// On every other host there is no such override: the same denial would drop
+/// these to a stub returning 0, turning `pthread_mutex_lock` into a no-op and
+/// silently corrupting every engine lock. So off FreeBSD this must be empty and
+/// the symbols pass through to the (ABI-compatible) host libc normally.
+#[cfg(target_os = "freebsd")]
 fn abi_unsafe_generic(symbol: &str) -> bool {
     matches!(
         symbol,
@@ -394,6 +408,11 @@ fn abi_unsafe_generic(symbol: &str) -> bool {
             | "pthread_rwlock_trywrlock"
             | "pthread_rwlock_unlock"
     )
+}
+
+#[cfg(not(target_os = "freebsd"))]
+fn abi_unsafe_generic(_symbol: &str) -> bool {
+    false
 }
 
 fn lookup(libs: &[HostLib], symbol: &str) -> Option<(&'static str, *mut c_void)> {
