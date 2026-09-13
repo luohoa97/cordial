@@ -666,3 +666,44 @@ qword_7081868 | marshal primitive sub_2339452 | StartupController singleton 0x70
 
 The whole ABI/sync/futex layer beneath remains proven-correct. This is the last
 structural gap and it is a thread-model redesign, cleanly scoped above.
+
+---
+
+## Session 5 (cont.): THE UNIFIED ROOT — cordial bypasses android_main
+
+Both remaining blockers (getFlags deadlock, StartupController null-deref) trace to
+ONE cause: cordial drives the GameActivity natives directly from its own thread and
+never runs the engine's own app-thread entry point.
+
+- `sub_2C53602` is **android_main** ("[FLog::NativeMain] [android_main] Create a new
+  NativeEngine"). It creates the NativeEngine and, via sub_2C54790 -> ... ->
+  sub_23CD346, the **StartupController** singleton (0x70b3c20). It appears ZERO times
+  in every run log — it never executes.
+- The GameActivity app thread `sub_278D8E0` IS spawned by initializeNativeCode (via
+  sub_278C7D0, tid seen right after GameActivity_register, does its own
+  ALooper_prepare(1)), but android_main is never reached — no thread sits in the
+  sub_278xxxx/sub_2C54xxx region at any crash, and the "Create a new NativeEngine"
+  log never fires.
+- cordial's design (looper.rs) has ITS OWN thread prepare a looper and pump it,
+  replacing the engine's app thread. So the natives cordial calls directly
+  (retryInit, GameGlobalInit, StartApp) run, but android_main's subsystem creation
+  does not.
+
+### Why this unifies both walls
+- StartupController: created only by android_main -> never created -> StartApp
+  (nativeAppBridgeV2StartAppWithParams) null-derefs it.
+- getFlags deadlock: getFlags's async load is FunctionMarshaller-bound; the FM/app
+  thread model the engine expects isn't the one cordial runs, so the load self-posts
+  and waits. On Android the same load is a network fetch off the app thread.
+
+### The real fix (architectural, unblocks BOTH)
+cordial should run the engine's actual app-thread bootstrap — let android_main
+(sub_2C53602) execute on the spawned app thread (sub_278D8E0) rather than bypassing
+it — OR replicate exactly what android_main creates (NativeEngine + StartupController
++ the FM/looper wiring) so the directly-driven natives find the state they need.
+This is a cordial thread-model change, not a patch, and it is the single lever for
+both remaining crashes. Function map: android_main sub_2C53602 | app thread
+sub_278D8E0 | spawner sub_278C7D0 (<- initializeNativeCode) | StartupController init
+sub_23CD346/sub_2C54790 | singleton 0x70b3c20.
+
+Everything below this (ABI, sync, futex, pthread) remains proven-correct.
