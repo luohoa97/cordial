@@ -13,12 +13,14 @@ APPDIR="${APPDIR:-$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}"
 
 # Bundled libraries ahead of the host's own. The whole reason this AppImage
 # exists rather than a bare tarball of the two binaries is that the host's
-# gtk4/libadwaita is routinely older than what this workspace builds and
-# tests against -- Fedora 43 ships gtk4 4.20.3 and libadwaita 1.8.3 against
-# the 4.22/1.9 test.yml pins, and the failure mode for an ordinary build
-# against an old system library is three *-sys build scripts refusing to
-# configure. An AppImage sidesteps that only if it actually carries its own
-# copies rather than linking the host's, which is what this line is for.
+# gtk4/libadwaita can be older than what this workspace builds against, and
+# the failure mode for an ordinary build against an old system library is
+# three *-sys build scripts refusing to configure. The margin is wider than
+# it was -- ADR-032 brought the floor down to gtk4 4.12 and libadwaita 1.5,
+# so far fewer hosts are below it than when this said 4.22/1.9 -- but a
+# bundled copy is what makes the margin irrelevant rather than merely large.
+# An AppImage sidesteps that only if it actually carries its own copies
+# rather than linking the host's, which is what this line is for.
 export LD_LIBRARY_PATH="${APPDIR}/usr/lib:${LD_LIBRARY_PATH:-}"
 
 # GSettings schemas are found by path lookup through GIO, not through a
