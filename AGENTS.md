@@ -291,10 +291,35 @@ Where the user-facing writing lives, and who it is for:
 | `docs/analysis/`, `docs/NEXT.md` | Somebody continuing an investigation |
 | Release notes in `docs/releases/` | Somebody who just installed it and hit something |
 
+**The README has a length ceiling, and it is the one document here that
+does.** It is read by somebody deciding whether to install Cordial and then
+installing it, and nobody in that state reads twelve hundred lines. It reached
+1,250 on 2026-09-13 and the feedback was "the readme is waay too long. it
+should just be a short description, how to install, faq, etc." -- which is the
+correct table of contents. Everything else has somewhere better to live: a
+changelog belongs in `CHANGELOG.md`, an investigation in `docs/analysis/`, a
+feature's fine print in its own page under `docs/`. **When you add to the
+README, say what changed in one or two lines and link out.** If the thing you
+want to explain needs a paragraph, it needs a file.
+
+**The same failure has a second half: this project's writing reads as
+generated, and readers notice.** The complaint on the same day was not that AI
+wrote the code -- it was that the README and the release notes look like nobody
+read them before shipping. Length is most of that tell. Exhaustiveness is not
+thoroughness in a document whose reader is deciding whether to bother.
+
 **Release notes say what is broken.** Every set here does, about a third of the
 way down, because somebody installing a client that freezes on a signed-in
 profile deserves to know before they meet it rather than after. A release note
 that only lists what was added is an advertisement.
+
+**And a release note is not a report to the maintainer.** It is addressed to
+somebody who just installed this version, so it says what they can now do and
+what will still bite them. Prose about what was fixed, how it was diagnosed and
+what the commit did is the changelog's job and the commit message's job -- put
+it there. That distinction was reported from outside on 2026-09-13, of a
+release whose notes read as an account of the work rather than as anything a
+user could act on.
 
 ## Build and test
 
