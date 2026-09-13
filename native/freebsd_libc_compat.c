@@ -9,6 +9,7 @@
 #include <pthread_np.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/auxv.h>
@@ -232,6 +233,14 @@ extern int _umtx_op(void *obj, int op, unsigned long val, void *uaddr, void *uad
 #define LX_FUTEX_PRIVATE_FLAG 128
 #define LX_FUTEX_CLOCK_REALTIME 256
 
+// Cached so the hot WAIT path (100k+/s under a busy-wait) does not getenv() on
+// every call. Benign first-call race.
+static int futex_trace_enabled(void) {
+    static int v = -1;
+    if (v < 0) v = getenv("CORDIAL_TRACE_FUTEX") ? 1 : 0;
+    return v;
+}
+
 static long do_futex(void *uaddr, int op, unsigned int val, const struct timespec *to) {
     // Strip the PRIVATE / CLOCK_REALTIME flag bits to get the base command.
     int cmd = op & ~(LX_FUTEX_PRIVATE_FLAG | LX_FUTEX_CLOCK_REALTIME);
@@ -255,6 +264,19 @@ static long do_futex(void *uaddr, int op, unsigned int val, const struct timespe
             tptr = &ut;
             tsz = sizeof(ut);
         }
+        if (futex_trace_enabled()) {
+            struct timespec now_m = {0, 0}, now_r = {0, 0};
+            clock_gettime(4 /*FreeBSD MONOTONIC*/, &now_m);
+            clock_gettime(0 /*REALTIME*/, &now_r);
+            fprintf(stderr,
+                "[futex] WAIT addr=%p cmd=%d op=0x%x val=%u to=%s{%lld.%09ld} flags=%u clk=%u "
+                "| mono=%lld.%09ld real=%lld.%09ld\n",
+                uaddr, cmd, op, val, to ? "" : "NULL",
+                (long long)(to ? to->tv_sec : 0), (long)(to ? to->tv_nsec : 0),
+                to ? ut._flags : 0u, to ? ut._clockid : 0u,
+                (long long)now_m.tv_sec, now_m.tv_nsec,
+                (long long)now_r.tv_sec, now_r.tv_nsec);
+        }
         int r = _umtx_op(uaddr, FBSD_UMTX_OP_WAIT_UINT_PRIVATE,
                          (unsigned long)val, (void *)tsz, tptr);
         // bionic's __futex checks the raw negative-errno convention (-ETIMEDOUT,
@@ -264,6 +286,9 @@ static long do_futex(void *uaddr, int op, unsigned int val, const struct timespe
     if (cmd == LX_FUTEX_WAKE || cmd == LX_FUTEX_WAKE_BITSET) {
         int r = _umtx_op(uaddr, FBSD_UMTX_OP_WAKE_PRIVATE,
                          (unsigned long)val, NULL, NULL);
+        if (futex_trace_enabled())
+            fprintf(stderr, "[futex] WAKE addr=%p cmd=%d op=0x%x val=%u -> r=%d errno=%d\n",
+                    uaddr, cmd, op, val, r, r == 0 ? 0 : errno);
         return r == 0 ? (long)val : -errno;
     }
     // Any other op (requeue, PI, wake_op): report unsupported rather than lie

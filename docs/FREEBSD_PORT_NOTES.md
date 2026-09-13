@@ -363,3 +363,50 @@ Crack the FailedAppSettings verdict — trace what sets `result->error` in the
 async settings handler (the failure store is at file offset `0x2c5cd4e`,
 `movl $0xb,0x10(%rax)`; entered when `[result+0x8]` != 0). That's the gate to a
 non-black window. It is a cordial-wide problem, so a fix helps Linux too.
+
+---
+
+## Session 2: the GameGlobalInit block is WAKE-starvation, not a shim bug
+
+With retryInit passing (via the state poll), the with-globals path blocks in
+`nativeGameGlobalInit` (`call_globals("late")`, load.rs:3792). `CORDIAL_NO_GLOBAL_INIT=1`
+skips it and reaches the app-bridge region, but StartLuaAppDM needs globals, so
+that is not a real fix.
+
+### Diagnosis (ktrace + CORDIAL_TRACE_FUTEX)
+The main thread spins ~195k/s on one futex:
+```
+_umtx_op(addr, UMTX_OP_WAIT_UINT_PRIVATE, val=0, tsz=24, &umtx_time) -> ETIMEDOUT
+[futex] WAIT addr=0x..3c8cc cmd=9 to={13732.369} flags=1 clk=4 | mono=13745.296
+```
+cmd=9 = FUTEX_WAIT_BITSET, an *absolute* monotonic deadline ~13s in the PAST that
+the engine passes over and over → instant ETIMEDOUT each time. Our WAIT/WAKE
+translation is CORRECT: the deadline was a legitimate future time when first
+computed; the engine is busy-re-waiting a fixed, now-expired deadline in a
+`while(!ready)` loop.
+
+The decisive fact: that spin address receives **zero WAKEs**, and the whole run
+issues only **15 WAKEs total**. So it is not a lost wakeup — *nothing ever
+signals the condition*. The engine's worker threads sit idle-blocked (many in
+infinite `to=NULL` FUTEX_WAIT_BITSET). `nativeGameGlobalInit` posts work and
+waits for a completion that never arrives because the engine's own job system
+(TaskScheduler) is not pumping.
+
+### Interpretation
+This chains to the same root as FailedAppSettings: the TaskScheduler ("Can't
+initialize the TaskScheduler before flags have been loaded") depends on the
+flags/settings verdict, and with the verdict = FailedAppSettings the job system
+never runs posted work → GameGlobalInit's completion never signals → block.
+So the settings/flags verdict is very likely the single upstream root gating
+everything downstream (black screen, GameGlobalInit block, no content). Cracking
+the verdict is the lever; the futex/pthread layer underneath is sound.
+
+### Kept this session
+- `native/system_paths.cpp`: redirect `/proc` → `/compat/linux/proc` (linprocfs)
+  on FreeBSD, so the engine's Linux-format /proc reads (meminfo, self/maps,
+  status) get the layout they expect. Did NOT change the verdict, but it is a
+  real correctness fix and is needed for the anti-cheat's process introspection
+  later (the "you need linprocfs" tip).
+- `CORDIAL_TRACE_FUTEX=1`: env-gated futex WAIT/WAKE trace (cached getenv; safe
+  in the hot path). This is what localised the WAKE-starvation and will be the
+  tool for the next person on the scheduler question.

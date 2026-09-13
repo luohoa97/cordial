@@ -81,7 +81,27 @@ void trace_i(const char* call, const char* path, long r) {
 /// Returns null when the path is not under `/system`, which is the overwhelming
 /// majority of calls — the cost on that path is one `strncmp`.
 const char* remap(const char* path, char* buf, size_t n) {
-    if (!path || g_root_len == 0) {
+    if (!path) {
+        return nullptr;
+    }
+#if defined(__FreeBSD__)
+    // The engine is an Android binary and reads Linux-format /proc: /proc/meminfo,
+    // /proc/self/maps, /proc/self/status, /proc/cpuinfo. FreeBSD's native procfs
+    // (mounted at /proc) has a different, sparser layout — /proc/meminfo does not
+    // exist there at all — so those reads return wrong data or ENOENT. The Linux
+    // layout lives under linprocfs at /compat/linux/proc. Redirect there so the
+    // engine (and its anti-cheat's process introspection) sees what it expects.
+    // Independent of g_root: /proc redirection is not tied to the /system root.
+    if (std::strncmp(path, "/proc", 5) == 0 && (path[5] == '/' || path[5] == '\0')) {
+        // `path + 5` keeps the separator: "/proc/self/maps" -> ".../proc/self/maps".
+        int w = std::snprintf(buf, n, "/compat/linux/proc%s", path + 5);
+        if (w < 0 || static_cast<size_t>(w) >= n) {
+            return nullptr;
+        }
+        return buf;
+    }
+#endif
+    if (g_root_len == 0) {
         return nullptr;
     }
     if (std::strncmp(path, "/system/", 8) != 0) {
