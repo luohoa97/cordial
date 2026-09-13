@@ -1,10 +1,21 @@
 #!/usr/bin/env bash
-# Derive a package version from `git describe`, and print it as shell
-# assignments -- the same source AGENTS.md names for the window title itself:
-# `git describe --tags --always --dirty`, stamped by
-# crates/cordial-shell/build.rs. A package numbered from anywhere else
-# disagrees with the string the running client prints, which is exactly the
-# confusion "Say which build you are talking about" exists to prevent.
+# Derive a *package* version from `git describe`, and print it as shell
+# assignments.
+#
+# **This is not where the window title's version comes from, and this comment
+# used to say it was.** It claimed AGENTS.md named `git describe --tags
+# --always --dirty` as the source for both; the title's version is
+# `Cargo.toml`'s and has been since crates/cordial-shell/build.rs stopped
+# computing one. What that build script still takes from here is
+# `CORDIAL_GIT_SHA`, the provenance half, which the three native package
+# scripts export from CORDIAL_SHORTHASH below.
+#
+# A package version needs something the manifest cannot give it: dpkg, rpm and
+# pacman all compare versions to decide whether an upgrade is an upgrade, so
+# two builds cut between one tag and the next must order, and a bare 0.14.0
+# repeated does not. That is what the distance-from-tag component is for, and
+# it is why this file keeps deriving from `git describe` rather than reading
+# the manifest.
 #
 # Printed rather than exported, so this is meant to be evaluated rather than
 # sourced or run for effect:
@@ -28,9 +39,10 @@
 #
 # Sets:
 #   CORDIAL_DESCRIBE   the raw `git describe --tags --long` string with the
-#                      leading v stripped, e.g. 0.7.0-37-gcbd53e5 -- what
-#                      CORDIAL_BUILD_VERSION wants, so the packaged binary's
-#                      window title agrees with the package that shipped it
+#                      leading v stripped, e.g. 0.7.0-37-gcbd53e5. Used to name
+#                      the AppImage and to build the .deb and .rpm versions.
+#                      It once fed a CORDIAL_BUILD_VERSION that no longer
+#                      exists; nothing reads that variable now.
 #   CORDIAL_VERSION    the tag alone, e.g. 0.7.0
 #   CORDIAL_COMMITS    commits since that tag; 0 at an exact tag
 #   CORDIAL_SHORTHASH  the abbreviated commit, e.g. cbd53e5

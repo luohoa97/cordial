@@ -1,32 +1,19 @@
-//! Stamp the build with what git says it is.
+//! Stamp the build with the commit it came from.
 //!
-//! The version read `0.0.1` from the day the repository was created until well
-//! after sign-in worked, because a number in `Cargo.toml` only changes when
-//! somebody remembers. Worse, every build looked identical in the title bar, so
-//! a binary built from a working tree that four agents were editing was
-//! indistinguishable from a committed one — which cost an afternoon when input
-//! regressed and nobody could say which tree the broken build came from.
+//! `Cargo.toml` is the version and this script never computes one -- see
+//! `crate::version`. What it emits is provenance: `CORDIAL_GIT_SHA`, the short
+//! commit, with `-dirty` appended when the tree had uncommitted changes, and
+//! nothing at all on a clean checkout of a tag matching the manifest.
 //!
-//! `git describe --tags --always --dirty` answers both. On a tagged commit it is
-//! the tag and nothing else, so a release says `0.2.0`. Off a tag it appends the
-//! distance and the hash, so a development build says `0.2.0-14-g8db7100` and
-//! still sorts. With uncommitted changes it appends `-dirty`, which is the part
-//! that would have caught the broken build.
-//!
-//! Falls back to the Cargo version when git is unavailable, because a Flatpak
-//! builds from a tarball with no `.git` at all and must not fail for it.
-//!
-//! A packager may override the whole thing by setting `CORDIAL_BUILD_VERSION`,
-//! and should, because git answers badly for a tarball in two measured ways.
-//! With no `.git` in reach it fails and the fallback stamps a bare `0.6.0`,
-//! while the RPM built from that same tarball is numbered
-//! `0.6.0-1.108.20260822git9d9c980` — so `rpm -q` and the title bar disagree
-//! about which build is installed. Worse, if the tarball is unpacked anywhere
-//! beneath *someone else's* repository, `git describe` walks up out of the
-//! source tree and reports that repository's tag instead: a scratch repo
-//! tagged `v9.9.9` produced a Cordial that called itself `Cordial 9.9.9`. The
-//! first is merely useless, the second is a plausible-looking lie, and both
-//! are why an explicit stamp outranks git rather than filling in behind it.
+//! **This header used to describe `git describe --tags --always --dirty` as
+//! the version, and named `CORDIAL_BUILD_VERSION` as the packager's override.
+//! Both were wrong, and wrong in a file whose own body says so.** That scheme
+//! made a tree whose manifest said 0.11.0 display the previous release, and
+//! nothing has read `CORDIAL_BUILD_VERSION` since it gave way to
+//! `CORDIAL_GIT_SHA` -- which build-appimage.sh, build-deb.sh, cordial.spec
+//! and flake.nix all set. The comments further down were right the whole time
+//! this one contradicted them, which is the more expensive half of the
+//! mistake: a reader who stops at the header learns the opposite of the truth.
 
 use std::process::Command;
 
