@@ -3834,6 +3834,33 @@ fn main() -> ExitCode {
                                             println!("  [prepump] done");
                                         }
 
+                                        // EXPERIMENT (CORDIAL_HIJACK_MARSHALLER=1): the engine records a
+                                        // dedicated "FunctionMarshaller" thread in a global (qword_7081868
+                                        // on 2.721) and, inside nativeGameGlobalInit, runs work INLINE when
+                                        // pthread_self()==that handle, else marshals+waits. Because cordial
+                                        // drives GameGlobalInit off that thread, it marshals getFlags onto
+                                        // the FM and waits — a self-marshalling deadlock (getFlags then
+                                        // dispatches a fetch nothing services). Overwriting the handle with
+                                        // cordial's own thread makes GameGlobalInit run inline here, freeing
+                                        // the real FM to service the fetch. Hacky test of that hypothesis.
+                                        // Base = symbol("JNI_OnLoad") - 0x22addd7 (2.721-specific offsets).
+                                        #[cfg(target_os = "freebsd")]
+                                        if std::env::var_os("CORDIAL_HIJACK_MARSHALLER").is_some() {
+                                            if let Some(jni) = lib.symbol("JNI_OnLoad") {
+                                                let base = (jni as usize).wrapping_sub(0x22addd7);
+                                                // SAFETY: single aligned pointer-sized write to a known engine
+                                                // global; the engine only compares it by value.
+                                                unsafe {
+                                                    extern "C" { fn pthread_self() -> usize; }
+                                                    let slot = (base + 0x7081868) as *mut usize;
+                                                    let old = *slot;
+                                                    let me = pthread_self();
+                                                    *slot = me;
+                                                    println!("  [hijack] qword_7081868: {old:#x} -> {me:#x} (self)");
+                                                }
+                                            }
+                                        }
+
                                         if !globals_early {
                                             call_globals(&lib, "late");
                                         }

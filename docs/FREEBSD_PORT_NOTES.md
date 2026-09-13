@@ -568,3 +568,39 @@ keeps getFlags's fetch on a thread that can service it.
 
 Either path unblocks GameGlobalInit and should finally render. The whole sync/ABI
 layer beneath is proven sound; this is the last structural gap.
+
+---
+
+## Session 4 continued: FIX #1 VALIDATED — GameGlobalInit unblocked, DataModel runs!
+
+CORDIAL_HIJACK_MARSHALLER=1 (overwrite qword_7081868 with cordial's own
+pthread_self before call_globals) CONFIRMED the self-marshalling deadlock and blew
+straight through the wall:
+
+  [hijack] qword_7081868: 0x...b0010 -> 0x...f6010 (self)
+  nativeGameGlobalInit ok (late)      <-- the hang is GONE
+  nativeUpdateAdapterInit ok (late)
+  app bridge initialised
+  Lua app DataModel started           <-- the engine's DataModel is RUNNING
+  startup recovery armed
+  task scheduler foregrounded         <-- TaskScheduler running
+  [cordial] app start as nobody signed in
+
+So the root cause diagnosis was correct: cordial calling nativeGameGlobalInit off
+the engine's FunctionMarshaller thread caused a self-marshalling deadlock in
+getFlags(). Running it "inline" (by making pthread_self()==qword_7081868) fixes it.
+
+The hijack is a hacky global overwrite (env-gated, kept as the validated proof).
+The CLEAN fix is fix #1 proper: enqueue nativeGameGlobalInit onto the engine's
+FunctionMarshaller queue so it runs on that thread natively, or restore
+qword_7081868 immediately after the call to limit blast radius. Worth checking the
+hijack doesn't misroute other marshalled work (it survived to DataModel start, so
+minimal in practice, but restore-after is cleaner).
+
+### New frontier (past the wall)
+After "app start as nobody signed in" a NEW crash: null-pointer deref (fault 0x18,
+rax=0) in engine sub_250667E+0x82, reached via a vtable call during DataModel/app
+startup (frame #1 is a cordial trampoline, likely a worker/callback). Different bug
+class from the deadlock — a null object during app bring-up. This is the next
+thing to chase; we are now inside the actual app startup, far past the black-screen
+wall.
