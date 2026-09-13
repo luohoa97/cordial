@@ -120,6 +120,8 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             fn bionic_pthread_attr_setstacksize();
             fn bionic_pthread_attr_setdetachstate();
             fn bionic_pthread_attr_setschedparam();
+            fn sched_setscheduler();
+            fn sched_setparam();
         }
         v.extend_from_slice(&[
             f!("__ctype_get_mb_cur_max", __ctype_get_mb_cur_max),
@@ -154,6 +156,8 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             f!("pthread_attr_setstacksize", bionic_pthread_attr_setstacksize),
             f!("pthread_attr_setdetachstate", bionic_pthread_attr_setdetachstate),
             f!("pthread_attr_setschedparam", bionic_pthread_attr_setschedparam),
+            f!("sched_setscheduler", sched_setscheduler),
+            f!("sched_setparam", sched_setparam),
             f!("__memcpy_chk", __memcpy_chk),
             f!("__memmove_chk", __memmove_chk),
             f!("__memset_chk", __memset_chk),

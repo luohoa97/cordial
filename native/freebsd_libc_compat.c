@@ -483,6 +483,22 @@ int prctl(int option, ...) {
     return -1;
 }
 
+// Linux sched_setscheduler/sched_setparam. The engine's FunctionMarshaller (and
+// other threads) ask for SCHED_FIFO at max priority. On FreeBSD that either fails
+// EPERM (unprivileged) or, if it succeeds, makes the thread real-time — and a
+// real-time thread that then blocks on a mutex held by a normal-priority thread
+// can priority-invert into a hang (no PI on these bionic mutexes). bionic itself
+// treats these as best-effort hints. Report success without actually changing the
+// policy, so scheduling stays uniform and no inversion is possible.
+int sched_setscheduler(pid_t pid, int policy, const struct sched_param *param) {
+    (void)pid; (void)policy; (void)param;
+    return 0;
+}
+int sched_setparam(pid_t pid, const struct sched_param *param) {
+    (void)pid; (void)param;
+    return 0;
+}
+
 // --- bionic pthread_attr_t family ------------------------------------------
 //
 // This is the single nastiest ABI mismatch in the port. bionic's

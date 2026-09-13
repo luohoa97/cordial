@@ -480,3 +480,58 @@ thread that never runs / never reaches the notify. Identifying that producer
 precisely needs the IDA db's real symbols (nearest-export names in robx.dis are
 misleading here) or a Linux baseline. Grep target for the next session:
 "Failed to await Condition" and the `wait_until`/`never()` Condition wrapper.
+
+---
+
+## Session 4 (IDA decompiler): ROOT CAUSE FOUND — getFlags() async ClientAppSettings fetch
+
+Got IDAPython working (idapyswitch → Python 3.9; IDAPython was pointed at a
+missing 3.14). Decompiled the whole GameGlobalInit block chain on an isolated
+copy of the .i64. The complete causal chain, top to bottom:
+
+1. cordial calls `nativeGameGlobalInit` from its own thread.
+2. `sub_2339452` is a "run on the engine's main thread and wait" primitive: the
+   engine spawns a dedicated thread `sub_2339A1E` named **"FunctionMarshaller"**
+   (a task-queue loop: lock → `while(empty) cond_wait` → dequeue → run),
+   recorded as `qword_7081868`. Since GameGlobalInit runs on a *different*
+   thread, it posts a task to the FunctionMarshaller and waits (infinite,
+   `wait_until(lock, never())`).
+3. The FunctionMarshaller (thread #13) dequeues and runs the task, which is
+   **`getFlags()`** (`sub_2C5CAF2`, FLog channel "NativeDM"). Confirmed by
+   thread-stack walk: FM loop `+0x2339b26` → `getFlags +0x2c5ccac` →
+   `sub_5FB52B8` → `sub_6780314` → `boost::condition_variable::wait`
+   (`sub_23904A8`, `pthread_cond_wait` with the literal assert string
+   "boost::condition_variable::wait failed in pthread_cond_wait").
+4. `getFlags()` checks a "flags already loaded" string (`xmmword_7081250`); when
+   empty it does an **async fetch of "ClientAppSettings" for "AndroidApp"**
+   (strings in the function: `ClientAppSettings`, `getFlags: success = true,
+   payload's size = {}`, `getFlags: success = false`) and blocks on a boost cv
+   waiting for the result. The ONLY writer of the "loaded" string is getFlags's
+   own completion path, so the first call always fetches.
+5. On FreeBSD that fetch never completes → getFlags blocks → the FunctionMarshaller
+   is stuck inside it → GameGlobalInit's posted task never runs → GameGlobalInit
+   waits forever → black screen. The pool's ~16 worker threads sit idle.
+
+**This is the single unified root of both the FailedAppSettings verdict and the
+GameGlobalInit hang** — the thing cordial's own notes call "unknown."
+
+### The critical disconnect
+cordial delivers ClientAppSettings via `nativeInitClientSettings` (returns 0), but
+that feeds a DIFFERENT internal path than the async fetch `getFlags()` awaits.
+getFlags issues its own request and waits for a producer to fulfill a future
+(`sub_65FA644` waits; result read at `*(future+264)`). That producer never runs
+on FreeBSD.
+
+### Next (the fix)
+Find what fulfills getFlags()'s ClientAppSettings future — decompile `sub_65FA644`
+and the request side to see whether it (a) calls OUT to a host/JNI callback cordial
+should answer, or (b) dispatches an HTTP fetch to the engine's own network client
+(which may be broken/unrouted on FreeBSD). Then have cordial satisfy that specific
+request so getFlags takes the fast path. That unblocks GameGlobalInit and should
+finally render.
+
+### Tooling note
+IDA headless on FreeBSD: `idapyswitch` → pick Python 3.9; IDAPython works, use it
+via `idat -A -Sscript.py db.i64` (TVHEADLESS=1). Analyze a COPY of the .i64 —
+never the user's original (it had live unpacked .id0/.id1 files). The Hex-Rays
+decompiler is the key tool; nearest-export names in objdump are misleading.
