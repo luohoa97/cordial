@@ -4249,6 +4249,20 @@ fn main() -> ExitCode {
                                             }
                                         }
 
+                                        // EXPERIMENT (CORDIAL_AGDK_EARLY=1): fire the AGDK lifecycle+surface
+                                        // sequence (game_activity::start -> onStart/onResume/onSurfaceCreated/
+                                        // onSurfaceChanged) BEFORE StartApp. That sequence advances the
+                                        // GameActivity app-thread state machine to create the StartupController
+                                        // (global 0x70b3c20). cordial currently runs it AFTER StartApp (line
+                                        // ~4375), so StartApp null-derefs the not-yet-created singleton. On
+                                        // real Android lifecycle+surface precede app start, so early is correct.
+                                        if std::env::var_os("CORDIAL_AGDK_EARLY").is_some() {
+                                            match linker::game_activity::start(handle, width, height, format) {
+                                                Ok(()) => println!("  [agdk-early] lifecycle+surface fired before StartApp"),
+                                                Err(e) => println!("  [agdk-early] failed: {e}"),
+                                            }
+                                        }
+
                                         // nativeAppBridgeV2StartAppWithParams derefs the StartupController
                                         // singleton (global 0x70b3c20 on 2.721; strings "initProtocols",
                                         // "PlatformNativeAdsProtocol", "OpenTelemetry") which is created
