@@ -128,18 +128,34 @@ export WEBKIT_INJECTED_BUNDLE_PATH="${APPDIR}/usr/lib/webkitgtk-6.0/injected-bun
 # CORDIAL_APPIMAGE_NO_WRAP=1 skips it entirely; CORDIAL_APPIMAGE_WRAPPED is
 # the recursion guard and is set by the re-exec, not by a user.
 #
-# **Everything above this line was measured against a Fedora-built
-# libwebkitgtk-6.0.so, and build-appimage.sh has bundled one from Ubuntu
-# 24.04 since ADR-032.** `strings` against Ubuntu's package, 2026-09-13, shows
-# one baked-in directory, `/usr/lib/x86_64-linux-gnu/webkitgtk-6.0`, serving
-# both the helper processes and the injected bundle -- not Fedora's split
-# `/usr/libexec/webkitgtk-6.0` plus `/usr/lib64/webkitgtk-6.0` this block
-# binds onto below. The AppDir still carries the bundled helpers and bundle at
-# the paths this file expects; what has not been re-measured is whether
-# binding them onto the Fedora paths does anything useful against a library
-# that never asks for those paths. Until that is checked with a display and a
-# live WebKitWebView, the way it was on 2026-09-02, treat the web view as
-# unverified on this AppImage even where the wrap itself reports success.
+# **Everything up to this comment was measured against a Fedora-built
+# libwebkitgtk-6.0.so; build-appimage.sh has bundled one from Ubuntu 24.04
+# since ADR-032, and the mismatch below is real, not hypothetical.**
+# `grep -abo` against the bundled library, 2026-09-13, found one baked-in
+# directory, `/usr/lib/x86_64-linux-gnu/webkitgtk-6.0`, serving both the
+# helper processes and the injected bundle -- not Fedora's split
+# `/usr/libexec/webkitgtk-6.0` plus `/usr/lib64/webkitgtk-6.0` the block above
+# binds onto. Measured directly, on a host with WebKitGTK, bwrap and
+# xdg-dbus-proxy stripped out of its search path, with only the Fedora binds
+# in place: launching a WebKitWebView out of the extracted AppImage failed
+# outright, `Failed to spawn child process
+# "/usr/lib/x86_64-linux-gnu/webkitgtk-6.0/WebKitNetworkProcess" (No such
+# file or directory)` -- the Fedora binds above do nothing for this library.
+# The block immediately below adds the merged bind Ubuntu's layout needs.
+# Re-measured the same way afterwards, at the same one-bwrap-layer depth a
+# real launch uses: the spawn error above is gone and WebKitNetworkProcess
+# starts. It does not yet add up to a working web view -- WebProcess now
+# gets far enough to try setting up rendering and aborts instead, `Could not
+# create default EGL display: EGL_BAD_PARAMETER`, reproduced with WebKitGTK's
+# own process sandbox disabled and with software rendering forced, so it is
+# not this file's mount namespace and not GPU acceleration specifically.
+# What it is has not been established -- this host has no real
+# `/usr/lib/x86_64-linux-gnu` to test against, so even the single-layer
+# repro above stands on a directory this file fakes into existence with an
+# extra bwrap layer around the outside, and that scaffolding has not been
+# ruled out either. Treat the path-bind defect this block fixes as fixed,
+# and the web view as still not verified end-to-end, until this is chased
+# on a host that actually has the directory.
 if [ -z "${CORDIAL_APPIMAGE_WRAPPED:-}" ] \
    && [ -z "${CORDIAL_APPIMAGE_NO_WRAP:-}" ] \
    && [ -d "${APPDIR}/usr/libexec/webkitgtk-6.0" ] \
@@ -160,6 +176,25 @@ if [ -z "${CORDIAL_APPIMAGE_WRAPPED:-}" ] \
         if [ -d /usr/lib64/webkitgtk-6.0 ] \
            && [ -d "${APPDIR}/usr/lib/webkitgtk-6.0" ]; then
             args+=(--ro-bind "${APPDIR}/usr/lib/webkitgtk-6.0" /usr/lib64/webkitgtk-6.0)
+        fi
+
+        # Ubuntu/Debian's package bakes in one merged directory for both the
+        # helpers and the injected bundle instead of Fedora's split pair
+        # above -- see the comment before this block for how that was found
+        # and measured. Bind it only where the multiarch directory already
+        # exists, same reasoning as /usr/lib64 just above: a host that lacks
+        # it entirely was never going to need this bind, and overlaying the
+        # whole of /usr/lib to manufacture it from nothing would put the
+        # loader (/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 on this
+        # family) behind an overlayfs for no gain. This directory is not
+        # itself a symlink to /usr/lib64 the way Arch's is, so the overlay
+        # stays narrow the same way /usr/libexec's does.
+        if [ -d /usr/lib/x86_64-linux-gnu ]; then
+            args+=(--overlay-src /usr/lib/x86_64-linux-gnu --tmp-overlay /usr/lib/x86_64-linux-gnu
+                   --bind "${APPDIR}/usr/libexec/webkitgtk-6.0" /usr/lib/x86_64-linux-gnu/webkitgtk-6.0)
+            if [ -d "${APPDIR}/usr/lib/webkitgtk-6.0/injected-bundle" ]; then
+                args+=(--bind "${APPDIR}/usr/lib/webkitgtk-6.0/injected-bundle" /usr/lib/x86_64-linux-gnu/webkitgtk-6.0/injected-bundle)
+            fi
         fi
 
         # WebKitGTK's sandbox execs /usr/bin/bwrap and /usr/bin/xdg-dbus-proxy

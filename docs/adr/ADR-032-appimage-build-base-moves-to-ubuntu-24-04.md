@@ -193,7 +193,35 @@ passes over 149 bundled ELF files; `--diagnostics` prints `Cordial 0.13.2
 (6ff10ca)` and exits 0 on both `ubuntu:24.04` (2.39, exactly the floor) and
 `fedora:44` (2.43); the same command on `debian:12-slim` (2.36, the control)
 refuses with `version 'GLIBC_2.39' not found` and exits 1. The web view is not
-covered by any of those four — see above — and remains the open question.
+covered by any of those four, and was checked separately, below.
+
+## The web view's mount-namespace bind needed the same kind of fix, and only half worked
+
+The section above already flagged that AppRun's bwrap binds still targeted
+Fedora's split WebKitGTK layout while this base bundles Ubuntu's merged one.
+Checked directly, 2026-09-13, on this host's own live Wayland session with
+WebKitGTK, bwrap and xdg-dbus-proxy stripped from the search path: with only
+the Fedora binds in place, launching a `WebKitWebView` out of the extracted
+AppImage failed exactly as predicted, `Failed to spawn child process
+"/usr/lib/x86_64-linux-gnu/webkitgtk-6.0/WebKitNetworkProcess" (No such file
+or directory)`.
+
+AppRun now binds that merged path as well, gated on the directory already
+existing so a plain `--bind` suffices, the same caution as the existing
+`/usr/lib64` case. Re-measured the same way, at the same one-bwrap-layer
+depth a real launch uses: the spawn error is gone and `WebKitNetworkProcess`
+starts. That is not a working web view yet. The `WebProcess` it hands off to
+gets far enough to attempt rendering and aborts, `Could not create default
+EGL display: EGL_BAD_PARAMETER`, reproduced with WebKitGTK's own process
+sandbox disabled and with software rendering forced, so it is neither this
+mount namespace nor GPU acceleration specifically. What it is has not been
+established. This dev host has no real `/usr/lib/x86_64-linux-gnu` to test
+against — Fedora keeps the split layout — so even the single-bwrap-layer
+repro above stands on that directory faked into existence with an extra
+bwrap layer wrapped around the outside, purely for the test, and that
+scaffolding itself has not been ruled out as the cause. The path-bind defect
+this ADR set out to fix is fixed; the web view is a fix and a new, separate,
+still-open question, not a fix and a close.
 
 ## What this does not do
 

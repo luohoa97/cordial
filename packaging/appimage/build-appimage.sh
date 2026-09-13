@@ -395,16 +395,17 @@ echo "==> laying out what WebKitGTK reaches by absolute path"
 # **That measurement was of a Fedora-built libwebkitgtk-6.0.so, and this
 # script no longer bundles one.** Since ADR-032, `webkit_libexec` above
 # resolves to `/usr/lib/x86_64-linux-gnu/webkitgtk-6.0` -- confirmed with
-# `strings` against Ubuntu 24.04's package, 2026-09-13 -- which is a single
-# directory serving both the helper processes and the injected bundle, not
-# Fedora's split `/usr/libexec/webkitgtk-6.0` plus `/usr/lib64/webkitgtk-6.0`.
-# AppRun's bind destinations below are still the Fedora ones and were not
-# updated to match, because doing so needs the same kind of measurement this
-# file's comments insist on elsewhere -- a live bwrap run against the
-# Ubuntu-built library -- and this pass had no display to run WebKitWebView
-# against. The AppDir layout on disk is unaffected either way; what is
-# unverified is only whether AppRun's mount namespace lands the bundled
-# helpers where this Ubuntu-built library actually looks for them.
+# `grep -abo` against Ubuntu 24.04's own library, 2026-09-13 -- which is a
+# single directory serving both the helper processes and the injected
+# bundle, not Fedora's split `/usr/libexec/webkitgtk-6.0` plus
+# `/usr/lib64/webkitgtk-6.0`. AppRun now binds that merged path too, added
+# and re-measured with a live Wayland display the same day: with only the
+# Fedora binds, MiniBrowser out of the extracted AppImage failed outright
+# with WebKitNetworkProcess not found; with the merged bind added, that
+# spawn succeeds. It does not add up to a verified web view yet -- the
+# WebProcess that spawns next aborts on its own, `Could not create default
+# EGL display: EGL_BAD_PARAMETER`, for a reason not yet established. See
+# AppRun for the full measurement and what has and has not been ruled out.
 install -d "$appdir/usr/libexec/webkitgtk-6.0"
 find "$webkit_libexec" -maxdepth 1 -type f -executable -exec \
     install -m755 {} "$appdir/usr/libexec/webkitgtk-6.0/" \;
@@ -598,8 +599,10 @@ echo "processes, injected bundle, bwrap and xdg-dbus-proxy over the absolute"
 echo "paths baked into libwebkitgtk-6.0.so) was measured 2026-09-02 against a"
 echo "Fedora-built copy of that library, whose baked-in path was"
 echo "/usr/libexec/webkitgtk-6.0. Ubuntu 24.04's build of the same library"
-echo "bakes in /usr/lib/x86_64-linux-gnu/webkitgtk-6.0 instead -- a single"
-echo "directory for both the helpers and the bundle, not Fedora's split path --"
-echo "and AppRun's bind destinations were not updated to match, for lack of a"
-echo "display to verify the change against. Treat the web view as UNVERIFIED"
-echo "on this AppImage until that measurement is repeated."
+echo "bakes in /usr/lib/x86_64-linux-gnu/webkitgtk-6.0 instead, and AppRun now"
+echo "binds that path too, re-measured 2026-09-13 with a live Wayland display:"
+echo "WebKitNetworkProcess, which failed to spawn at all with only the Fedora"
+echo "binds, now starts. The WebProcess it hands off to aborts on its own"
+echo "straight after, \"Could not create default EGL display: EGL_BAD_PARAMETER\","
+echo "for a reason not yet established. Treat the web view as UNVERIFIED on"
+echo "this AppImage -- the spawn-path defect is fixed, the EGL one is not."

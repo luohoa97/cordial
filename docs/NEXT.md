@@ -95,14 +95,25 @@ its own `PT_INTERP` -- a loader shim at the AppRun boundary only ever
 intercepts the first process, leaving those broken while every top-level
 smoke test passes. That failure shape is worse than the bug it fixes.
 
-**Still not verified: the web view.** Ubuntu's `libwebkitgtk-6.0.so` bakes in
-a single directory for both the helper processes and the injected bundle,
-`/usr/lib/x86_64-linux-gnu/webkitgtk-6.0`, where Fedora's split the two.
-`AppRun`'s bwrap binds still target the Fedora paths and were not re-measured
-against the Ubuntu-built library for lack of a display in the containers this
-pass used -- none of the four measurements above exercises it, since a
-headless container never gets far enough for WebKitGTK to spawn a process.
-See ADR-032.
+**The web view's mount-namespace bind was re-measured with a real display,
+and it is a fix and a new open question, not a fix and a close.** Ubuntu's
+`libwebkitgtk-6.0.so` bakes in a single directory for both the helper
+processes and the injected bundle, `/usr/lib/x86_64-linux-gnu/webkitgtk-6.0`,
+where Fedora's split the two. With only the old Fedora-path binds, launching
+a `WebKitWebView` out of the extracted AppImage on this host's own live
+Wayland session, WebKitGTK/bwrap/xdg-dbus-proxy stripped from its search
+path, failed exactly as the mismatch predicts: `Failed to spawn child
+process ".../WebKitNetworkProcess" (No such file or directory)`. `AppRun` now
+binds the merged path too; re-measured the same way, `WebKitNetworkProcess`
+starts. The `WebProcess` it hands off to then aborts on its own, `Could not
+create default EGL display: EGL_BAD_PARAMETER`, for a reason not yet
+established -- reproduced with WebKitGTK's own sandbox disabled and with
+software rendering forced, so it is neither AppRun's mount namespace nor GPU
+acceleration specifically. This dev host has no real
+`/usr/lib/x86_64-linux-gnu` (Fedora keeps the split layout), so even that
+repro stands on the directory faked into existence with an extra bwrap layer
+purely for the test, and that scaffolding has not been ruled out either. See
+ADR-032 for the full account.
 
 **NixOS is a separate thing and was misdiagnosed in public.** An AppImage fails
 there because there is no FHS -- no `/lib64/ld-linux-x86-64.so.2` for the
