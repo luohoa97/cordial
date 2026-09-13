@@ -78,6 +78,30 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.14.0" date="2026-09-13">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.14.0</url>
+      <description>
+        <p>
+          The AppImage runs on something other than the machine that built it.
+          It was built on Fedora 44 and eighteen of its bundled libraries came
+          out stamped for a glibc four minor versions above the floor Cordial
+          claims, so the one format whose whole promise is portability ran on
+          the one distribution that did not need it. The build base is now
+          Ubuntu 24.04, and none of the 149 bundled libraries is above the
+          floor.
+        </p>
+        <p>
+          Cordial also no longer fails to start on the newest Roblox build,
+          which began importing a C library function the generated symbol table
+          did not carry.
+        </p>
+        <p>
+          The web view still does not work inside the AppImage, and the window
+          still does not appear at all on Wayland compositors other than
+          Mutter. Both are described in the release notes.
+        </p>
+      </description>
+    </release>
     <release version="0.13.2" date="2026-09-03">
       <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.13.2</url>
       <description>
