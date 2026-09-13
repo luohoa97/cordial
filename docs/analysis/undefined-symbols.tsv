@@ -673,6 +673,7 @@ libroblox.so	getpeername
 libroblox.so	getpid
 libroblox.so	getppid
 libroblox.so	getpriority
+libroblox.so	getpwuid_r
 libroblox.so	getsockname
 libroblox.so	getsockopt
 libroblox.so	gettid
