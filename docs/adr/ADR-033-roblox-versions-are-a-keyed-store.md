@@ -44,6 +44,13 @@ per-profile pin, "roll back" is picking an earlier entry, so there is no
 rollback code path to get wrong and no state that exists only during a
 rollback.
 
+**Each entry records the Cordial version that last loaded it.** This is a
+compatibility matrix and not a list, because Cordial's own shim is versioned
+too: an old Roblox build can need a symbol the current shim does not answer, and
+that fails at load with `cannot locate symbol` before any window appears. A
+picker that offers a build nothing here has ever loaded is offering a crash. An
+entry with no such record is offered with that said, not hidden.
+
 **The store is bounded and the bound is by count, not age.** Keep the current
 build and the two before it by default. An engine directory is not small and an
 unbounded store is a disk-full bug reported as something else — this project
@@ -69,7 +76,21 @@ end state of every pin, eventually.
 
 ## Open, and worth arguing about
 
-Whether the pin belongs to the profile or to the launch. A profile-level pin is
-simpler and matches ADR-013; a per-launch override would let somebody test an
+**Whether discovery goes to the network.** APKPure keeps old versions, which is
+most of why it is the mirror, but listing them means parsing an index nobody
+publishes as an interface and which can change shape without warning. Putting
+that on the launcher's startup path buys a longer list at the cost of a new way
+for the launcher to be slow or wrong. The alternative is to offer only what the
+store already holds plus whatever the current fetch finds -- a shorter list,
+honest about itself, and available offline. That is where this should start.
+
+**Certificate rotation.** ADR-025 pins Roblox's signing certificates, and an
+older APK verifies against whichever certificate signed it. So the pinned set
+can only ever grow: prune it and old versions silently become unfetchable, with
+a signature failure as the symptom and no hint that the cause was a tidy-up
+years earlier. Cheap to get right now, expensive to discover later.
+
+**Whether the pin belongs to the profile or to the launch.** A profile-level pin
+is simpler and matches ADR-013; a per-launch override would let somebody test an
 older build without disturbing a profile they play on. The second is cheap to
 add later and impossible to remove, so it is left out until somebody wants it.
