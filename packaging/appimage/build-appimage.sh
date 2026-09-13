@@ -409,6 +409,59 @@ else
     echo "warning: $schemas_src not found; the AppImage ships no compiled GSettings schemas" >&2
 fi
 
+echo "==> checking every bundled ELF against the glibc floor"
+# **This is the check that already existed and was pointed at the wrong
+# files, and v0.13.2 shipped broken because of it.**
+#
+# `check-glibc-floor.sh` was written after one `log10f@GLIBC_2.43` made
+# v0.10.0's rpm uninstallable, and its own header predicted this exact
+# outcome: "The AppImage had it too, and that one bundles no libc at all, so
+# the format whose whole purpose is running anywhere would have run on Fedora
+# 44 and nothing else." The release workflow then ran it over
+# `target/release/cordial-run` and `target/release/cordial-shell` and nothing
+# else -- so Cordial's own two binaries were held at GLIBC_2.39, and the
+# hundred-odd libraries linuxdeploy copies out of this Fedora 44 container
+# were never looked at.
+#
+# Measured on the shipped v0.13.2 AppImage on 2026-09-13: both Cordial
+# binaries at GLIBC_2.39, and eighteen bundled libraries at GLIBC_2.43 --
+# among them libgtk-4.so.1, libglib-2.0.so.0 and libwebkitgtk-6.0.so.4, which
+# is to say the ones nothing can start without. On any host older than Fedora
+# 44 the loader refuses them all before `main` and the user sees a wall of
+# "version `GLIBC_2.43' not found", one line per library. It reads like
+# missing dependencies. Every dependency is present; they are simply built
+# against a libc the host has not got, and an AppImage cannot bundle the libc
+# that would satisfy them.
+#
+# So the gate runs over the whole AppDir, here rather than only in CI, because
+# this script is also run by hand and a check that only fires in a workflow is
+# a check somebody can ship around.
+mapfile -t appdir_elves < <(
+    find "$appdir" -type f \( -name '*.so' -o -name '*.so.*' -o -perm -u+x \) -print0 \
+        | xargs -0 -r file --mime-type -- \
+        | awk -F': ' '$2 ~ /application\/x-(sharedlib|executable|pie-executable)/ {print $1}'
+)
+if [ "${#appdir_elves[@]}" -eq 0 ]; then
+    echo "check-glibc-floor: found no ELF files in $appdir, which cannot be right" >&2
+    exit 2
+fi
+echo "    ${#appdir_elves[@]} ELF files to check"
+if ! "$repo/packaging/check-glibc-floor.sh" "${appdir_elves[@]}"; then
+    cat >&2 <<'FLOOREOF'
+
+The AppImage was not written.
+
+One or more bundled libraries need a newer glibc than the floor, which means
+this image would fail to start on every host older than the container it was
+built in -- the failure mode v0.13.2 shipped with. The libraries named above
+came out of this build container, so the fix is not in Cordial's own code:
+either build the image on a base whose glibc is at or below the floor, or
+bundle the loader and libc alongside them and exec through it. Do not raise
+CORDIAL_GLIBC_FLOOR to make this pass; that silently drops distributions.
+FLOOREOF
+    exit 1
+fi
+
 echo "==> appimagetool"
 outfile="$outdir/Cordial-${CORDIAL_DESCRIBE}-x86_64.AppImage"
 mkdir -p "$outdir"
