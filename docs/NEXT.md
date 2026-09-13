@@ -21,6 +21,55 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## Open: the AppImage is broken and the release is gated on it, 2026-09-13
+
+**The shipped AppImage does not start on a large fraction of hosts, and there
+are two independent reasons, not one.**
+
+First, the build base is Fedora 44. Eighteen bundled libraries carry
+`GLIBC_2.43` symbol versions, so any host older than that refuses them --
+`version 'GLIBC_2.43' not found` under `~/.cache/appimage-run/`. glibc is
+backward compatible and not forward compatible, so the base must be no newer
+than the oldest host supported. The declared floor is 2.39.
+
+Second, thirteen libraries are simply absent from the image, dropped by
+linuxdeploy's excludelist, which assumes they are present on every host. They
+are not.
+
+**A gate now exists and catches the first of these.** `build-appimage.sh` runs
+`packaging/check-glibc-floor.sh` over every ELF in the AppDir before
+`appimagetool`, not just the two Cordial binaries the release workflow checked.
+Against the broken artefact it reads 182 ELF files, 18 over floor, exit 1.
+
+**What unblocked moving the base** was finding the version floor was wrong:
+`gtk4` was pinned at `v4_20` while the code needs only 4.12
+(`CssProvider::load_from_string`, `ToplevelState::SUSPENDED`) and libadwaita
+1.5. That makes Ubuntu 24.04 -- GTK 4.14, libadwaita 1.5, glibc 2.39, exactly
+the declared floor -- usable as a build base for the first time. See ADR-032.
+
+**A bundled-loader prototype worked and was abandoned.** It printed
+`Cordial 0.13.2 (323afa2)` on `debian:12-slim` (glibc 2.36). It is the wrong
+answer because `PT_INTERP` is baked in and WebKitGTK execs its helper processes
+(`WebKitWebProcess`, `WebKitNetworkProcess`, `WebKitGPUProcess`) by absolute
+path -- so a loader shim at the AppRun boundary leaves those broken while every
+top-level smoke test passes. That failure shape is worse than the bug.
+
+**Not verified**, and the next step: that WebKitGTK builds on Ubuntu 24.04 at
+all. Check that first and stop if it fails. Compute the bundle closure rather
+than hardcoding it, and keep the graphics stack out of the bundle --
+`libEGL.so.1 libGLX.so.0 libGL.so.1 libOpenGL.so.0 libGLdispatch.so.0
+libgbm.so.1 libdrm.so.2 libGLESv2.so.2` come from the host or nothing renders.
+Prove the result by starting it in `debian:12-slim`, `ubuntu:24.04` and
+something current, and paste what each printed.
+
+**NixOS is a separate thing and was misdiagnosed in public.** An AppImage fails
+there because there is no FHS -- no `/lib64/ld-linux-x86-64.so.2` for the
+interpreter to land on -- regardless of how new the host glibc is. The fix is
+the user's: `programs.appimage.enable = true` with binfmt. That belongs in the
+install documentation and is not written down yet. `flake.nix` now builds
+Cordial for them, and **has never been built**; it needs
+`nix run "github:luohoa97/cordial?submodules=1"`.
+
 ## Open: the gamepad-ordinal probe ran; the pre-login shell is not a readout of `gamepadType`, 2026-08-30
 
 `android/gamepad.rs`'s module comment proposes settling `RBX::GamepadType`'s
