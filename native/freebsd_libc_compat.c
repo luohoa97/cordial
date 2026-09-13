@@ -269,9 +269,9 @@ static long do_futex(void *uaddr, int op, unsigned int val, const struct timespe
             clock_gettime(4 /*FreeBSD MONOTONIC*/, &now_m);
             clock_gettime(0 /*REALTIME*/, &now_r);
             fprintf(stderr,
-                "[futex] WAIT addr=%p cmd=%d op=0x%x val=%u to=%s{%lld.%09ld} flags=%u clk=%u "
+                "[futex] tid=%d WAIT addr=%p cmd=%d op=0x%x val=%u to=%s{%lld.%09ld} flags=%u clk=%u "
                 "| mono=%lld.%09ld real=%lld.%09ld\n",
-                uaddr, cmd, op, val, to ? "" : "NULL",
+                (int)pthread_getthreadid_np(), uaddr, cmd, op, val, to ? "" : "NULL",
                 (long long)(to ? to->tv_sec : 0), (long)(to ? to->tv_nsec : 0),
                 to ? ut._flags : 0u, to ? ut._clockid : 0u,
                 (long long)now_m.tv_sec, now_m.tv_nsec,
@@ -287,8 +287,8 @@ static long do_futex(void *uaddr, int op, unsigned int val, const struct timespe
         int r = _umtx_op(uaddr, FBSD_UMTX_OP_WAKE_PRIVATE,
                          (unsigned long)val, NULL, NULL);
         if (futex_trace_enabled())
-            fprintf(stderr, "[futex] WAKE addr=%p cmd=%d op=0x%x val=%u -> r=%d errno=%d\n",
-                    uaddr, cmd, op, val, r, r == 0 ? 0 : errno);
+            fprintf(stderr, "[futex] tid=%d WAKE addr=%p cmd=%d op=0x%x val=%u -> r=%d errno=%d\n",
+                    (int)pthread_getthreadid_np(), uaddr, cmd, op, val, r, r == 0 ? 0 : errno);
         return r == 0 ? (long)val : -errno;
     }
     // Any other op (requeue, PI, wake_op): report unsupported rather than lie

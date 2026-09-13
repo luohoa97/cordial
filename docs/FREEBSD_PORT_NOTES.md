@@ -410,3 +410,51 @@ the verdict is the lever; the futex/pthread layer underneath is sound.
 - `CORDIAL_TRACE_FUTEX=1`: env-gated futex WAIT/WAKE trace (cached getenv; safe
   in the hot path). This is what localised the WAKE-starvation and will be the
   tool for the next person on the scheduler question.
+
+---
+
+## Session 3: the sync layer is PROVEN correct; the block is engine-init logic
+
+Deep futex forensics on the GameGlobalInit hang (CORDIAL_TRACE_FUTEX now tags
+every WAIT/WAKE with tid). Findings:
+
+- 21 threads; 16 run the same start routine = the TaskScheduler thread pool.
+- Symbolicated the blocked main-thread stack (IDA base + robx.dis):
+  `nativeGameGlobalInit` -> engine init internals -> a bionic `__futex` wrapper
+  (SYS_futex=0xca, op=0x89 FUTEX_WAIT_BITSET|PRIVATE) -> our do_futex.
+- Main thread (tid 116683) ends on `WAIT addr=0x…dcc8c to=NULL` — an *infinite*
+  wait for its posted init task to complete. No WAKE is ever sent to that addr.
+- The pool workers park correctly. Traced a full cycle on one shared address:
+  `WAIT(park) -> WAKE(dispatch) -> WAIT(re-park)` — the worker IS woken, runs,
+  and re-parks. So WAIT/WAKE delivery is correct; not a lost wakeup.
+- The one busy worker spins on an *expired absolute deadline* poll (its job never
+  arrives), which is a symptom (no work), not a translation bug — Linux would do
+  the same with no work.
+
+Conclusion: **our futex/pthread/clock layer is mechanically correct.** After an
+initial burst (~2 dispatches, ~15 total wakes) the engine's scheduler stops
+dispatching and the whole process goes idle — main thread waiting on a completion
+that the engine's own init logic never produces. This is engine-init logic, not
+an ABI/sync bug on our side.
+
+### What this rules in / out
+- NOT our sync primitives (proven: WAIT/WAKE/clock all behave).
+- Either (a) a cascade from the FailedAppSettings verdict — some subsystem that
+  GameGlobalInit waits on only initialises on ReadyToBootstrap — or (b) a
+  genuinely FreeBSD-specific engine-logic divergence. cordial lore says Linux
+  reaches "app ready: Landing" despite the same onFlagsFailed, which points at
+  (b), but that cannot be confirmed from the FreeBSD side alone.
+
+### The unblock path
+Get a Linux cordial baseline (the Arch partition can build/run cordial against
+the same engine) and A/B: does nativeGameGlobalInit block there too? If it
+returns on Linux, diff the thread/futex behaviour at that call to find the
+FreeBSD-specific divergence. If it blocks on Linux too, the settings verdict is
+the shared root and the fight moves there. Either way the sync layer underneath
+is not the suspect.
+
+### Minor note (not the bug, but ABI-imperfect)
+do_futex's FUTEX_WAKE returns the *requested* count (`val`, up to INT_MAX for a
+broadcast) rather than the actual number woken, because FreeBSD `_umtx_op` WAKE
+does not report a count. Harmless for the mutex/cond/semaphore callers that
+ignore it (all seen here), but not Linux-faithful for any caller that uses it.
