@@ -3788,6 +3788,30 @@ fn main() -> ExitCode {
                                         // null JNIEnv the engine expects the
                                         // globals init to have stored. Skipped
                                         // when they were already run early.
+                                        // EXPERIMENT (CORDIAL_PREPUMP_MS=<n>): drive the ALooper for
+                                        // <n> ms before the blocking nativeGameGlobalInit. Hypothesis:
+                                        // GameGlobalInit waits on engine work that only completes once
+                                        // the main-thread looper is pumped, and cordial's synchronous
+                                        // call deadlocks because the pump normally comes later.
+                                        //
+                                        // RESULT: negative. A 4 s pre-pump runs the looper (GameActivity
+                                        // mainWorkCallback fires) and returns cleanly, but the following
+                                        // nativeGameGlobalInit still blocks. So the dependency it waits
+                                        // on is NOT main-thread looper work — it is a worker/TaskScheduler
+                                        // task that never completes (the run issues only ~15 futex wakes
+                                        // total; see docs/FREEBSD_PORT_NOTES.md). Kept, env-gated, because
+                                        // the negative result is worth as much as the switch.
+                                        if let Some(ms) = std::env::var("CORDIAL_PREPUMP_MS")
+                                            .ok().and_then(|v| v.parse::<u64>().ok())
+                                        {
+                                            println!("  [prepump] pumping looper {ms}ms before globals");
+                                            cordial_runtime::android::looper::pump(
+                                                std::time::Duration::from_millis(ms),
+                                                Some(handle),
+                                            );
+                                            println!("  [prepump] done");
+                                        }
+
                                         if !globals_early {
                                             call_globals(&lib, "late");
                                         }
