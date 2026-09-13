@@ -4255,6 +4255,46 @@ fn main() -> ExitCode {
                                         // lazily by an async bootstrap task. If StartApp runs first it
                                         // null-derefs it. Read-only poll (no memory write) until it exists,
                                         // like the pre-retryInit state poll. CORDIAL_STARTUP_POLL_MS.
+                                        // EXPERIMENT (CORDIAL_CMD3=1): the engine's app thread (android_main)
+                                        // sits in an ALooper loop polling its command pipe; NativeActivity
+                                        // command 3 -> sub_2C5894E -> creates the StartupController. cordial
+                                        // never feeds that pipe. The read-end is the ALooper_addFd(callback=yes)
+                                        // fd (14 observed); the write-end is its pipe partner (15). Write the
+                                        // command byte to the candidate write-ends and let the poll below show
+                                        // whether the singleton then appears. Validates the "feed the command
+                                        // pipe" fix before making it robust.
+                                        // CORDIAL_CMD3=<seq> writes a comma-separated command sequence to the
+                                        // command pipe's write end (found via the tracked pipe pairs — the
+                                        // read-end is the ALooper_addFd(callback=yes) fd, observed 14).
+                                        // Default "3". Only the command pipe is touched (never the input pipe).
+                                        #[cfg(all(target_os = "freebsd", feature = "unsafe-experiments"))]
+                                        if let Ok(seq) = std::env::var("CORDIAL_CMD3") {
+                                            extern "C" {
+                                                fn write(fd: i32, buf: *const u8, n: usize) -> isize;
+                                                fn cordial_pipe_write_end(read_fd: i32) -> i32;
+                                            }
+                                            // The command pipe read-end: ALooper_addFd(callback=yes) fd. Try the
+                                            // observed 14 and a small range, but only ones that map to a tracked
+                                            // pipe write-end (so we never hit an unrelated fd).
+                                            let wr = (10..20).find_map(|rd| {
+                                                let w = unsafe { cordial_pipe_write_end(rd) };
+                                                if w >= 0 && rd == 14 { Some(w) } else { None }
+                                            });
+                                            match wr {
+                                                Some(w) => {
+                                                    for tok in seq.split(',').filter(|s| !s.is_empty()) {
+                                                        if let Ok(cmd) = tok.trim().parse::<u8>() {
+                                                            let r = unsafe { write(w, &cmd, 1) };
+                                                            println!("  [cmd3] write(cmdpipe fd={w}, cmd={cmd}) -> {r}");
+                                                            std::thread::sleep(std::time::Duration::from_millis(80));
+                                                        }
+                                                    }
+                                                }
+                                                None => println!("  [cmd3] command pipe write-end not found (read-end 14 not a tracked pipe)"),
+                                            }
+                                            std::thread::sleep(std::time::Duration::from_millis(200));
+                                        }
+
                                         #[cfg(target_os = "freebsd")]
                                         if let Some(ms) = std::env::var("CORDIAL_STARTUP_POLL_MS")
                                             .ok().and_then(|v| v.parse::<u64>().ok())

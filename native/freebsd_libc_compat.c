@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/auxv.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -133,6 +134,59 @@ int bionic_pthread_rwlock_destroy(void *l) { (void)l; return 0; }
 
 // FORTIFY open with no mode arg, and a registered prctl (unsupported).
 int __open_2(const char *path, int flags) { return open(path, flags); }
+
+// pipe2 logger + write-end table. The engine's GameActivity app thread makes a
+// command pipe (pipe2), ALooper_addFd's the READ end, and its android_main loop
+// dispatches commands read from it. cordial never feeds that pipe, so the
+// StartupController (created on command 3) never gets made. To fix that cordial
+// needs the WRITE end, but only sees the read end (via ALooper_addFd). Record
+// every pipe2 pair here so the read->write mapping can be looked up later.
+#define PIPE_TAB 256
+static int g_pipe_rd[PIPE_TAB];
+static int g_pipe_wr[PIPE_TAB];
+static int g_pipe_n;
+static pthread_mutex_t g_pipe_lock = PTHREAD_MUTEX_INITIALIZER;
+int pipe2(int fds[2], int flags) {
+    // Raw syscall, NOT the libc pipe2 (this IS the libc pipe2 for cordial-run, so
+    // calling it would recurse).
+    int r = (int)syscall(SYS_pipe2, fds, flags);
+    if (r == 0) {
+        pthread_mutex_lock(&g_pipe_lock);
+        int i = g_pipe_n % PIPE_TAB;
+        g_pipe_rd[i] = fds[0];
+        g_pipe_wr[i] = fds[1];
+        g_pipe_n++;
+        pthread_mutex_unlock(&g_pipe_lock);
+        if (getenv("CORDIAL_TRACE_PIPE"))
+            fprintf(stderr, "[pipe2] read=%d write=%d flags=0x%x\n", fds[0], fds[1], flags);
+    }
+    return r;
+}
+// AGDK's android_native_app_glue uses the classic pipe(2), not pipe2.
+int pipe(int fds[2]) {
+    int r = (int)syscall(SYS_pipe2, fds, 0);
+    if (r == 0) {
+        pthread_mutex_lock(&g_pipe_lock);
+        int i = g_pipe_n % PIPE_TAB;
+        g_pipe_rd[i] = fds[0];
+        g_pipe_wr[i] = fds[1];
+        g_pipe_n++;
+        pthread_mutex_unlock(&g_pipe_lock);
+        if (getenv("CORDIAL_TRACE_PIPE"))
+            fprintf(stderr, "[pipe] read=%d write=%d\n", fds[0], fds[1]);
+    }
+    return r;
+}
+// Look up the write end paired with a given read-end fd (from a pipe/pipe2 call).
+// Returns -1 if unknown. cordial calls this to find the command pipe's write end.
+int cordial_pipe_write_end(int read_fd) {
+    int w = -1;
+    pthread_mutex_lock(&g_pipe_lock);
+    for (int i = 0; i < g_pipe_n && i < PIPE_TAB; i++)
+        if (g_pipe_rd[i] == read_fd) w = g_pipe_wr[i];
+    pthread_mutex_unlock(&g_pipe_lock);
+    return w;
+}
 
 // mmap(2) flag translation. The engine passes *Linux* MAP_* flag numbers, but
 // this reaches FreeBSD's mmap, which numbers them differently — most fatally
