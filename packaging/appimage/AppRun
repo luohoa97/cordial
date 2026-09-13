@@ -127,6 +127,19 @@ export WEBKIT_INJECTED_BUNDLE_PATH="${APPDIR}/usr/lib/webkitgtk-6.0/injected-bun
 #
 # CORDIAL_APPIMAGE_NO_WRAP=1 skips it entirely; CORDIAL_APPIMAGE_WRAPPED is
 # the recursion guard and is set by the re-exec, not by a user.
+#
+# **Everything above this line was measured against a Fedora-built
+# libwebkitgtk-6.0.so, and build-appimage.sh has bundled one from Ubuntu
+# 24.04 since ADR-032.** `strings` against Ubuntu's package, 2026-09-13, shows
+# one baked-in directory, `/usr/lib/x86_64-linux-gnu/webkitgtk-6.0`, serving
+# both the helper processes and the injected bundle -- not Fedora's split
+# `/usr/libexec/webkitgtk-6.0` plus `/usr/lib64/webkitgtk-6.0` this block
+# binds onto below. The AppDir still carries the bundled helpers and bundle at
+# the paths this file expects; what has not been re-measured is whether
+# binding them onto the Fedora paths does anything useful against a library
+# that never asks for those paths. Until that is checked with a display and a
+# live WebKitWebView, the way it was on 2026-09-02, treat the web view as
+# unverified on this AppImage even where the wrap itself reports success.
 if [ -z "${CORDIAL_APPIMAGE_WRAPPED:-}" ] \
    && [ -z "${CORDIAL_APPIMAGE_NO_WRAP:-}" ] \
    && [ -d "${APPDIR}/usr/libexec/webkitgtk-6.0" ] \
