@@ -3845,6 +3845,27 @@ fn main() -> ExitCode {
                                             println!("  [prepump] done");
                                         }
 
+                                        // EXPERIMENT (CORDIAL_REDELIVER=1): re-deliver client settings
+                                        // immediately before GameGlobalInit, to test whether getFlags's sync
+                                        // store lookup was racing settings-storage visibility.
+                                        // RESULT: negative (0/4). Re-delivering (return 0) does NOT let
+                                        // GameGlobalInit complete, so the deadlock is NOT store-visibility —
+                                        // it is the FunctionMarshaller-thread self-post-and-wait, full stop.
+                                        // Kept env-gated for the record.
+                                        if std::env::var_os("CORDIAL_REDELIVER").is_some() {
+                                            if let Some(f) = lib.symbol(
+                                                "Java_com_roblox_engine_jni_NativeGLInterface_nativeInitClientSettings",
+                                            ) {
+                                                let s = cordial_runtime::client_settings::load(
+                                                    opt.client_settings.as_deref(),
+                                                ).unwrap_or_default();
+                                                match linker::game_activity::init_client_settings(f, &s, "", "") {
+                                                    Ok(code) => println!("  [redeliver] nativeInitClientSettings -> {code}"),
+                                                    Err(e) => println!("  [redeliver] failed: {e}"),
+                                                }
+                                            }
+                                        }
+
                                         // EXPERIMENT (CORDIAL_HIJACK_MARSHALLER=1): the engine records a
                                         // dedicated "FunctionMarshaller" thread in a global (qword_7081868
                                         // on 2.721) and, inside nativeGameGlobalInit, runs work INLINE when
