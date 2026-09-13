@@ -225,8 +225,14 @@ and matching it is not optional.
 - **Comments explain *why*, anchored in the failure that motivated the code.**
   Not what the line does. The good ones name the bug that would otherwise recur.
 - British-ish prose. No emoji in code or comments. No bullet-list comment blocks.
-- **Commit messages say what you measured**, not only what you changed. They are
-  long here on purpose.
+- **Commit messages are short. A subject line and a few lines of body.** Say
+  what changed, what you measured, and what is still unverified -- then stop.
+  **They used to be long here on purpose and that was wrong.** The reasoning,
+  the control, the alternatives considered and the history belong in an ADR,
+  where somebody about to contradict the decision will actually find them. A
+  git log nobody scrolls is not a decision record; `docs/adr/` is. If a change
+  needs more than a few lines to justify, that is the signal to write the ADR
+  and link it from the commit, not to write the ADR *in* the commit.
 - **Do not paste the conversation into them.** A commit that quotes what
   somebody typed in chat -- "reported as \"its stuck on starting up\"" -- turns
   a private exchange into a permanent public record, and it reads as though the
