@@ -5,13 +5,16 @@
 # — and this repository's own rule is that a check which only runs when asked
 # for is a check that has silently stopped running.
 #
-# Fedora 44 in a container rather than `ubuntu-latest`, and the version is not
-# incidental: the workspace pins gtk4 4.22 and libadwaita 1.9, Fedora 43 carries
-# 4.20.3 and 1.8.3, and Ubuntu 24.04 is older still. The failure when the
-# toolchain is too old is three `*-sys` build scripts dying with a pkg-config
-# hint that reads as a missing package rather than an old one, which is a bad
-# hour for whoever meets it first. `justfile`'s `build toolbox` recipe carries
-# the same list and the same reasoning.
+# Fedora 44 in a container rather than `ubuntu-latest`. **The reason given here
+# was that the workspace pins gtk4 4.22 and libadwaita 1.9, and that is no
+# longer true** -- ADR-032 brought the floor down to `v4_12`/`v1_5`, which
+# Ubuntu 24.04's 4.14.5 already clears. What has not been established is
+# whether anything else in the workspace needs a newer base, so the container
+# stays until somebody watches this job go green on an older one. The failure
+# when the toolchain is too old is still worth knowing: three `*-sys` build
+# scripts die with a pkg-config hint that reads as a missing package rather
+# than an old one, which is a bad hour for whoever meets it first.
+# `justfile`'s `build toolbox` recipe carries the same list.
 name: test
 
 on:

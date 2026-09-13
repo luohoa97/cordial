@@ -142,8 +142,9 @@ below.
 Three files, three jobs, in order:
 
 1. **`release.yml`**'s existing `deb` job builds `cordial_<version>_amd64.deb`
-   inside `ubuntu:25.10` (the container this workspace has been shown to
-   satisfy `gtk4 >= 4.20` in) and uploads it as the `cordial-deb` artifact,
+   inside `ubuntu:25.10` (where that job has been shown to build; the
+   `gtk4 >= 4.20` floor that once made it the only candidate came down to
+   4.12 in ADR-032) and uploads it as the `cordial-deb` artifact,
    exactly as it did before this change. Nothing in that file was touched.
 2. **`apt.yml`**, new, triggers when that job's workflow finishes, downloads
    `cordial-deb` from that specific run, and runs `build-repo.sh` against

@@ -7,11 +7,12 @@
 # the second one is not attempted here.
 #
 # Why this file does not build a .deb: the "Native packages" workflow
-# (release.yml) already does, in its `deb` job, inside ubuntu:25.10 -- the
-# one container this workspace has been shown to satisfy gtk4 >= 4.20 in
-# (see that file's own long comment on why ubuntu-latest's 24.04 fails). This
-# workflow triggers off that job finishing and downloads what it already
-# built rather than compiling Cordial a second time on every push.
+# (release.yml) already does, in its `deb` job, inside ubuntu:25.10 -- which is
+# where that job has been shown to build, though no longer the only container
+# that could: the gtk4 floor came down to 4.12 in ADR-032 and the LTS now
+# clears it (see that file's own comment on why the base has not moved
+# anyway). This workflow triggers off that job finishing and downloads what it
+# already built rather than compiling Cordial a second time on every push.
 #
 # Why this file does not deploy to Pages itself: GitHub Pages, published
 # through actions/deploy-pages, is one deployment for the whole site -- there

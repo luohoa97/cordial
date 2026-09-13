@@ -214,22 +214,19 @@ jobs:
           if-no-files-found: error
 
   deb:
-    # **Not the LTS, and it cannot be.** `crates/cordial-shell/Cargo.toml` takes
-    # gtk4 with the `v4_20` feature, so `gdk4-sys` asks pkg-config for
-    # `gtk4 >= 4.20`. Ubuntu 24.04 LTS ships 4.14.5 and the job failed on
-    # exactly that: "Package 'gtk4' has version '4.14.5', required version is
-    # '>= 4.20'". That is the dependency floor excluding the distribution, not a
-    # container misconfigured -- lowering the floor to reach an LTS is the wrong
-    # direction and would give up the libadwaita the shell is built on.
+    # **This comment used to argue the LTS was impossible, and that argument is
+    # now wrong in both halves.** It said the `v4_20` gtk4 feature made
+    # `gtk4 >= 4.20` a hard floor, and that lowering it "would give up the
+    # libadwaita the shell is built on". The floor was never load-bearing: the
+    # code uses `CssProvider::load_from_string` and `ToplevelState::SUSPENDED`
+    # and nothing above 4.12, so the floor came down to `v4_12`/`v1_5` and
+    # gave up nothing. Ubuntu 24.04's 4.14.5 clears it, and both crates built
+    # clean with the webview feature against that LTS during ADR-032.
     #
-    # So this targets a release new enough to satisfy it, and Debian-family
-    # users on anything older are served by the Flatpak and the AppImage, both
-    # of which carry their own GTK. That is the argument for the AppImage being
-    # the important artifact here rather than a convenience.
-    #
-    # 25.10 is chosen because it is the first Ubuntu that plausibly carries
-    # 4.20, and it is UNVERIFIED until this job goes green -- which is a cheap
-    # way to find out and an honest place to say so.
+    # The base is still 25.10 because moving it is a change to what this job
+    # produces, not a comment fix, and nobody has watched a 24.04 .deb job go
+    # green end to end. That is the only thing keeping it here -- not the
+    # dependency floor, which no longer excludes the LTS. See ADR-032.
     name: .deb (Ubuntu 25.10)
     runs-on: ubuntu-latest
     container: ubuntu:25.10
