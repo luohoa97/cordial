@@ -4257,10 +4257,31 @@ fn main() -> ExitCode {
                                         // ~4375), so StartApp null-derefs the not-yet-created singleton. On
                                         // real Android lifecycle+surface precede app start, so early is correct.
                                         if std::env::var_os("CORDIAL_AGDK_EARLY").is_some() {
+                                            // The GameActivity handle IS the app_state (android_app) pointer.
+                                            // Read the state-machine fields the app-thread loop gates on:
+                                            // app_state[0]/[1] (bytes), [2], and [16] (the state; case 3 ->
+                                            // StartupController). This shows where the state is stuck.
+                                            // The app-loop (sub_2C54790) runs on the NativeEngine object at
+                                            // *(base+0x70811c8), and sub_2C5894E reads its state at engine+16.
+                                            let read_state = || {
+                                                let Some(jni) = lib.symbol("JNI_OnLoad") else { return "(no base)".to_string(); };
+                                                let base = (jni as usize).wrapping_sub(0x22addd7);
+                                                unsafe {
+                                                    let eng = *((base + 0x70811c8) as *const usize);
+                                                    if eng == 0 { return "engine=null".to_string(); }
+                                                    let b = eng as *const u8;
+                                                    let f0 = *b; let f1 = *b.add(1); let f2 = *b.add(2);
+                                                    let s = *(b.add(16) as *const i32);
+                                                    format!("engine={eng:#x} [0]={f0} [1]={f1} [2]={f2} state[16]={s}")
+                                                }
+                                            };
+                                            println!("  [agdk-early] before: {}", read_state());
                                             match linker::game_activity::start(handle, width, height, format) {
                                                 Ok(()) => println!("  [agdk-early] lifecycle+surface fired before StartApp"),
                                                 Err(e) => println!("  [agdk-early] failed: {e}"),
                                             }
+                                            std::thread::sleep(std::time::Duration::from_millis(1500));
+                                            println!("  [agdk-early] after 1.5s: {}", read_state());
                                         }
 
                                         // nativeAppBridgeV2StartAppWithParams derefs the StartupController
