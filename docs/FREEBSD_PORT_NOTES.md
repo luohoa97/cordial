@@ -622,3 +622,47 @@ init this singleton. Next: find the getter that triggers sub_23CD346 and why it
 isn't reached (likely another thread/event cordial doesn't drive, same family as the
 FunctionMarshaller). We are now well inside app startup — DataModel + TaskScheduler
 running — one null-subsystem away from a first frame.
+
+---
+
+## Session 5 (deep RE): getFlags deadlock fully mapped — it's a thread-model mismatch
+
+Reversed the entire getFlags settings path. The deadlock is STRUCTURAL, not data:
+
+- getFlags (`sub_2C5CAF2`) runs ON the FunctionMarshaller thread (GameGlobalInit
+  marshals it there). Its slow path calls
+  `sub_5FB512C("ClientAppSettings", &qword_72893D8, ...)` ->
+  `sub_5FB52B8` -> sync lookup `sub_5FB3969` (a URL-fetch preparer with a
+  once-guard `byte_73CFF88`, logs "[FLog::Output] settingsUrl: {}").
+- Sync lookup misses -> async load `sub_5FB535B`, which extracts via a settings
+  *provider* (`sub_2C5D182` -> vtable) and stores the ClientAppSettings entry into
+  `qword_72893D8` with `sub_23539FC` (the same store nativeInitClientSettings uses).
+- That async load is posted to the FM queue and WAITED on (boost future,
+  `sub_65FA644` -> `sub_23904A8` cond_wait). The FM is busy running getFlags, so it
+  can never run the load -> self-post-and-wait deadlock.
+
+The hijack "fixes" it only by making qword_7081868 == cordial's thread, so the async
+load runs INLINE (synchronous) instead of being queued. That is also exactly why it
+breaks async subsystem creation (StartupController stays 0x0): with everything
+inline, tasks that must run on the real FM thread don't.
+
+### Two real issues, in order
+1. THREADING (root): cordial drives GameGlobalInit off the engine's FunctionMarshaller
+   thread, so getFlags self-posts-and-waits. The clean fix is a cordial thread-model
+   change — run the bootstrap such that getFlags is NOT on the FM while its load needs
+   the FM (e.g. drive GameGlobalInit from a context where the async load's producer
+   thread is free). This is a design task, not a patch.
+2. DOCUMENT FORMAT (downstream): cordial delivers `{"applicationSettings":{...}}` but
+   getFlags looks up the `ClientAppSettings` application group, absent from the doc.
+   Even with threading fixed, the lookup content must match. This is cordial's
+   long-open "which document/key" question — the answer is the engine wants the
+   ClientAppSettings *application group*, not a generic applicationSettings wrapper.
+
+### Function map for next session
+getFlags sub_2C5CAF2 | fetch sub_5FB512C/sub_5FB52B8 | sync sub_5FB3969 |
+async sub_5FB535B | extractor sub_2C5D182 | store sub_23539FC/qword_72893D8 |
+future-wait sub_65FA644/sub_23904A8 | FM thread sub_2339A1E ("FunctionMarshaller")
+qword_7081868 | marshal primitive sub_2339452 | StartupController singleton 0x70b3c20.
+
+The whole ABI/sync/futex layer beneath remains proven-correct. This is the last
+structural gap and it is a thread-model redesign, cleanly scoped above.
