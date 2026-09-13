@@ -458,3 +458,13 @@ do_futex's FUTEX_WAKE returns the *requested* count (`val`, up to INT_MAX for a
 broadcast) rather than the actual number woken, because FreeBSD `_umtx_op` WAKE
 does not report a count. Harmless for the mutex/cond/semaphore callers that
 ignore it (all seen here), but not Linux-faithful for any caller that uses it.
+
+### Force-state experiment (negative)
+CORDIAL_FORCE_STATE=<n> overwrites nativeEngineState_ before the init chain. Forcing
+1 (ReadyToBootstrap) lets retryInit pass but does NOT unblock the downstream
+GameGlobalInit — same hang. So a live `state == ReadyToBootstrap` check is not the
+gate. Caveat: forcing the flag late does not redo the settings-SUCCESS *processing*
+that would have initialised subsystems earlier, so this does not fully exonerate the
+verdict; it only rules out a late state-flag check. Three cheap decisive experiments
+now negative: /proc→linprocfs, pre-pump, force-state. The block is robustly inside
+GameGlobalInit's engine-init logic and needs a Linux baseline to isolate further.

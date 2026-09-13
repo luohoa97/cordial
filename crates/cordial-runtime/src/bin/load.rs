@@ -3555,6 +3555,28 @@ fn main() -> ExitCode {
                                                     read_state()
                                                 );
                                             }
+                                            // EXPERIMENT (CORDIAL_FORCE_STATE=<n>): overwrite
+                                            // nativeEngineState_ with <n> (1=ReadyToBootstrap). Decides
+                                            // whether the downstream GameGlobalInit block is a cascade
+                                            // from the FailedAppSettings(0xb) verdict: if forcing 1
+                                            // unblocks the chain, the verdict is the lever.
+                                            if let Some(n) = std::env::var("CORDIAL_FORCE_STATE")
+                                                .ok().and_then(|v| v.parse::<i32>().ok())
+                                            {
+                                                if let Some(jni) = lib.symbol("JNI_OnLoad") {
+                                                    let base = (jni as usize).wrapping_sub(0x22addd7);
+                                                    unsafe {
+                                                        let singleton = *((base + 0x70811c8) as *const usize);
+                                                        if singleton != 0 {
+                                                            let stateobj = *((singleton + 0x38) as *const usize);
+                                                            if stateobj != 0 {
+                                                                *((stateobj + 0x10) as *mut i32) = n;
+                                                                println!("  [state] FORCED to {n}");
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
 
                                         // Kicks the engine's initialisation once
