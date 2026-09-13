@@ -468,3 +468,15 @@ that would have initialised subsystems earlier, so this does not fully exonerate
 verdict; it only rules out a late state-flag check. Three cheap decisive experiments
 now negative: /proc→linprocfs, pre-pump, force-state. The block is robustly inside
 GameGlobalInit's engine-init logic and needs a Linux baseline to isolate further.
+
+### Named the block: `wait_until(lock, never())` / "Failed to await Condition"
+Disassembling the main thread's deepest engine frame (offset 0x277d2b0 → its
+callee chain to the futex) turned up the assert string
+`!wait_until(lock, never()) && "Failed to await Condition"`. So GameGlobalInit is
+sitting in a C++ `condition_variable::wait_until(lock, never())` on a Roblox
+"Condition" wrapper — an infinite wait (matches the `to=NULL` futex) for a
+cross-thread notify that never arrives. The producer that should notify is on a
+thread that never runs / never reaches the notify. Identifying that producer
+precisely needs the IDA db's real symbols (nearest-export names in robx.dis are
+misleading here) or a Linux baseline. Grep target for the next session:
+"Failed to await Condition" and the `wait_until`/`never()` Condition wrapper.
