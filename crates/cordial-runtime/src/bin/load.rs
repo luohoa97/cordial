@@ -709,6 +709,12 @@ extern "C" fn run_bootstrap() {
         );
     }
     if plan.settings_native != 0 {
+        // NOTE on the 3 string args: "ClientAppSettings" in the 1st or 2nd position
+        // makes nativeInitClientSettings return 1 (rejected); empty, or it in the
+        // 3rd position, returns 0 (accepted). It does NOT fix the getFlags deadlock
+        // (that is a FunctionMarshaller-thread race, not a document-key issue) — a
+        // build-timing-dependent success on the 3rd-position variant was a red
+        // herring. Left as the original accepted form.
         match linker::game_activity::init_client_settings(
             plan.settings_native as *mut std::ffi::c_void,
             &plan.settings,
