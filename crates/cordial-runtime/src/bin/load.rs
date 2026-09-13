@@ -4222,6 +4222,32 @@ fn main() -> ExitCode {
                                             }
                                         }
 
+                                        // nativeAppBridgeV2StartAppWithParams derefs the StartupController
+                                        // singleton (global 0x70b3c20 on 2.721; strings "initProtocols",
+                                        // "PlatformNativeAdsProtocol", "OpenTelemetry") which is created
+                                        // lazily by an async bootstrap task. If StartApp runs first it
+                                        // null-derefs it. Read-only poll (no memory write) until it exists,
+                                        // like the pre-retryInit state poll. CORDIAL_STARTUP_POLL_MS.
+                                        #[cfg(target_os = "freebsd")]
+                                        if let Some(ms) = std::env::var("CORDIAL_STARTUP_POLL_MS")
+                                            .ok().and_then(|v| v.parse::<u64>().ok())
+                                        {
+                                            if let Some(jni) = lib.symbol("JNI_OnLoad") {
+                                                let slot = (jni as usize).wrapping_sub(0x22addd7) + 0x70b3c20;
+                                                let start = std::time::Instant::now();
+                                                let mut val = 0usize;
+                                                while start.elapsed().as_millis() < ms as u128 {
+                                                    val = unsafe { *(slot as *const usize) };
+                                                    if val != 0 { break; }
+                                                    std::thread::sleep(std::time::Duration::from_millis(25));
+                                                }
+                                                println!(
+                                                    "  [startup] StartupController singleton after {}ms: {val:#x}",
+                                                    start.elapsed().as_millis()
+                                                );
+                                            }
+                                        }
+
                                         // And the call that delivers the surface.
                                         if let Some(f) = lib.symbol(
                                             "Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeV2StartAppWithParams",
