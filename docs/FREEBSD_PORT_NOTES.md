@@ -707,3 +707,24 @@ sub_278D8E0 | spawner sub_278C7D0 (<- initializeNativeCode) | StartupController 
 sub_23CD346/sub_2C54790 | singleton 0x70b3c20.
 
 Everything below this (ABI, sync, futex, pthread) remains proven-correct.
+
+### The StartupController is created by NativeActivity command 3 (can't be faked)
+Mapped to the bottom: android_main (sub_2C53602) runs the ALooper loop sub_2C54790,
+which calls sub_2C5894E each iteration — a NativeActivity command dispatcher:
+  switch(*(app_state+16)) { case 3: sub_2C589B2(app_state) -> ... -> sub_23CD346
+  (StartupController) }
+So the StartupController is created when the app thread's loop receives command 3
+(an APP_CMD_* lifecycle command) on its own ALooper command pipe. This confirms it
+CANNOT be replicated piecemeal from cordial: sub_2C54790 is the blocking main loop,
+and sub_2C5894E is a command dispatch over a properly-initialised app_state object
+that only android_main's own bootstrap builds. A blind code-call would need a
+hand-crafted app_state and would crash.
+
+CONCLUSION (final for this line of work): the ONLY correct fix is to run the engine's
+app thread bootstrap — let android_main (sub_2C53602) execute and drive its ALooper
+loop with the real NativeActivity command sequence (INIT_WINDOW etc.), instead of
+cordial driving the JNI natives directly. That is the cordial thread-model redesign,
+and it resolves both the StartupController crash and the getFlags deadlock at once.
+Complete map: android_main sub_2C53602 | loop sub_2C54790 (ALooper_pollOnce) |
+cmd dispatch sub_2C5894E (case 3) | sub_2C589B2 -> sub_2F35C72 -> sub_23CD346
+StartupController 0x70b3c20 | app thread sub_278D8E0 | spawner sub_278C7D0.
