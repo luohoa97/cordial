@@ -3845,6 +3845,8 @@ fn main() -> ExitCode {
                                         // the real FM to service the fetch. Hacky test of that hypothesis.
                                         // Base = symbol("JNI_OnLoad") - 0x22addd7 (2.721-specific offsets).
                                         #[cfg(target_os = "freebsd")]
+                                        let mut hijack_restore: Option<(usize, usize)> = None;
+                                        #[cfg(target_os = "freebsd")]
                                         if std::env::var_os("CORDIAL_HIJACK_MARSHALLER").is_some() {
                                             if let Some(jni) = lib.symbol("JNI_OnLoad") {
                                                 let base = (jni as usize).wrapping_sub(0x22addd7);
@@ -3852,10 +3854,11 @@ fn main() -> ExitCode {
                                                 // global; the engine only compares it by value.
                                                 unsafe {
                                                     extern "C" { fn pthread_self() -> usize; }
-                                                    let slot = (base + 0x7081868) as *mut usize;
-                                                    let old = *slot;
+                                                    let slot = base + 0x7081868;
+                                                    let old = *(slot as *const usize);
                                                     let me = pthread_self();
-                                                    *slot = me;
+                                                    *(slot as *mut usize) = me;
+                                                    hijack_restore = Some((slot, old));
                                                     println!("  [hijack] qword_7081868: {old:#x} -> {me:#x} (self)");
                                                 }
                                             }
@@ -3863,6 +3866,17 @@ fn main() -> ExitCode {
 
                                         if !globals_early {
                                             call_globals(&lib, "late");
+                                        }
+
+                                        // Restore the real FunctionMarshaller handle immediately, so ONLY
+                                        // GameGlobalInit ran inline and every later marshalled call routes to
+                                        // the real FM thread. A left-overwritten handle misroutes subsystem
+                                        // inits — e.g. the AppBridge singleton at 0x70b3c20, whose absence
+                                        // null-derefs nativeAppBridgeV2StartAppWithParams.
+                                        #[cfg(target_os = "freebsd")]
+                                        if let Some((slot, old)) = hijack_restore {
+                                            unsafe { *(slot as *mut usize) = old; }
+                                            println!("  [hijack] restored qword_7081868 -> {old:#x}");
                                         }
 
                                         // EXPERIMENTAL, `CORDIAL_POST_BEFORE_BRIDGE=<ms>`:

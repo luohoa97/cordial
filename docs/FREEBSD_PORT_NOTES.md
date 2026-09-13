@@ -604,3 +604,21 @@ startup (frame #1 is a cordial trampoline, likely a worker/callback). Different 
 class from the deadlock — a null object during app bring-up. This is the next
 thing to chase; we are now inside the actual app startup, far past the black-screen
 wall.
+
+### restore-after + next crash (AppBridge singleton null)
+The hijack now RESTORES qword_7081868 immediately after call_globals (only
+GameGlobalInit runs inline; later marshalled work routes to the real FM thread).
+GameGlobalInit still completes, DataModel/TaskScheduler still start — so the new
+crash is NOT a hijack side-effect.
+
+New crash: `nativeAppBridgeV2StartAppWithParams` null-derefs the AppBridge singleton
+at global 0x70b3c20 (`mov 0x18(%rax)` with rax=*(0x70b3c20)==0, in sub_250667E+0x82).
+That singleton is created by sub_23CD346 (its only writer), reached via a chain that
+dead-ends at sub_278D8E0 — i.e. it's a lazy get-or-create (call_once guard
+byte_70B3958) triggered by a getter that something must call before StartApp. On
+FreeBSD that trigger never fires, so StartApp derefs null. cordial calls
+nativeAppBridgeV2InitWithParams ("app bridge initialised") but that does not
+init this singleton. Next: find the getter that triggers sub_23CD346 and why it
+isn't reached (likely another thread/event cordial doesn't drive, same family as the
+FunctionMarshaller). We are now well inside app startup — DataModel + TaskScheduler
+running — one null-subsystem away from a first frame.
