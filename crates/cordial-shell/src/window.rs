@@ -1053,19 +1053,54 @@ fn try_launch(
         });
     }
 
+    // **The launcher outlives its own window for as long as a client is
+    // running, and without this the client dies when the launcher does.**
+    //
+    // `launch::spawn` gives the child piped stdout and stderr so the crash page
+    // can quote what it printed. That pipe's read end belongs to this process.
+    // Close the launcher window and, with no other window left, the
+    // `GtkApplication` quits, this process exits, both read ends close -- and
+    // the very next `println!` in `cordial-run` panics with
+    // `failed printing to stdout: Broken pipe (os error 32)`. The client is
+    // narrating constantly, so the window between the two is milliseconds.
+    //
+    // Measured on 2026-09-13 with a two-binary reproduction of exactly this
+    // shape -- a Rust parent that pipes and pumps, a Rust child that prints on
+    // a timer -- and with the control that decides it: an otherwise identical
+    // child that never prints survives the same parent exiting. The panic
+    // message above is quoted from the child's captured stderr, not inferred.
+    //
+    // The comment further down about quitting the launcher being "the ordinary
+    // case" under ADR-012 described an intention, not a behaviour. It is now
+    // true: the hold keeps this process alive with no windows, so the pipes
+    // stay open, and the guard is dropped by the child watch below when the
+    // client actually exits, at which point the application quits by itself.
+    //
+    // This is not a Flatpak bug, though that is where it was reported. Nothing
+    // in the mechanism is sandbox-specific -- a `flatpak run` sandbox keeps
+    // orphaned children alive perfectly well, measured the same day with a
+    // marker process that outlived the sandbox's own main process.
+    let hold = window.application().map(|app| app.hold());
+
     let window = window.clone();
     let pid = glib::Pid(instance.pid() as i32);
     glib::child_watch_add_local(pid, move |_, wait_status| {
+        // Named rather than left to the closure's drop, because *when* it is
+        // released is the whole point: the application must not quit before
+        // the crash page below has been put on screen.
+        let _released_once_this_client_is_gone = &hold;
         if !dialog_closed.replace(true) {
             starting.close();
         }
-        // The launcher being gone is not a crash to report and there is nothing
-        // left to be transient for. Under ADR-012 quitting the launcher while a
-        // client runs is the ordinary case, so a closed launcher must not pop a
-        // crash page on top of a desktop the user went back to. The poll this
-        // replaces returned `Break` here; a child watch has no equivalent, and
-        // it does not need one -- the source removes itself once the child has
-        // exited, and until then the only thing this check costs is the branch.
+        // A closed launcher window must not pop a crash page on top of the
+        // desktop the user went back to. Under ADR-012 closing it while a
+        // client runs is the ordinary case -- and note that this now tests the
+        // *window*, not the process: the hold above means the launcher is
+        // still here, deliberately, holding the client's pipes open. The poll
+        // this replaces returned `Break` here; a child watch has no
+        // equivalent, and it does not need one -- the source removes itself
+        // once the child has exited, and until then the only thing this check
+        // costs is the branch.
         if !window.is_visible() {
             return;
         }
