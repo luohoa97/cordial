@@ -849,25 +849,43 @@ fn requested_resolution() -> (u32, u32) {
 
 /// Every monitor GDK currently knows about, as `cordial_runtime::refresh::Output`.
 ///
-/// This is `cordial_shell::refresh_watch::outputs` in spirit but not in fact:
-/// that function marks an output `current` by asking `gdk::Display::
-/// monitor_at_surface` about the specific `gtk::Window` the caller passes it,
-/// and there is no such window reachable from here. The engine's own host
-/// window is built and kept entirely inside `android::wayland::WaylandWindow`
-/// -- a private field (`HostWindowCell`) with no accessor -- and `android/**`
-/// was out of scope for the change that wired this up. So every `Output` below
-/// carries `current: false`; see `wire_refresh_rate` for what that means for
-/// the rate actually reported as current.
+/// **This used to say no window was reachable from here, and that is now
+/// wrong.** `android::wayland::WaylandWindow::window()` was added afterwards
+/// specifically to unblock this function -- its own doc comment in
+/// `android/wayland.rs` names `wire_refresh_rate` by name as one of the two
+/// callers waiting on it -- and `android::wayland::current()` is already
+/// called elsewhere in this file (see the asset and looper call sites above),
+/// so reading it here follows the same thread rule that accessor documents:
+/// safe because everything that reaches the window runs on the thread that
+/// called `open`, which is the same thread `wire_refresh_rate`'s caller pumps.
+/// The `monitor_at_surface` lookup itself is the identical pattern
+/// `cordial_shell::refresh_watch::outputs` already uses and this project has
+/// run, not a new one invented here.
 ///
-/// `gdk::Display::default()` answers regardless of that gap, because GTK/GDK
-/// is initialised once, process-wide, as a side effect of the engine's window
-/// opening (`cordial_shell::host_window::init_wayland`, called from inside
-/// `wayland::open`) -- it does not itself need the window object, only that
-/// something in the process has already brought GDK up. Empty before that has
-/// happened, which `refresh::supported_from`/`current_for` already treat as
-/// "nothing plausible is known" rather than a fault.
+/// **UNVERIFIED beyond that:** this has not been built or run -- see this
+/// task's brief for why -- so treat the "current" it now marks as a claim,
+/// not a result, until something has watched `nativePassCurrentDisplayRefreshRate`
+/// actually fire on a multi-monitor machine.
+///
+/// `gdk::Display::default()` answers regardless of whether the window exists
+/// yet, because GTK/GDK is initialised once, process-wide, as a side effect
+/// of the engine's window opening (`cordial_shell::host_window::init_wayland`,
+/// called from inside `wayland::open`) -- it does not itself need the window
+/// object, only that something in the process has already brought GDK up.
+/// Empty before that has happened, which `refresh::supported_from`/
+/// `current_for` already treat as "nothing plausible is known" rather than a
+/// fault.
 fn refresh_outputs() -> Vec<cordial_runtime::refresh::Output> {
     let Some(display) = gtk4::gdk::Display::default() else { return Vec::new() };
+
+    // The monitor the engine's own window is mostly on, if the window exists
+    // and has been realised yet -- both ordinary things to not have yet at
+    // the very first call, which `None` here already falls through to
+    // `current_for`'s documented single-candidate fallback for.
+    let current_monitor = cordial_runtime::android::wayland::current()
+        .and_then(|w| w.window().surface())
+        .and_then(|s| display.monitor_at_surface(&s));
+
     let monitors = display.monitors();
     (0..monitors.n_items())
         .filter_map(|i| monitors.item(i))
@@ -878,7 +896,12 @@ fn refresh_outputs() -> Vec<cordial_runtime::refresh::Output> {
             // because the Cargo cycle noted in its header leaves it no other
             // choice, and load.rs is on the correct side of that edge.
             hz: cordial_runtime::refresh::hz_from_millihertz(m.refresh_rate()),
-            current: false,
+            // `gdk::Monitor` is a GObject wrapper, so this compares the
+            // underlying pointer -- "the same monitor" is what that means
+            // here, matching `refresh_watch.rs`'s identical comparison for
+            // the identical reason: two identical monitors side by side must
+            // not be confused for one.
+            current: current_monitor.as_ref() == Some(&m),
         })
         .collect()
 }
@@ -890,28 +913,24 @@ fn refresh_outputs() -> Vec<cordial_runtime::refresh::Output> {
 /// project has looked at and neither had ever been called -- see
 /// `cordial_runtime::refresh` for the policy this follows.
 ///
-/// **What this does not achieve.** The design in `refresh.rs` and
-/// `refresh_watch.rs` reports "current" as the output the engine's own window
-/// is *mostly on*, tracked as the window moves and re-announced through
-/// `worth_announcing`. That needs a live `gtk::Window` to call `watch` on, and
-/// -- see `refresh_outputs` -- none is reachable from this file. What this
-/// does instead: send the real supported-rate list at startup and on every
-/// hotplug, and send a "current" rate chosen by `current_for`'s own documented
-/// fallback (the first plausible rate, when nothing is marked current) rather
-/// than inventing a second heuristic here. On a single-monitor machine that
-/// fallback is exact, because there is only one candidate. On a multi-monitor
-/// one -- this is true of the machine this was tested on -- it is a real rate
-/// of a real attached output, not a fabricated number, but it is **not**
-/// verified to be the output the window actually landed on, and must not be
-/// read as though it were.
+/// **This used to say "current" could only be `current_for`'s single-candidate
+/// fallback dressed up as a real answer, because nothing here could reach the
+/// engine's window. That is no longer true** -- `refresh_outputs` now asks
+/// `monitor_at_surface` about the engine's actual window (see that function's
+/// own comment) -- but it is worth recording what the old design cost while it
+/// stood: on a machine with two monitors running two different rates, this
+/// function used to refuse to name a current rate at all, forever, because
+/// nothing here could tell which output the window was on. If the picker this
+/// investigation was opened over gates on the engine having been told a
+/// current rate, that silence is one plausible reason it never appeared here
+/// on exactly that kind of machine while it did under a host that always
+/// answers `nativePassCurrentDisplayRefreshRate` unconditionally at startup.
 ///
-/// Window-crosses-a-boundary tracking specifically -- the case
-/// `refresh_watch.rs`'s own header calls out -- is therefore not wired by this
-/// change. It needs a `pub fn` on `android::wayland::WaylandWindow` (or on
-/// `android::WindowHandle`) handing back the `adw::Window`
-/// `cordial_shell::host_window::HostWindow::window()` already exposes;
-/// `android/**` was off limits to the change that added this function, so
-/// that accessor does not exist yet.
+/// **UNVERIFIED**: this has not been built or run -- see `refresh_outputs`'s
+/// own comment and this task's brief for why. The measurement that would
+/// confirm it: build, launch with two monitors attached at different rates,
+/// and look for `refresh: nativePassCurrentDisplayRefreshRate` in the log
+/// where before there was only `refresh: nativePassSupportedRefreshRates`.
 fn wire_refresh_rate(lib: linker::Library) {
     let supported_native = lib.symbol(
         "Java_com_roblox_engine_jni_NativeGLInterface_nativePassSupportedRefreshRates",
@@ -948,33 +967,15 @@ fn wire_refresh_rate(lib: linker::Library) {
                     Err(e) => println!("  refresh: nativePassSupportedRefreshRates failed: {e}"),
                 }
             }
-            // Only when there is no ambiguity about which output that is.
-            //
-            // Nothing reachable from here holds the engine's window, so no
-            // `Output` built above can carry `current: true`, and
-            // `current_for`'s fallback picks the first plausible rate -- which
-            // is GDK's enumeration order, not where the window is. On the
-            // machine this was written on that is a coin flip between 49.998
-            // and 60.002 Hz.
-            //
-            // Sending it anyway would be telling the engine something specific
-            // and unverified, in the one area AGENTS.md is most emphatic about:
-            // with input flowing the frame rate is a hard FIFO vsync lock to
-            // the output's refresh, so a client that names the wrong output has
-            // asked the engine to schedule against a display it is not on. The
-            // supported list above is complete and true whatever the window is
-            // doing, and goes regardless; this one waits.
-            //
-            // What unblocks it is small and named: an accessor on
-            // `android::wayland::WaylandWindow` handing back the `adw::Window`
-            // that `cordial_shell::host_window::HostWindow::window()` already
-            // exposes, so `monitor_at_surface` can answer properly.
-            let unambiguous = supported.len() == 1;
-            let current = if unambiguous {
-                cordial_runtime::refresh::current_for(&outputs)
-            } else {
-                None
-            };
+            // `refresh_outputs` now marks the monitor the engine's window is
+            // mostly on via `monitor_at_surface` (see that function's own
+            // comment), so this no longer needs to refuse a "current" answer
+            // just because more than one output exists -- that guard existed
+            // only because every `Output` used to arrive with `current: false`
+            // unconditionally. Before the window is realised `current_monitor`
+            // is `None` for every output and `current_for` falls back to the
+            // first plausible rate, same as the single-output case always got.
+            let current = cordial_runtime::refresh::current_for(&outputs);
             if cordial_runtime::refresh::worth_announcing(previous_current.get(), current) {
                 if let Some(hz) = current {
                     match linker::game_activity::pass_current_refresh_rate(current_native, hz) {
@@ -982,12 +983,6 @@ fn wire_refresh_rate(lib: linker::Library) {
                         Err(e) => println!("  refresh: nativePassCurrentDisplayRefreshRate failed: {e}"),
                     }
                 }
-            } else if !unambiguous && previous_current.get().is_none() {
-                println!(
-                    "  refresh: {} outputs differ and nothing here knows which the window is on; \
-                     not naming a current rate",
-                    supported.len()
-                );
             }
             previous_current.set(current);
         }
