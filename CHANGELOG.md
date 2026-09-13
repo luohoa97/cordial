@@ -7,9 +7,21 @@ that was tested says what it was tested with, and a claim that was not is marked
 `INFERRED`. Several entries are retractions of earlier claims, because that is
 what the history contains and hiding it would make the rest less trustworthy.
 
-The version in `Cargo.toml` is stamped into the window title by
-`crates/cordial-shell/build.rs` via `git describe --tags`. A release reads
-`Cordial 0.6.0`; a development build reads `Cordial 0.6.0-14-g8db7100`.
+The window title is `Cordial <version> (<commit>)` -- the version from
+`Cargo.toml`, the commit from `git rev-parse --short=9`, stamped at compile
+time by `crates/cordial-shell/build.rs`. A release reads `Cordial 0.14.0
+(c572124a1)`; a build from a source drop with no git reads `Cordial 0.14.0`,
+and `-dirty` on the commit means the tree had uncommitted changes.
+
+**This used to say `git describe --tags`, and that was wrong** -- it made the
+version and the commit two spellings of one fact when they are two facts, and
+a tree whose manifest said 0.11.0 displayed the *previous* release's number.
+See `crates/cordial-shell/src/version.rs`.
+
+**Entries here stop at 0.6.0.** Everything from 0.7.0 onward is written up in
+`docs/releases/`, one file per release, addressed to somebody who has just
+installed that version rather than to whoever wrote it. This file is kept for
+the history it holds, not because it is current.
 
 **There was never a 0.1.0.** The first version this project gave itself was
 0.2.0, in `8db7100`, once there was something a person could sign into. The 178
