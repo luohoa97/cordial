@@ -21,46 +21,88 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
-## Open: the AppImage is broken and the release is gated on it, 2026-09-13
+## Open: the AppImage's base moved and its closure is now computed, measured 2026-09-13
 
-**The shipped AppImage does not start on a large fraction of hosts, and there
-are two independent reasons, not one.**
+The previous entry here described two independent defects and a next step of
+"check WebKitGTK builds on Ubuntu 24.04 and stop if it fails". Both defects
+are now fixed and all four measurements the previous entry asked for have
+been taken, against `Cordial-0.13.2-47-g6ff10ca-x86_64.AppImage` (86MB).
 
-First, the build base is Fedora 44. Eighteen bundled libraries carry
-`GLIBC_2.43` symbol versions, so any host older than that refuses them --
-`version 'GLIBC_2.43' not found` under `~/.cache/appimage-run/`. glibc is
-backward compatible and not forward compatible, so the base must be no newer
-than the oldest host supported. The declared floor is 2.39.
+**WebKitGTK builds on Ubuntu 24.04.** `libwebkitgtk-6.0-dev` 2.52.6 is on
+`noble-updates/universe`; the workspace, including the `webview` feature,
+built clean in the container in 2m55s. That was the mandatory precondition
+and it held, so the base move went ahead. See ADR-032 for why 24.04 rather
+than the usual answer of 22.04, and why the `gtk4` Cargo feature had to come
+down from `v4_20` to `v4_12` first to make any Ubuntu base usable at all.
 
-Second, thirteen libraries are simply absent from the image, dropped by
-linuxdeploy's excludelist, which assumes they are present on every host. They
-are not.
+**The second defect -- thirteen libraries dropped by linuxdeploy's own
+excludelist -- had no actual fix in `build-appimage.sh` before this pass**,
+only a measurement against the Fedora build recorded in this file's previous
+version. Building on Ubuntu without one produced an AppImage that failed
+outright on plain `ubuntu:24.04`: `cordial-shell: error while loading shared
+libraries: libharfbuzz.so.0: cannot open shared object file`, because
+linuxdeploy printed `Skipping deployment of blacklisted library
+.../libharfbuzz.so.0` while bundling it -- an assumption true of a stock
+desktop and false of the minimal container this AppImage is meant to run on.
 
-**A gate now exists and catches the first of these.** `build-appimage.sh` runs
-`packaging/check-glibc-floor.sh` over every ELF in the AppDir before
-`appimagetool`, not just the two Cordial binaries the release workflow checked.
-Against the broken artefact it reads 182 ELF files, 18 over floor, exit 1.
+**The fix walks the closure instead of trusting that assumption.**
+`build-appimage.sh` now reads every bundled ELF's `DT_NEEDED` entries with
+`patchelf --print-needed`, and copies in from the build host anything missing
+from the AppDir that is not on an explicit never-bundle list, to a fixed
+point. Measured: thirteen libraries completed in one pass (`libharfbuzz.so.0`
+and its own dependants -- `libfreetype`, `libfontconfig`, `libX11`,
+`libwayland-client`, and others down that chain); a second pass completed
+zero.
 
-**What unblocked moving the base** was finding the version floor was wrong:
-`gtk4` was pinned at `v4_20` while the code needs only 4.12
-(`CssProvider::load_from_string`, `ToplevelState::SUSPENDED`) and libadwaita
-1.5. That makes Ubuntu 24.04 -- GTK 4.14, libadwaita 1.5, glibc 2.39, exactly
-the declared floor -- usable as a build base for the first time. See ADR-032.
+**The first version of that fix would have shipped a worse bug than the one
+it closed.** It filled the closure for `libc.so.6` and `ld-linux-x86-64.so.2`
+too -- both are genuinely `DT_NEEDED` by `cordial-shell`/`cordial-run` and
+were genuinely missing from the AppDir. But `cordial-shell` carries `RUNPATH
+$ORIGIN/../lib` (`readelf -d`, checked before shipping), so a bundled
+`libc.so.6` in `usr/lib` would be found by the dynamic linker ahead of the
+host's, while the *interpreter* stays the host's regardless -- fixed at link
+time in `PT_INTERP`, loaded by the kernel before RUNPATH exists to consult.
+A mismatched loader/libc pair is exactly the failure class the bundled-loader
+prototype below was rejected for, arrived at by a different door. Caught with
+`readelf -d` inside the container before any host test, not after. The
+never-bundle list now excludes the whole glibc/loader/compiler-runtime family
+(`libc`, `libm`, `libdl`, `libpthread`, `librt`, `libresolv`, `libutil`,
+`libnsl`, `libanl`, `libcrypt`, `ld-linux-x86-64.so.2`, `libstdc++`,
+`libgcc_s`) alongside the graphics stack (`libEGL.so.1 libGLX.so.0 libGL.so.1
+libOpenGL.so.0 libGLdispatch.so.0 libgbm.so.1 libdrm.so.2 libGLESv2.so.2`) --
+all of them present on any host with a working dynamic linker at all, which
+the glibc-symbol floor below already relies on regardless.
 
-**A bundled-loader prototype worked and was abandoned.** It printed
-`Cordial 0.13.2 (323afa2)` on `debian:12-slim` (glibc 2.36). It is the wrong
-answer because `PT_INTERP` is baked in and WebKitGTK execs its helper processes
-(`WebKitWebProcess`, `WebKitNetworkProcess`, `WebKitGPUProcess`) by absolute
-path -- so a loader shim at the AppRun boundary leaves those broken while every
-top-level smoke test passes. That failure shape is worse than the bug.
+**All four measurements**, against the corrected artefact:
 
-**Not verified**, and the next step: that WebKitGTK builds on Ubuntu 24.04 at
-all. Check that first and stop if it fails. Compute the bundle closure rather
-than hardcoding it, and keep the graphics stack out of the bundle --
-`libEGL.so.1 libGLX.so.0 libGL.so.1 libOpenGL.so.0 libGLdispatch.so.0
-libgbm.so.1 libdrm.so.2 libGLESv2.so.2` come from the host or nothing renders.
-Prove the result by starting it in `debian:12-slim`, `ubuntu:24.04` and
-something current, and paste what each printed.
+1. The glibc-floor gate over the whole AppDir: 149 ELF files checked (136
+   before the closure fix added thirteen), every one `within GLIBC_2.39`,
+   `check-glibc-floor.sh` exit 0.
+2. `ubuntu:24.04` (glibc 2.39, exactly the floor): `--appimage-extract-and-run
+   --diagnostics` printed `Cordial   0.13.2 (6ff10ca)`, exit 0.
+3. `fedora:44` (glibc 2.43): same banner, exit 0.
+4. `debian:12-slim` (glibc 2.36, below the floor), the control: refused to
+   start -- `version 'GLIBC_2.39' not found` against `libc.so.6`, repeated per
+   bundled library needing it, exit 1. The plain version-mismatch message the
+   floor claim predicts, not a confusing one.
+
+**A bundled-loader prototype worked earlier and was abandoned**, for a
+different reason than the near-miss above. It printed `Cordial 0.13.2
+(323afa2)` on `debian:12-slim` (glibc 2.36). It is still the wrong answer
+because WebKitGTK execs its helper processes (`WebKitWebProcess`,
+`WebKitNetworkProcess`, `WebKitGPUProcess`) by absolute path, each carrying
+its own `PT_INTERP` -- a loader shim at the AppRun boundary only ever
+intercepts the first process, leaving those broken while every top-level
+smoke test passes. That failure shape is worse than the bug it fixes.
+
+**Still not verified: the web view.** Ubuntu's `libwebkitgtk-6.0.so` bakes in
+a single directory for both the helper processes and the injected bundle,
+`/usr/lib/x86_64-linux-gnu/webkitgtk-6.0`, where Fedora's split the two.
+`AppRun`'s bwrap binds still target the Fedora paths and were not re-measured
+against the Ubuntu-built library for lack of a display in the containers this
+pass used -- none of the four measurements above exercises it, since a
+headless container never gets far enough for WebKitGTK to spawn a process.
+See ADR-032.
 
 **NixOS is a separate thing and was misdiagnosed in public.** An AppImage fails
 there because there is no FHS -- no `/lib64/ld-linux-x86-64.so.2` for the
