@@ -2010,6 +2010,35 @@ fn main() -> ExitCode {
                 }
             }
 
+            // EXPERIMENT (CORDIAL_SET_FLAGS_LOADED=1): the engine gates
+            // TaskScheduler creation on a single "flags loaded" global byte
+            // (VA 0x75a8250 on 2.721): `cmpb $0,0x75a8250; jne ok; <throw
+            // "Can't initialize the TaskScheduler before flags have been
+            // loaded">`. That byte is set to 1 legitimately by the FFlag parse
+            // routine (log markers `parse_flag_begin`/`set_flag_filters_end`,
+            // writer at 0x2c2bfb6). On this bring-up the engine's app thread
+            // reaches TaskScheduler init before that parse has set the byte, so
+            // the engine aborts (RBXCRASH FatalRuntimeError). Nothing ever
+            // clears the byte, so setting it to 1 up front — before
+            // initializeNativeCode spawns the app thread — satisfies the gate
+            // without racing. base = JNI_OnLoad - 0x22addd7 (2.721 offsets).
+            // ADR-001: writes engine memory, so compiled in ONLY under
+            // `unsafe-experiments`; the shipped binary has no such write path.
+            #[cfg(feature = "unsafe-experiments")]
+            if std::env::var_os("CORDIAL_SET_FLAGS_LOADED").is_some() {
+                if let Some(jni) = lib.symbol("JNI_OnLoad") {
+                    let base = (jni as usize).wrapping_sub(0x22addd7);
+                    // SAFETY: single byte write to a known engine global the
+                    // engine only ever compares against zero.
+                    unsafe {
+                        let slot = (base + 0x75a8250) as *mut u8;
+                        let old = *slot;
+                        *slot = 1;
+                        println!("  [flags-loaded] byte@0x75a8250: {old} -> 1 (TaskScheduler gate pre-satisfied)");
+                    }
+                }
+            }
+
             if opt.game_activity {
                 let skip_agdk = std::env::var_os("CORDIAL_SKIP_AGDK").is_some();
                 let native = if skip_agdk {
@@ -4267,12 +4296,16 @@ fn main() -> ExitCode {
                                                 let Some(jni) = lib.symbol("JNI_OnLoad") else { return "(no base)".to_string(); };
                                                 let base = (jni as usize).wrapping_sub(0x22addd7);
                                                 unsafe {
-                                                    let eng = *((base + 0x70811c8) as *const usize);
-                                                    if eng == 0 { return "engine=null".to_string(); }
-                                                    let b = eng as *const u8;
+                                                    let sing = *((base + 0x70811c8) as *const usize);
+                                                    if sing == 0 { return "singleton=null".to_string(); }
+                                                    let b = sing as *const u8;
                                                     let f0 = *b; let f1 = *b.add(1); let f2 = *b.add(2);
-                                                    let s = *(b.add(16) as *const i32);
-                                                    format!("engine={eng:#x} [0]={f0} [1]={f1} [2]={f2} state[16]={s}")
+                                                    // nativeEngineState_ = *(*(singleton+0x38))+0x10  (verified;
+                                                    // 1=ReadyToBootstrap, 0xb=FailedAppSettings). The direct
+                                                    // singleton+0x10 read earlier was junk (skipped the +0x38 hop).
+                                                    let stateobj = *((sing + 0x38) as *const usize);
+                                                    let est = if stateobj == 0 { None } else { Some(*((stateobj + 0x10) as *const i32)) };
+                                                    format!("singleton={sing:#x} bytes[0..3]={f0},{f1},{f2} stateobj={stateobj:#x} nativeEngineState_={est:?}")
                                                 }
                                             };
                                             println!("  [agdk-early] before: {}", read_state());
