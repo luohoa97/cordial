@@ -1090,3 +1090,39 @@ healthy (load <1, 10 GB free, no leaks), so this is the engine's threading, not 
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_013BsKoQtrUtDDqCD51r5Uxy
+
+---
+
+## Session N+1 (unification): ALL the flakiness is ONE root — async TaskScheduler jobs don't reliably run on FreeBSD
+
+The bootstrap fails at a *different random point every run*, and they are the same bug:
+- GameGlobalInit hangs (getFlags awaits a producer job that never runs)
+- retryInit ASSERTION: nativeEngineState_ stuck at 2 instead of advancing to 1/0xb (the
+  state-advance job didn't run)
+- HardAssert (EngineModule not found) — a module-registration job hadn't run yet
+- resume hangs (a resume-path job never completes)
+- render stalls at ~5 frames (the per-frame render job stops being serviced)
+
+Common cause, confirmed by DTrace+IDA this session: the engine's "RBX Worker" TaskScheduler
+threads park on a lock-free work-stealing eventcount (sub_2781D90 → sub_2784960, futex
+WAIT_BITSET at sub_2779820) and the async jobs queued during bootstrap are not reliably
+picked up / the workers spin on expired-deadline waits (op=15 ETIMEDOUT ~340k/s). Whichever
+job loses the race that run is the failure you see. The marshaller hijack "fixes" GlobalInit
+by running it inline, but it is itself a timing race that now segfaults at full speed
+(reaches render cleanly only under lldb's slower timing). Longer CORDIAL_STATE_POLL_MS does
+not help because a *different* job is the one that stalls next run.
+
+So this is NOT four separate walls (SIGSEGV / flags / StartupController / render) plus flaky
+bootstrap — it is one: **the FreeBSD futex/scheduler mapping does not give the engine's
+TaskScheduler reliable job hand-off, so async engine work runs only sometimes.** The
+earlier per-symptom fixes (flags-loaded byte, StartupController call, resume) each removed a
+*deterministic* blocker and are correct; what remains is this one *nondeterministic* root.
+
+The fix has to make the worker eventcount hand-off reliable on FreeBSD — either the futex
+WAIT_BITSET/WAKE_BITSET → _umtx_op mapping (verify WAKE_PRIVATE actually wakes
+WAIT_UINT_PRIVATE waiters for the eventcount's exact usage, and that the bitset being
+dropped never loses a targeted wake), or the worker parking itself. This needs a *stable*
+repro to instrument job push vs pickup, which the flakiness currently denies — the only
+reliable-ish run this session was under lldb (its overhead wins the race). A minimal
+standalone futex WAIT_BITSET/WAKE_BITSET ping-pong test against _umtx_op (outside the engine)
+is the fastest way to prove or clear the mapping without fighting the 1-in-5 boot.
