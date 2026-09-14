@@ -933,3 +933,52 @@ home/in-game render path (not WebView) has something to draw.
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_013BsKoQtrUtDDqCD51r5Uxy
+
+---
+
+## Session N+1 (cont.): DTrace cracks the render stall — it is a busy-spin on an unsatisfied predicate, and the futex layer must NOT be touched
+
+`procstat -kk` showed every thread in a umtx/poll wait and read as "all idle" — WRONG.
+DTrace showed the opposite: the process **busy-spins ~3 cores**:
+- one thread ~1.4M `poll()`/s inside `cordial_runtime::android::looper::looper_poll_once`
+  (the ALooper free-run; this engine polls timeout=0 millions/s by design and is capped
+  only after 120 presents — see BACKOFF_AFTER_PRESENTS, so during a 0-present startup it
+  spins uncapped, which is expected for this engine).
+- two engine threads ~340k `_umtx_op`/s each. The return distribution is decisive:
+  `op=15 (WAIT_UINT_PRIVATE) ret=-1 errno=60 (ETIMEDOUT)`. The futex trace shows the
+  WAIT_BITSET absolute deadline sits ~2-3s in the PAST and is FIXED while the clock
+  advances, `val` fixed — i.e. a `while(!pred) wait_until(fixed_deadline)` loop whose
+  predicate never becomes true (same class as the getFlags wall), so the expired wait
+  returns instantly and it spins.
+- the render/GL thread is blocked in `xcb_wait_for_reply64` — an X11 roundtrip via the
+  NVIDIA Vulkan driver.
+
+The engine DOES read the clock correctly (DTrace: `bionic_clock_gettime` ~920k/s → real
+FreeBSD CLOCK_MONOTONIC), so it is NOT a lagging-clock bug; the deadline is stale simply
+because that wait has been pending seconds waiting for `pred`.
+
+**Two futex-layer fixes were tried and BOTH regress the bootstrap — do not retry:**
+1. FreeBSD→Linux errno translation on the futex return (ETIMEDOUT 60→110, EAGAIN 35→11).
+   Theoretically correct (bionic checks Linux errno), committed as df334fb, but it made
+   `resume` hang and the port stopped reaching render → reverted (fbcd9ef).
+2. A spin-cap (200µs sleep on an already-elapsed ABSTIME deadline, errno untouched). Also
+   regressed bootstrap to no-render.
+The fragile bootstrap **relies** on these timed waits spinning fast for its timing races
+(the flag-parser locks mutexes tens of thousands of times racing the main thread — see
+bm_lookup's lock-free comment). So the fix is NOT at the futex layer.
+
+**The real remaining root:** identify the predicate the render-time spin waits on (the
+condvar addr ends ...328c; the spinning libroblox VAs are ~0x2780110 / 0x2783950 /
+0x2784a4e / 0x27798ef with base = JNI_OnLoad − 0x22addd7) and make it true — the same
+"engine waits for work that never runs on this port" shape as getFlags/flags-loaded,
+which was cracked by finding the exact global the engine gated on. This one needs the
+decompiler (IDA, ~/libroblox_2.721.so.i64) on those functions. Also intermittent:
+`HardAssert (EngineModule not found)` early in bootstrap (timing).
+
+Tooling proven this session: FreeBSD **DTrace** (`ustack()` resolves even without frame
+pointers — this is what cracked the stall), and the dev-control socket `info`/`screenshot`
+verbs (live present count + real swapchain frame capture, bypassing the X11 pixmap which a
+Vulkan swapchain leaves blank).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013BsKoQtrUtDDqCD51r5Uxy
