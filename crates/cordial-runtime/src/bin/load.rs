@@ -4871,6 +4871,28 @@ fn main() -> ExitCode {
                                                     });
                                                 }
 
+                                                // Unbuffered present heartbeat: prints the real
+                                                // vkQueuePresentKHR count to stderr every second so the
+                                                // render trajectory is visible without the dev socket
+                                                // (which suppressed presents in testing) or a clean exit
+                                                // (which the run timeout kept cutting off).
+                                                if std::env::var_os("CORDIAL_HEARTBEAT").is_some() {
+                                                    let dur = if secs == 0 { 3600 } else { secs };
+                                                    std::thread::spawn(move || {
+                                                        let start = std::time::Instant::now();
+                                                        let mut last = u64::MAX;
+                                                        while start.elapsed().as_secs() < dur {
+                                                            let p = cordial_runtime::android::glcount::QUEUE_PRESENT
+                                                                .load(std::sync::atomic::Ordering::Relaxed);
+                                                            if p != last {
+                                                                eprintln!("[heartbeat] t={}s presents={}", start.elapsed().as_secs(), p);
+                                                                last = p;
+                                                            }
+                                                            std::thread::sleep(std::time::Duration::from_millis(1000));
+                                                        }
+                                                    });
+                                                }
+
                                                 cordial_runtime::android::looper::pump(
                                                     std::time::Duration::from_secs(secs),
                                                     Some(handle),

@@ -1052,3 +1052,41 @@ work). Bootstrap flakiness (foreground reached ~1 run in 4) and the buffered-log
 suppressed-present measurement friction are the practical obstacles to that investigation
 and should be addressed first (e.g. an unbuffered present/heartbeat counter printed on a
 timer, independent of the dev socket).
+
+---
+
+## Session N+1 (cont.): the render stall is the vkAcquireNextImageKHR stall — a PRESENTATION bug, not the scheduler
+
+Reframed with cordial's own vulkan.rs (§ around line 1180, pre-existing): the renderer
+"stalls in vkAcquireNextImageKHR waiting for a refresh." That fits every observation:
+- ~5 presents == swapchain depth (minImageCount 3/4 + in-flight), then permanent freeze;
+- the render/GL thread is blocked in an X11 roundtrip (DTrace: _poll -> libxcb
+  xcb_wait_for_reply64 -> _XReply -> libGLX_nvidia) — i.e. inside a Vulkan call doing an
+  X11 request, consistent with acquire waiting for a presented image to be released;
+- the RBX Workers park because the render thread that would queue the next frame's work is
+  stuck in acquire (so "workers idle" is a SYMPTOM, not the root).
+
+Present-mode probe (CORDIAL_PRESENT_MODE): IMMEDIATE (the engine's choice) stalls at ~5;
+forcing FIFO made resume hang immediately in its first blocking present. BOTH fail, and
+they fail in the two different ways you'd expect if **no display-refresh / vblank /
+PresentCompleteNotify events are reaching cordial's X11 Vulkan surface** — IMMEDIATE never
+gets an image released (acquire blocks after the swapchain fills), FIFO blocks forever in
+present waiting for a vsync that never signals. mocktail renders on this same box, so the
+difference is cordial's own window/surface: it creates its own Xlib window (dlopen libX11,
+window.rs) and a VkXlibSurfaceKHR on it (vulkan.rs). The next step is why the NVIDIA
+driver's DRI3/Present on that window never delivers vblank/idle events — compositor state,
+window attributes/visual, or missing PresentSelectInput vs what mocktail's surface has.
+
+Tooling added this session (kept): CORDIAL_HEARTBEAT prints the real vkQueuePresentKHR
+count to stderr (unbuffered) every second — the reliable present-trajectory probe, since
+the dev socket suppressed presents in polled runs and the clean-exit graphics report kept
+being cut off by the run timeout.
+
+Practical blocker to continuing: the bootstrap's intermittent GameGlobalInit hang is bad
+enough right now (~0-1 render-reaching run in 5) that empirical present-mode/surface
+iteration is impractical — stabilising GameGlobalInit (it hangs at "activity lifecycle 9/9
+fired") should come first, or all render testing stays a coin flip. System itself is
+healthy (load <1, 10 GB free, no leaks), so this is the engine's threading, not the host.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013BsKoQtrUtDDqCD51r5Uxy
