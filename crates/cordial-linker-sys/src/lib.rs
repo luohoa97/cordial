@@ -418,6 +418,17 @@ pub mod game_activity {
             err: *mut c_char,
             n: usize,
         ) -> c_int;
+        fn cordial_appbridge_app_start(
+            f: *mut c_void,
+            a: *const c_char,
+            b: *const c_char,
+            flag: c_int,
+            c: *const c_char,
+            d: *const c_char,
+            e: *const c_char,
+            err: *mut c_char,
+            n: usize,
+        ) -> c_int;
         fn cordial_init_client_settings(
             f: *mut c_void,
             a: *const c_char,
@@ -1293,6 +1304,32 @@ pub mod game_activity {
         // SAFETY: `native` is the exported JNI native; `err` is a live buffer.
         let rc =
             unsafe { cordial_read_local_flags(native, err.as_mut_ptr() as *mut c_char, err.len()) };
+        if rc == 0 { Ok(()) } else { Err(take_err(err)) }
+    }
+
+    /// `NativeAppBridgeInterface.nativeAppBridgeAppStart(String, String,
+    /// boolean, String, String, String)` — the client's first bridge call, and
+    /// the one that constructs the StartupController lazy-static (`0x70b3c20`).
+    /// Without it, `nativeAppBridgeV2StartAppWithParams` derefs a null
+    /// controller and segfaults after `app start`. Empty strings reach the
+    /// construction; the values do not gate it.
+    pub fn app_start(native: *mut c_void) -> Result<(), String> {
+        let empty = CString::new("").unwrap();
+        let mut err = vec![0u8; 512];
+        // SAFETY: `native` is the exported JNI native; buffers outlive the call.
+        let rc = unsafe {
+            cordial_appbridge_app_start(
+                native,
+                empty.as_ptr(),
+                empty.as_ptr(),
+                0,
+                empty.as_ptr(),
+                empty.as_ptr(),
+                empty.as_ptr(),
+                err.as_mut_ptr() as *mut c_char,
+                err.len(),
+            )
+        };
         if rc == 0 { Ok(()) } else { Err(take_err(err)) }
     }
 

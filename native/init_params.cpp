@@ -2880,6 +2880,57 @@ int cordial_appbridge_call_bare_cls(void* fn, const char* class_name, char* err,
     }
 }
 
+/// `NativeAppBridgeInterface.nativeAppBridgeAppStart(String, String, boolean,
+/// String, String, String)` — the call the real client makes FIRST, before
+/// `nativeAppBridgeV2Init`.
+///
+/// This is load-bearing for a reason only visible in the disassembly: the
+/// StartupController singleton (`0x70b3c20` on 2.721) is a **function-local
+/// static** initialised, behind a `__cxa_guard`, the first time THIS overload
+/// runs (creation site at file VA 0x23cdb31). Cordial never called it, so the
+/// controller stayed null and `nativeAppBridgeV2StartAppWithParams` later
+/// dereferenced null (a virtual dispatch on an object whose vtable was 0),
+/// segfaulting right after `app start`. Calling this once, before StartApp,
+/// builds the controller.
+///
+/// The six arguments' exact roles are not pinned down; the real client passes a
+/// base URL and identifiers here, but the controller's lazy-static construction
+/// does not depend on their values, so empty strings suffice to reach it. Kept
+/// parameterised so a caller can supply real candidates later.
+int cordial_appbridge_app_start(void* fn, const char* a, const char* b, int flag,
+                                const char* c, const char* d, const char* e,
+                                char* err, size_t err_len) {
+    using Call = void (*)(JNIEnv*, jobject, jstring, jstring, jboolean, jstring, jstring, jstring);
+    auto* env = cordial::process_env();
+    if (!fn || !env) {
+        snprintf(err, err_len, "no JavaVM, or nativeAppBridgeAppStart is not exported");
+        return -1;
+    }
+    try {
+        auto cls = env->GetClass("com/roblox/engine/jni/NativeAppBridgeInterface");
+        auto sa = cordial::S_pub(a ? a : "");
+        auto sb = cordial::S_pub(b ? b : "");
+        auto sc = cordial::S_pub(c ? c : "");
+        auto sd = cordial::S_pub(d ? d : "");
+        auto se = cordial::S_pub(e ? e : "");
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
+                                   (jobject)cordial::to_jni(env, cls),
+                                   (jstring)cordial::to_jni(env, sa),
+                                   (jstring)cordial::to_jni(env, sb),
+                                   (jboolean)(flag ? 1 : 0),
+                                   (jstring)cordial::to_jni(env, sc),
+                                   (jstring)cordial::to_jni(env, sd),
+                                   (jstring)cordial::to_jni(env, se));
+        return 0;
+    } catch (const std::exception& ex) {
+        snprintf(err, err_len, "%s", ex.what());
+        return -1;
+    } catch (...) {
+        snprintf(err, err_len, "non-standard C++ exception");
+        return -1;
+    }
+}
+
 /// A `NativeGLInterface` native taking no arguments — `nativeAppBridgeStartLuaAppDM`.
 ///
 /// "Start Lua App DataModel": the Lua app shell is what Roblox actually renders

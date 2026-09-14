@@ -4363,6 +4363,25 @@ fn main() -> ExitCode {
                                             std::thread::sleep(std::time::Duration::from_millis(200));
                                         }
 
+                                        // The client's FIRST bridge call, and the one nothing here
+                                        // was making: nativeAppBridgeAppStart on
+                                        // NativeAppBridgeInterface. It constructs the StartupController
+                                        // lazy-static (0x70b3c20); without it StartAppWithParams derefs
+                                        // a null controller and segfaults right after `app start`.
+                                        // Skipped only if CORDIAL_NO_APP_START is set (to A/B it).
+                                        if std::env::var_os("CORDIAL_NO_APP_START").is_none() {
+                                            if let Some(f) = lib.symbol(
+                                                "Java_com_roblox_engine_jni_NativeAppBridgeInterface_nativeAppBridgeAppStart__Ljava_lang_String_2Ljava_lang_String_2ZLjava_lang_String_2Ljava_lang_String_2Ljava_lang_String_2",
+                                            ) {
+                                                match linker::game_activity::app_start(f) {
+                                                    Ok(()) => println!("  nativeAppBridgeAppStart ok (builds StartupController)"),
+                                                    Err(e) => println!("  nativeAppBridgeAppStart failed: {e}"),
+                                                }
+                                            } else {
+                                                println!("  nativeAppBridgeAppStart not exported");
+                                            }
+                                        }
+
                                         #[cfg(target_os = "freebsd")]
                                         if let Some(ms) = std::env::var("CORDIAL_STARTUP_POLL_MS")
                                             .ok().and_then(|v| v.parse::<u64>().ok())
