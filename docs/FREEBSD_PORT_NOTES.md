@@ -982,3 +982,43 @@ Vulkan swapchain leaves blank).
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_013BsKoQtrUtDDqCD51r5Uxy
+
+---
+
+## Session N+1 (cont.): IDA identifies the spinners as RBX Worker threads; render-phase-gated spin-cap does not help
+
+IDA (~/libroblox_2.721.so.i64, imagebase 0, so VA == file offset) decompiled the spinning
+stack:
+- sub_27800B0 (the thread entry): `qmemcpy(name,"RBX Worker ",11); name[11]=id+65;
+  set_thread_name(name); worker_fn();` — the spinning threads are the engine's **"RBX
+  Worker" TaskScheduler threads**.
+- Their loop (sub_2781D90) is the worker idle job-wait: it blocks on a cond for the next
+  job, and on this port that timed wait sits on an already-elapsed absolute MONOTONIC
+  deadline, so _umtx_op returns ETIMEDOUT instantly and the worker re-arms the same stale
+  deadline and busy-spins (~340k/s each, three cores). The cond is monotonic-consistent
+  (futex trace: clk=4, deadline in the seconds-since-boot range), so this is NOT the
+  REALTIME-vs-MONOTONIC bug bionic_cond_init_monotonic already fixes — the deadline is
+  stale simply because the worker has been waiting seconds for a job (predicate) that never
+  arrives.
+
+Tried and reverted (did NOT help): a futex spin-cap (150-200µs sleep on an already-elapsed
+ABSTIME deadline) gated to fire ONLY after StartApp (a `cordial_render_phase` flag set from
+load.rs, so bootstrap's fast-spin races are untouched). Runs still hit the same intermittent
+hangs — at GameGlobalInit in some runs (pre-cap) and at `resume` in others (post-cap) — so
+the CPU-starvation-from-spin theory does not hold: freeing the cores does not make the
+missing job/predicate appear.
+
+**Standing conclusion.** The engine boots (major progress this session) but its threading is
+unstable on FreeBSD in a way that is intermittent: GameGlobalInit sometimes hangs, `resume`
+sometimes hangs, and rendering never sustains (~3-5 frames then the RBX Workers spin idle).
+All three are the same shape — an engine thread waiting for work another thread never
+produces — and the fix is NOT at the futex/clock layer (proven: three separate futex-layer
+edits each either regress bootstrap or fail to help). The next step is to identify, in the
+worker loop and the resume path, exactly which job/predicate is expected and which producer
+thread never runs on this port — the same method that cracked getFlags (find the specific
+global the engine gates on) and the flags-loaded byte. IDA + DTrace `ustack()` are the
+tools; the flaky repro (foreground reached ~1 run in 4) is the main friction and argues for
+capturing many DTrace samples per state rather than more one-off code experiments.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013BsKoQtrUtDDqCD51r5Uxy
