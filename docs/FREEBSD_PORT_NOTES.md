@@ -1022,3 +1022,33 @@ capturing many DTrace samples per state rather than more one-off code experiment
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_013BsKoQtrUtDDqCD51r5Uxy
+
+---
+
+## Session N+1 (final): render stops at ~5 frames PERMANENTLY; no external stimulus restarts it
+
+Confirmed exhaustively via the dev-control `info` present counter (live, bypasses the
+buffered log): after resume+foreground the count climbs 0 → 4 → 5 and then is **stuck at 5
+forever**, even while a slow (2s-cadence) resume re-fire keeps running. So this is not
+"sparse/slow" rendering — the engine presents its first ~5 frames and the DataModel render
+task then stops re-scheduling entirely. None of these restart it (all tested this session):
+onSurfaceRedrawNeededNative (1699×), resume re-fire (fast 430× AND slow), applicationForegrounded/
+gameForegrounded, live mouse/keyboard input (accepted=14, 0 new frames), a futex spin-cap.
+
+Consequence: the LuaApp GUI finishes building a few seconds *after* those 5 frames (asset
+trace shows it loading fonts/icons/sprites/shaders), so it never gets a frame — every
+captured frame is the pre-GUI gray clear, and no new present ever happens to capture the
+built GUI. IDA shows the spinning threads are the "RBX Worker" pool parked on a lock-free
+work-stealing eventcount (sub_2781D90 → sub_2784960 → sub_2779820 futex wait) with no jobs
+being pushed — i.e. the per-frame render/step job-driver is not running past the first few
+frames on this port.
+
+This, plus the intermittent GameGlobalInit / resume hangs, is one root: on FreeBSD the
+engine's frame/step driver does not sustain, so render jobs stop being queued. The fix is a
+focused investigation (IDA + DTrace) into what submits the DataModel step/render job each
+frame on Android and why it stops here — NOT the futex/clock layer (three edits there each
+regressed bootstrap or did nothing) and NOT any external lifecycle kick (all tested, none
+work). Bootstrap flakiness (foreground reached ~1 run in 4) and the buffered-log / socket-
+suppressed-present measurement friction are the practical obstacles to that investigation
+and should be addressed first (e.g. an unbuffered present/heartbeat counter printed on a
+timer, independent of the dev socket).
