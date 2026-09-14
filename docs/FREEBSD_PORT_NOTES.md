@@ -765,3 +765,102 @@ libjnivm captures those function pointers) the way the Java GameActivity would, 
 writing the command bytes to the pipe's write end directly. The app thread's command
 pipe read-end is the fd passed to ALooper_addFd with callback=yes (fd 14 in the
 observed run). Command 3 must arrive before StartApp so the StartupController exists.
+
+---
+
+## Session N+1: TWO walls fall — the flags-loaded byte and the StartupController — Roblox reaches a Vulkan swapchain
+
+This session corrects the section immediately above (the "command-3 pipe" theory of
+StartupController creation was WRONG) and gets the engine all the way to creating a
+Vulkan swapchain and running its main work loop. Two distinct blockers, both found in
+the disassembly, both now cleared.
+
+### Wall 1 — the "flags loaded" byte (was masquerading as a TaskScheduler crash AND the getFlags deadlock)
+
+Symptom: `RBXCRASH: FatalRuntimeError (Can't initialize the TaskScheduler before flags
+have been loaded)`, deterministic, on the engine's app thread during bootstrap.
+Confirmed environmental, not a regression (the known-good commit 5cae8e6 crashes
+identically now; independent of settings content — full 22k-flag doc, minimal 2-flag
+doc, cached — all identical).
+
+The gate (2.721), at the throw site file VA 0x23805cf:
+
+    cmpb $0, 0x75a8250      ; the global "flags loaded" byte
+    jne  ok
+    lea  "Can't initialize the TaskScheduler before flags have been loaded"
+    call <throw FatalRuntimeError>
+
+That byte is read all over the binary (it is the FFlag-ready guard). It is WRITTEN to 1
+by exactly two sites; the load-bearing one is 0x2c2bfb6, inside the FFlag *parse*
+routine (log markers `parse_flag_begin` / `set_flag_filters_end` at 0x394387). Per
+docs/analysis/flag-init.md §1, `nativeInitializeNativeFlags` itself does NOT set it — it
+only builds the cached-flags result object; the *parse* sets it. On this bring-up the
+engine's app thread reaches TaskScheduler init before the parse has set the byte.
+
+Fix (bring-up scaffolding, CORDIAL_SET_FLAGS_LOADED=1, feature-gated per ADR-001): set
+`*(base + 0x75a8250) = 1` once, before initializeNativeCode spawns the app thread. base =
+JNI_OnLoad - 0x22addd7. Nothing ever clears it, so pre-setting it pre-satisfies the gate
+without racing.
+
+UNIFICATION: this same byte also subsumes the old getFlags "self-marshalling deadlock."
+With the byte set, `nativeGameGlobalInit` completes with NO marshaller hijack — getFlags
+was awaiting flags-loaded, the scheduler gate was testing it. One write clears both walls.
+(The marshaller hijack, ADR-001 experiment, is now redundant for this path.)
+
+Legitimate ship-fix still owed: make the FFlag parse actually complete (and set the byte)
+before TaskScheduler init, instead of pre-writing the byte.
+
+### Wall 2 — the StartupController is a lazy static, built by nativeAppBridgeAppStart (NOT a command-3 dispatch)
+
+Once wall 1 fell, the full bootstrap ran (flags, app bridge, DataModel, task scheduler
+foregrounded, APP_READY for PlatformAccountRouter and Startup) — then a SIGSEGV right
+after `[cordial] app start`, and `[startup] StartupController singleton after 5019ms: 0x0`
+(still null). The crash: null-deref inside nativeAppBridgeV2StartAppWithParams at file VA
+0x2506700 (`movq 0x18(%rax)`, rax=0 — a virtual dispatch on an object with a null vtable).
+
+The StartupController singleton (global 0x70b3c20 on 2.721) is a FUNCTION-LOCAL STATIC.
+Its sole creator (verified: the only write to 0x70b3c20 in .text) is at 0x23cdb31
+(`movq %rax, 0x70b3c20`), inside the exported
+`NativeAppBridgeInterface.nativeAppBridgeAppStart(String,String,Z,String,String,String)`
+(export at 0x23cb767), behind a __cxa_guard at 0x70b3b28. It is built the FIRST time that
+overload runs. That overload lives on NativeAppBridgeInterface, NOT NativeGLInterface, and
+cordial NEVER called it — it appeared only in a comment (load.rs:2070). So StartApp
+dereferenced a controller that was never constructed.
+
+The prior section's "command-3 pipe / RegisterNatives lifecycle" theory of StartupController
+creation is SUPERSEDED: the controller has nothing to do with the app-thread command pipe;
+it is a plain Meyers singleton gated on one specific JNI bridge call.
+
+Fix (a real bridge call, not a memory hack): new wrapper `cordial_appbridge_app_start`
+(native/init_params.cpp) builds the six JNI args (five jstrings + a jboolean; empty values
+reach the lazy-static — its construction does not depend on their values) and invokes the
+overload. `linker::game_activity::app_start` binds it; load.rs calls it in the default path
+just before StartAppWithParams (CORDIAL_NO_APP_START to A/B).
+
+### Result — furthest yet, no crash
+
+    nativeAppBridgeAppStart ok (builds StartupController)
+    [startup] StartupController singleton after 0ms: 0x242c23df3b00   (was 0x0 for 5019ms)
+    app started with surface                                          (previously SIGSEGV)
+    surface+platform params delivered (app) / (game)
+    surface handed to the engine
+    late retry: nativeRetryInit ok
+    InputConnection registered with the engine
+    [android] vulkan: vkCreateSwapchainKHR extent 1667x651, minImageCount 3
+    pumping the looper for 20s
+    D/GameActivity ************** mainWorkCallback *********
+    ... clean exit 0
+
+Reached with: CORDIAL_SET_FLAGS_LOADED=1 CORDIAL_PROBE_STATE=1 CORDIAL_STATE_POLL_MS=5000
+CORDIAL_STARTUP_POLL_MS=6000. The engine creates a Vulkan swapchain (1667x651, present
+mode IMMEDIATE) and runs its GameActivity main work loop. Clean exit, no crash through the
+full run window.
+
+### Next frontier — continuous frame presentation (render gate)
+
+`mainWorkCallback` fires only ~2× in a 20s run, so the main-thread work loop is not being
+driven per-frame (no Choreographer equivalent; cordial has no Java frame callback). The
+engine's own render thread created the swapchain, but per-frame present is not yet observed.
+This is the render-gate investigation (docs/analysis/render-gate.md), and it is the path to
+actually seeing pixels. Bring-up scaffolding still required to reach here: the
+CORDIAL_SET_FLAGS_LOADED byte-write and the retryInit state poll.
