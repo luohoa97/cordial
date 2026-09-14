@@ -4805,7 +4805,44 @@ fn main() -> ExitCode {
                                                         // pump keeps servicing frames. CORDIAL_RESUME_SYNC
                                                         // restores the old blocking call.
                                                         let fp = f as usize; let apk = apk_path.clone(); let (w, h) = (width, height);
-                                                        if std::env::var_os("CORDIAL_RESUME_SYNC").is_some() {
+                                                        // TARGETED HIJACK (CORDIAL_RESUME_HIJACK, feature-gated):
+                                                        // resume dispatches its DataModel-resume to the engine's
+                                                        // FunctionMarshaller thread (handle at qword_7081868) and
+                                                        // waits; driven from a thread != FM it self-deadlocks (the
+                                                        // FM never runs it). Overwriting the FM handle with THIS
+                                                        // thread only for the resume call makes resume run inline
+                                                        // (pthread_self()==FM), then we restore it so the state-
+                                                        // advance and later marshals keep the real FM (the global
+                                                        // hijack broke those). base = JNI_OnLoad - 0x22addd7.
+                                                        // ADR-001: writes engine memory, unsafe-experiments only.
+                                                        let mut handled = false;
+                                                        #[cfg(all(target_os = "freebsd", feature = "unsafe-experiments"))]
+                                                        {
+                                                            if std::env::var_os("CORDIAL_RESUME_HIJACK").is_some() {
+                                                                handled = true;
+                                                                if let Some(jni) = lib.symbol("JNI_OnLoad") {
+                                                                    let slot = ((jni as usize).wrapping_sub(0x22addd7) + 0x7081868) as *mut usize;
+                                                                    extern "C" { fn pthread_self() -> usize; }
+                                                                    // SAFETY: single pointer-sized read/write of a known
+                                                                    // engine global compared only by value; restored below.
+                                                                    unsafe {
+                                                                        let old = *slot;
+                                                                        let me = pthread_self();
+                                                                        *slot = me;
+                                                                        println!("  [resume-hijack] FM {old:#x} -> {me:#x} (self), calling resume inline");
+                                                                        let r = linker::game_activity::appbridge_update_surface(f, &apk_path, width, height, true);
+                                                                        *slot = old;
+                                                                        match r {
+                                                                            Ok(()) => println!("  nativeAppBridgeV2ResumeGameWithPlatformParams ok (inline); FM restored"),
+                                                                            Err(e) => println!("  Resume(inline) failed: {e}; FM restored"),
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        if handled {
+                                                            // resume already done via the targeted hijack above
+                                                        } else if std::env::var_os("CORDIAL_RESUME_SYNC").is_some() {
                                                             match linker::game_activity::appbridge_update_surface(f, &apk_path, width, height, true) {
                                                                 Ok(()) => println!("  nativeAppBridgeV2ResumeGameWithPlatformParams ok"),
                                                                 Err(e) => println!("  Resume failed: {e}"),
