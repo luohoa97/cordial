@@ -295,19 +295,6 @@ static int futex_trace_enabled(void) {
     return v;
 }
 
-// FreeBSD errno -> Linux errno for values bionic (compiled for Android/Linux)
-// inspects by number. Most low numbers agree; the ones that bite the futex path
-// diverge. Passthrough for everything else — a wrong-but-nonzero error is still
-// treated as an error by callers; only the specifically-checked values matter.
-static int fbsd_errno_to_linux(int e) {
-    switch (e) {
-    case 35: return 11;   // EAGAIN / EWOULDBLOCK : FreeBSD 35 -> Linux 11
-    case 60: return 110;  // ETIMEDOUT            : FreeBSD 60 -> Linux 110
-    case 85: return 4;    // ERESTART             -> treat as EINTR(4), same both
-    default: return e;    // EINTR(4), EINVAL(22), EFAULT(14), ... agree
-    }
-}
-
 static long do_futex(void *uaddr, int op, unsigned int val, const struct timespec *to) {
     // Strip the PRIVATE / CLOCK_REALTIME flag bits to get the base command.
     int cmd = op & ~(LX_FUTEX_PRIVATE_FLAG | LX_FUTEX_CLOCK_REALTIME);
@@ -346,15 +333,9 @@ static long do_futex(void *uaddr, int op, unsigned int val, const struct timespe
         }
         int r = _umtx_op(uaddr, FBSD_UMTX_OP_WAIT_UINT_PRIVATE,
                          (unsigned long)val, (void *)tsz, tptr);
-        // bionic's __futex checks the raw negative-errno convention, but against
-        // *Linux* errno numbers — it is compiled for Android. FreeBSD's errno
-        // values differ (ETIMEDOUT 60 vs 110, EAGAIN 35 vs 11), so returning the
-        // raw FreeBSD -errno made bionic's `rc == -ETIMEDOUT` / `rc == -EAGAIN`
-        // checks fail: a timed pthread_cond wait never recognised its own
-        // timeout, re-armed the same (now stale) deadline and busy-spun a core
-        // flat out (measured ~340k/s across three threads, blocking the render).
-        // Translate to the Linux value bionic expects.
-        return r == 0 ? 0 : -fbsd_errno_to_linux(errno);
+        // bionic's __futex checks the raw negative-errno convention (-ETIMEDOUT,
+        // -EAGAIN, -EINTR), so return -errno rather than -1.
+        return r == 0 ? 0 : -errno;
     }
     if (cmd == LX_FUTEX_WAKE || cmd == LX_FUTEX_WAKE_BITSET) {
         int r = _umtx_op(uaddr, FBSD_UMTX_OP_WAKE_PRIVATE,
@@ -362,11 +343,11 @@ static long do_futex(void *uaddr, int op, unsigned int val, const struct timespe
         if (futex_trace_enabled())
             fprintf(stderr, "[futex] tid=%d WAKE addr=%p cmd=%d op=0x%x val=%u -> r=%d errno=%d\n",
                     (int)pthread_getthreadid_np(), uaddr, cmd, op, val, r, r == 0 ? 0 : errno);
-        return r == 0 ? (long)val : -fbsd_errno_to_linux(errno);
+        return r == 0 ? (long)val : -errno;
     }
     // Any other op (requeue, PI, wake_op): report unsupported rather than lie
-    // with 0, which would busy-spin the caller. Linux ENOSYS is 38 (FreeBSD 78).
-    return -38;
+    // with 0, which would busy-spin the caller.
+    return -ENOSYS;
 }
 
 // bionic pthread_once on the 4-byte control word, using the real futex for
