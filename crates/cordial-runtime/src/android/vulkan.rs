@@ -1084,6 +1084,15 @@ extern "C" fn vk_create_swapchain_khr(
     allocator: *const c_void,
     swapchain_out: *mut u64,
 ) -> i32 {
+    // Diagnostic: log the engine function that creates the swapchain (the render
+    // thread's render path), so it can be decompiled. Reads the saved return
+    // address at [rbp+8]; subtract the run's libroblox base for the VA.
+    if std::env::var_os("CORDIAL_LOG_SWC_CALLER").is_some() {
+        let ra: usize;
+        // SAFETY: reading the caller's return address from the standard frame.
+        unsafe { std::arch::asm!("mov {}, [rbp+8]", out(reg) ra, options(nostack, preserves_flags)); }
+        eprintln!("[swc-caller] vkCreateSwapchainKHR called from return-address {ra:#x}");
+    }
     let rc = vk_create_swapchain_inner(device, create_info, allocator, swapchain_out);
     if rc == VK_SUCCESS && !create_info.is_null() && !swapchain_out.is_null() {
         // SAFETY: both pointers are the caller's, checked for null, and the

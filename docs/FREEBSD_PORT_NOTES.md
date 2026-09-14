@@ -1158,3 +1158,49 @@ the standalone harness above.
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_013BsKoQtrUtDDqCD51r5Uxy
+
+---
+
+## Session (post-reboot): resume deadlock SOLVED; render loop is never invoked (engine cyclic scheduler)
+
+MAJOR fix (commit 876745d): the self-marshalling deadlock is beaten for cordial's own calls
+via CORDIAL_RESUME_HIJACK — overwrite the FunctionMarshaller handle (qword_7081868) with the
+calling thread ONLY around the resume call, so resume runs inline and completes, then restore
+so the state-advance keeps the real FM. Result: resume completes reliably ("ok (inline)"),
+bootstrap reaches the render stage, Startup UI hits APP_READY, no hang. This is the chaos-
+maker of the whole port, resolved for the calls we drive.
+
+Render, mapped precisely (new this session):
+- Caller-address logging in vk_create_swapchain_khr (CORDIAL_LOG_SWC_CALLER, reads [rbp+8])
+  gives the engine render fn: swapchain SETUP = sub_63BC260 (VkAndroidSurface + swapchain +
+  2 semaphores), called by the swapchain REBUILD path sub_63BFE2E (vkDeviceWaitIdle -> recreate
+  -> query surface caps), which runs on surface set/resize, NOT per frame.
+- The per-frame render LOOP (vkAcquireNextImageKHR + vkQueuePresentKHR) is NEVER invoked:
+  DTrace shows no thread in Vulkan/GLX, glcount vkQueuePresentKHR stays 0, no thread in acquire.
+  So the render thread sets up the swapchain then the loop is never called.
+- It is never called because the engine's DataModel Heartbeat / TaskScheduler cyclic render
+  job fires a few times (enough for APP_READY) then stops rescheduling on FreeBSD — the same
+  cyclic-job-stall root. The render loop cannot be reached by runtime trace (never called) nor
+  by static xref (present/acquire are indirect via driver fn-pointers; render-gate.md §2).
+
+Exhausted external levers (NONE produce a frame): resume (sync/async/inline-hijack),
+foreground, StartApp, surface delivery, redraw-drive, resume-drive, the app-thread command
+pipe with the full NativeActivity lifecycle (INIT_WINDOW/START/RESUME/GAINED_FOCUS -
+processed, 0 frames), three spin-cap variants, settle-timing, pumping-poll (crashes),
+present-mode forcing. Futex mapping proven correct (standalone test). So it is not the futex,
+not presentation/vblank, not CPU starvation, not the lifecycle — it is the engine's INTERNAL
+cyclic frame-job scheduler not sustaining on FreeBSD.
+
+Also still flaky even with the resume fix: HardAssert (EngineModule not found) / retryInit
+fire on some runs — the engine's OTHER internal async jobs (module registration, state
+advance) hit the same deadlock class that only the engine's own threads (which we cannot
+hijack the way we hijack our own call) can resolve.
+
+Bottom line: continuous rendering needs the engine's internal TaskScheduler to keep
+rescheduling its per-frame render job on FreeBSD. That is engine-internal and reachable
+neither by external driving (all tried) nor by static/runtime tracing of the render loop
+(indirect + never-invoked). It is the deep remaining root, and it is a reverse-engineering
+effort on the scheduler's cyclic-job re-arm logic, ideally on a warmed, non-flaky repro.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01DoaDcG56gpFpbmAZ3nMMzw
