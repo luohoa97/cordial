@@ -4815,6 +4815,33 @@ fn main() -> ExitCode {
                                                     }
                                                 }
 
+                                                // EXPERIMENT (CORDIAL_DRIVE_RESUME=1): resume kicks a few
+                                                // frames then the renderer idles. If the render task is not
+                                                // being rescheduled, re-firing resume periodically should
+                                                // keep frames flowing — a test of whether the GUI (which is
+                                                // still building as assets load) renders once frames are
+                                                // sustained.
+                                                if std::env::var_os("CORDIAL_DRIVE_RESUME").is_some() {
+                                                    if let Some(f) = lib.symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeV2ResumeGameWithPlatformParams") {
+                                                        let fp = f as usize;
+                                                        let apk = apk_path.clone();
+                                                        let (w, h) = (width, height);
+                                                        let dur = if secs == 0 { 3600 } else { secs };
+                                                        println!("  [drive-resume] re-firing resume every 100ms for {dur}s");
+                                                        std::thread::spawn(move || {
+                                                            let start = std::time::Instant::now();
+                                                            let mut n = 0u64;
+                                                            while start.elapsed().as_secs() < dur {
+                                                                let _ = linker::game_activity::appbridge_update_surface(
+                                                                    fp as *mut std::os::raw::c_void, &apk, w, h, true);
+                                                                n += 1;
+                                                                std::thread::sleep(std::time::Duration::from_millis(100));
+                                                            }
+                                                            println!("  [drive-resume] fired resume {n} times");
+                                                        });
+                                                    } else { println!("  [drive-resume] resume native not exported"); }
+                                                }
+
                                                 // EXPERIMENT (CORDIAL_DRIVE_REDRAW=1): the engine's
                                                 // android_main renders one frame per redraw command on
                                                 // its ALooper command pipe. cordial only sends
