@@ -4787,6 +4787,63 @@ fn main() -> ExitCode {
                                                     cordial_runtime::webview::dev_trigger_open_window(url);
                                                 }
 
+                                                // EXPERIMENT (CORDIAL_RESUME=1 / CORDIAL_FOREGROUND=1):
+                                                // the engine presents 0 frames because its render job is
+                                                // never scheduled — the app was never flipped to
+                                                // active/foregrounded. The real client makes an App-Bridge
+                                                // resume and reporting-foreground calls that cordial never
+                                                // did. Resume takes (Surface, PlatformParams, Activity) —
+                                                // the same shape as UpdateSurfaceGame, so it reuses that
+                                                // wrapper. Foreground calls are no-arg statics.
+                                                if std::env::var_os("CORDIAL_RESUME").is_some() {
+                                                    if let Some(f) = lib.symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeV2ResumeGameWithPlatformParams") {
+                                                        match linker::game_activity::appbridge_update_surface(f, &apk_path, width, height, true) {
+                                                            Ok(()) => println!("  nativeAppBridgeV2ResumeGameWithPlatformParams ok"),
+                                                            Err(e) => println!("  Resume failed: {e}"),
+                                                        }
+                                                    } else { println!("  Resume native not exported"); }
+                                                }
+                                                if std::env::var_os("CORDIAL_FOREGROUND").is_some() {
+                                                    for name in ["applicationForegrounded", "gameForegrounded"] {
+                                                        let sym = format!("Java_com_roblox_engine_jni_NativeReportingInterface_{name}");
+                                                        if let Some(f) = lib.symbol(&sym) {
+                                                            match linker::game_activity::call_bare_on(f, "com/roblox/engine/jni/NativeReportingInterface") {
+                                                                Ok(()) => println!("  {name} ok"),
+                                                                Err(e) => println!("  {name} failed: {e}"),
+                                                            }
+                                                        } else { println!("  {name} not exported"); }
+                                                    }
+                                                }
+
+                                                // EXPERIMENT (CORDIAL_DRIVE_REDRAW=1): the engine's
+                                                // android_main renders one frame per redraw command on
+                                                // its ALooper command pipe. cordial only sends
+                                                // onSurfaceRedrawNeededNative on X11 Expose events, which
+                                                // are sparse, so the engine drew 0 frames (health monitor:
+                                                // "0 presents"). This drives onSurfaceRedrawNeededNative at
+                                                // ~60Hz for the pump duration, on a side thread, to test
+                                                // whether a continuous redraw drive makes the engine
+                                                // present. A self-bounded loop so no join is needed.
+                                                if std::env::var_os("CORDIAL_DRIVE_REDRAW").is_some() {
+                                                    let h = handle;
+                                                    let dur = if secs == 0 {
+                                                        std::time::Duration::from_secs(3600)
+                                                    } else {
+                                                        std::time::Duration::from_secs(secs)
+                                                    };
+                                                    println!("  [drive-redraw] driving onSurfaceRedrawNeededNative at ~60Hz for {}s", dur.as_secs());
+                                                    std::thread::spawn(move || {
+                                                        let start = std::time::Instant::now();
+                                                        let mut n = 0u64;
+                                                        while start.elapsed() < dur {
+                                                            cordial_runtime::android::input::deliver_surface_redraw(h);
+                                                            n += 1;
+                                                            std::thread::sleep(std::time::Duration::from_millis(16));
+                                                        }
+                                                        println!("  [drive-redraw] sent {n} redraw requests");
+                                                    });
+                                                }
+
                                                 cordial_runtime::android::looper::pump(
                                                     std::time::Duration::from_secs(secs),
                                                     Some(handle),
