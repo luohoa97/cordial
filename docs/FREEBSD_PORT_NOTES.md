@@ -864,3 +864,72 @@ engine's own render thread created the swapchain, but per-frame present is not y
 This is the render-gate investigation (docs/analysis/render-gate.md), and it is the path to
 actually seeing pixels. Bring-up scaffolding still required to reach here: the
 CORDIAL_SET_FLAGS_LOADED byte-write and the retryInit state poll.
+
+---
+
+## Session N+1 (cont.): render pipeline runs, but only a few frames — and the content is a bare clear
+
+After the resume/foreground unlock (previous section), a full investigation of *why
+it is not continuous or visible*:
+
+### The renderer draws ~3-5 frames, then idles
+
+Measured with cordial's own present counter (glcount `vkQueuePresentKHR`, incremented
+unconditionally in `android::vulkan::vk_queue_present_khr`, and read live over the
+dev-control socket's `info` verb — `presents=N`, which sidesteps the badly-buffered
+stdout log):
+
+- resume+foreground:                 vkQueuePresentKHR = 5 (one run), 0 (others)
+- resume+foreground+drive-redraw:    vkQueuePresentKHR = 3, with 1699 redraw requests sent
+- no resume:                          vkQueuePresentKHR = 0 always
+
+So the engine presents a *handful* of frames right after resume, then stops. It is
+NOT continuous, and it is nondeterministic (0-5). Driving onSurfaceRedrawNeededNative
+at 60Hz does not add frames (confirmed dead path). There is **no per-frame JNI driver
+native** — searched the export table: no renderFrame/doFrame/step/heartbeat/tick;
+`nativeScheduleOnFirstFrame` exists but is a one-shot. So the frame loop is entirely
+engine-internal (TaskScheduler-driven); the app does not tick it. The engine renders
+its initial frame(s) on resume and then its render task is not rescheduled — a
+TaskScheduler frame-timing problem (likely the frame-pacing condvar/clock on FreeBSD:
+the scheduler decides "next frame" via a timed wait and does not wake at ~16ms). This
+is the open internal blocker for *continuous* rendering.
+
+### What a captured frame actually shows
+
+The X11 window pixmap is useless for a Vulkan swapchain (the compositor never sees the
+presented image — `import -window` returns a 409-byte solid color). The real presented
+frame is captured *inside* vkQueuePresentKHR via the dev-control `screenshot <path>`
+verb (`android::capture`). One such frame (6.65 MB, real content):
+
+  **a uniform light-gray (#e0e0e0) clear — the app background, with NO UI drawn on it.**
+
+So the engine clears and presents, but the LuaApp/CoreGui GUI is not composited. Given
+"nobody signed in" + the pile of WebView FastFlags, the login screen on mobile Roblox
+is a **WebView**, and cordial's webview feature is not built (needs webkit2-gtk_60,
+which IS packaged on this box as `webkit2-gtk_60-2.46.6_8` but is a heavy build).
+Without it the login opens in the external browser instead. So visible UI content is
+gated on either (a) building the webview feature, or (b) authenticating so the native
+home/in-game render path (not WebView) has something to draw.
+
+### Tooling proven this session (for the next run)
+
+- Real frame capture: `CORDIAL_DEV_CONTROL=1 CORDIAL_DEV_CONTROL_SOCKET=<path>`, then
+  `printf 'screenshot /abs/out.png\n' | nc -U <sock>` — captures the next present.
+- Live present rate without the log lag: `printf 'info\n' | nc -U <sock>` ->
+  `presents=N ... extent=WxH`.
+- Full input is already wired in devctl: move/click/down/up/key/tap/text/scroll — ready
+  for the "interactable" goal once there are pixels to interact with.
+- Reliable reach to app-start needs CORDIAL_SET_FLAGS_LOADED + the retryInit state poll;
+  bootstrap timing is variable (swapchain create seen anywhere from ~10s to ~42s).
+
+### Open frontiers, ranked
+
+1. Continuous rendering — the engine's render task is not rescheduled after the first
+   frames (internal TaskScheduler frame-pacing/clock on FreeBSD). This is the true
+   "continuous" blocker and is internal/tractable.
+2. Visible UI — the pre-login screen is a WebView; needs the webview build or auth.
+3. Bootstrap timing flakiness (GlobalInit/retryInit/EngineModule asserts at varying
+   points) — a threading/scheduling robustness issue, same family as #1.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013BsKoQtrUtDDqCD51r5Uxy
