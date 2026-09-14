@@ -4797,9 +4797,29 @@ fn main() -> ExitCode {
                                                 // wrapper. Foreground calls are no-arg statics.
                                                 if std::env::var_os("CORDIAL_RESUME").is_some() {
                                                     if let Some(f) = lib.symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeV2ResumeGameWithPlatformParams") {
-                                                        match linker::game_activity::appbridge_update_surface(f, &apk_path, width, height, true) {
-                                                            Ok(()) => println!("  nativeAppBridgeV2ResumeGameWithPlatformParams ok"),
-                                                            Err(e) => println!("  Resume failed: {e}"),
+                                                        // Resume unlocks rendering but intermittently hangs
+                                                        // (it dispatches async engine work that sometimes
+                                                        // never completes on this port). Run it on a detached
+                                                        // thread so a hang cannot wedge the main looper pump —
+                                                        // its render-unlock side effect still lands, and the
+                                                        // pump keeps servicing frames. CORDIAL_RESUME_SYNC
+                                                        // restores the old blocking call.
+                                                        let fp = f as usize; let apk = apk_path.clone(); let (w, h) = (width, height);
+                                                        if std::env::var_os("CORDIAL_RESUME_SYNC").is_some() {
+                                                            match linker::game_activity::appbridge_update_surface(f, &apk_path, width, height, true) {
+                                                                Ok(()) => println!("  nativeAppBridgeV2ResumeGameWithPlatformParams ok"),
+                                                                Err(e) => println!("  Resume failed: {e}"),
+                                                            }
+                                                        } else {
+                                                            println!("  firing resume on a detached thread (non-blocking)");
+                                                            std::thread::spawn(move || {
+                                                                match linker::game_activity::appbridge_update_surface(
+                                                                    fp as *mut std::os::raw::c_void, &apk, w, h, true) {
+                                                                    Ok(()) => println!("  nativeAppBridgeV2ResumeGameWithPlatformParams ok (async)"),
+                                                                    Err(e) => println!("  Resume(async) failed: {e}"),
+                                                                }
+                                                            });
+                                                            std::thread::sleep(std::time::Duration::from_millis(500));
                                                         }
                                                     } else { println!("  Resume native not exported"); }
                                                 }
