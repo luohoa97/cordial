@@ -1126,3 +1126,35 @@ repro to instrument job push vs pickup, which the flakiness currently denies —
 reliable-ish run this session was under lldb (its overhead wins the race). A minimal
 standalone futex WAIT_BITSET/WAKE_BITSET ping-pong test against _umtx_op (outside the engine)
 is the fastest way to prove or clear the mapping without fighting the 1-in-5 boot.
+
+---
+
+## Session N+1: the futex WAIT/WAKE mapping is CORRECT — ruled out as the flakiness root
+
+Repro-independent test (docs/analysis/futex_wake_test.c, standalone, no engine): replicate
+cordial's exact mapping — a waiter parks on `_umtx_op(WAIT_UINT_PRIVATE, val, abstime-
+monotonic)` (= bionic FUTEX_WAIT_BITSET), the main thread changes the word and calls
+`_umtx_op(WAKE_PRIVATE, 1)` (= FUTEX_WAKE_BITSET). Result: **the waiter wakes immediately
+(r=0), not ETIMEDOUT.** So WAKE_PRIVATE does wake WAIT_UINT_PRIVATE waiters on the same
+address; the bitset being dropped does not lose the wake; the translation is sound.
+
+This RULES OUT the futex layer as the cause of the unreliable job hand-off. Combined with
+nativeEngineState_ reaching 0xb on *some* runs (the state-advance producer DOES run
+sometimes), the async jobs are not blocked on a lost wake or a missing dependency — they
+are **timing-sensitive**: a woken worker competes with the other workers busy-spinning on
+expired-deadline waits (op=15 ETIMEDOUT ~340k/s), and which async job wins the race that run
+decides whether bootstrap reaches render, asserts (retryInit / EngineModule-not-found), or
+hangs (GlobalInit / resume).
+
+So the remaining root is NOT: the per-symptom blockers (fixed), the futex mapping (cleared),
+or a missing IO producer (the producers run sometimes). It IS: the RBX Worker threads
+burning cores on expired-deadline spins delay/starve prompt async-job pickup, making
+bootstrap a race. The futex spin-cap addressed the spin but regressed bootstrap because it
+also slowed the deterministic flag-load race — so the cap must be *scoped* to the idle
+worker parking only (not every timed wait), or the worker parking should block indefinitely
+(no expired-deadline spin) once idle. That is the next concrete lever, and it no longer
+needs the flaky engine repro to prototype — the eventcount's park/spin is reproducible in
+the standalone harness above.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013BsKoQtrUtDDqCD51r5Uxy
