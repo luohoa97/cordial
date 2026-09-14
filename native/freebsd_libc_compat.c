@@ -409,6 +409,42 @@ int bionic_clock_getres(int lx_clockid, struct timespec *ts) {
     return clock_getres(fbsd_clockid(lx_clockid), ts);
 }
 
+// timerfd_create / timerfd_settime with clockid + flag translation. The engine
+// paces its frame loop with a timerfd on the ALooper; bionic passes a *Linux*
+// clockid (CLOCK_MONOTONIC == 1) and *Linux* flag bits (TFD_NONBLOCK == O_NONBLOCK
+// == 0x800, TFD_CLOEXEC == O_CLOEXEC == 0x80000). FreeBSD reads clockid 1 as
+// CLOCK_VIRTUAL (process virtual time) and uses different O_ bit values, so an
+// untranslated call arms the frame timer on the wrong clock with wrong flags and
+// it never fires -> the TaskScheduler's frame clock never steps -> no frames.
+// Translate both. (TFD_TIMER_ABSTIME == 1 on both, so timerfd_settime's flags and
+// the itimerspec pass through unchanged; the absolute deadline is already in the
+// translated MONOTONIC clock the engine reads via bionic_clock_gettime.)
+extern int timerfd_create(int clockid, int flags);
+extern int timerfd_settime(int fd, int flags, const void *new_value, void *old_value);
+#define LX_TFD_NONBLOCK 0x800
+#define LX_TFD_CLOEXEC  0x80000
+#define FBSD_O_NONBLOCK 0x0004
+#define FBSD_O_CLOEXEC  0x00100000
+int bionic_timerfd_create(int lx_clockid, int lx_flags) {
+    int f = 0;
+    if (lx_flags & LX_TFD_NONBLOCK) f |= FBSD_O_NONBLOCK;
+    if (lx_flags & LX_TFD_CLOEXEC)  f |= FBSD_O_CLOEXEC;
+    int fd = timerfd_create(fbsd_clockid(lx_clockid), f);
+    if (getenv("CORDIAL_TRACE_TIMERFD"))
+        fprintf(stderr, "[timerfd] create(lx_clk=%d->fbsd=%d, lx_flags=0x%x->0x%x) = %d\n",
+                lx_clockid, fbsd_clockid(lx_clockid), lx_flags, f, fd);
+    return fd;
+}
+int bionic_timerfd_settime(int fd, int flags, const void *new_value, void *old_value) {
+    int r = timerfd_settime(fd, flags, new_value, old_value);
+    if (getenv("CORDIAL_TRACE_TIMERFD")) {
+        const long long *v = (const long long *)new_value; // {interval.s,interval.ns,value.s,value.ns}
+        fprintf(stderr, "[timerfd] settime(fd=%d, flags=0x%x, interval=%lld.%09lld value=%lld.%09lld) = %d\n",
+                fd, flags, v?v[0]:0, v?v[1]:0, v?v[2]:0, v?v[3]:0, r);
+    }
+    return r;
+}
+
 // Linux x86-64 syscall numbers.
 #define LX_getpid          39
 #define LX_gettid          186

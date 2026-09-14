@@ -113,6 +113,8 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             fn getauxval();
             fn bionic_clock_gettime();
             fn bionic_clock_getres();
+            fn bionic_timerfd_create();
+            fn bionic_timerfd_settime();
             fn bionic_pthread_attr_init();
             fn bionic_pthread_attr_destroy();
             fn bionic_pthread_getattr_np();
@@ -148,6 +150,12 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             f!("getauxval", getauxval),
             f!("clock_gettime", bionic_clock_gettime),
             f!("clock_getres", bionic_clock_getres),
+            // The engine paces its frame loop with a timerfd; bionic passes Linux
+            // clockids/flags that FreeBSD misreads (clockid 1 = CLOCK_VIRTUAL, not
+            // MONOTONIC), so the frame timer never fires and the TaskScheduler
+            // clock never steps. These translate both.
+            f!("timerfd_create", bionic_timerfd_create),
+            f!("timerfd_settime", bionic_timerfd_settime),
             // bionic pthread_attr_t is a by-value 56-byte struct; FreeBSD's is an
             // opaque pointer. Own the whole family so no bionic attr ever reaches
             // host libthr (which would free() its first qword as a pointer).
