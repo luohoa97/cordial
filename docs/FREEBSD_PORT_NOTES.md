@@ -1246,3 +1246,31 @@ path, and the worker entry `sub_27800B0`), or diff against a rendering mocktail 
 Tooling added this session (both gated, both kept): `CORDIAL_TRACE_CLOCK` (clock-read trace
 in `bionic_clock_gettime`) and `CORDIAL_PUMP_MAIN_MSGS` (drain the engine's main-thread queue
 from `looper::pump` — Android parity even though it did not lift this freeze).
+
+### 2026-09-18 (cont.): the stuck job is ONE overdue timed-source in the scheduler table
+
+Located the exact culprit. `sub_2781D90`'s pool context (call it `a2`, recovered at
+steady state as the `rbx` held across the `sub_2784960` call) has a timed-source table:
+count/flags at `a2+1424`, array pointer at `a2+1432`. Each entry is 64 bytes:
+`+16` = next fire-time (µs, monotonic clock 4), `+24` = per-job context object,
+`+32` = tagged ptr, `+40` = shared executor callback (same for all entries).
+
+Dumped it live at the frozen frame (5 populated slots). Fire-times:
+- three slots within ~50 ms of each other, ~= now  → healthy cyclic jobs, re-arming normally.
+- **one slot 50.5 s in the PAST**, fire-time frozen, never advancing.
+
+That one overdue slot is the earliest deadline in the table, so every worker computes a
+wait deadline ~50 s past → `_umtx_op` returns ETIMEDOUT instantly → the 46M/s clock +
+656k/s futex busy-spin → the render job (one of the healthy slots) is starved and never
+presents after frame 1. So the freeze = ONE timed job that became due once and never
+re-armed/completed, pinning the whole scheduler into a hot spin.
+
+Remaining to fix: name that job's class (read `*(+24)` = its vtable, subtract libroblox
+base, resolve the vtable/RTTI in IDA), then find the precondition its step checks that
+never becomes true on FreeBSD (why it neither completes nor reschedules). Tooling notes:
+this lldb is Lua-only (no python), inferior `printf` goes to the process stdout (redirect),
+`memory read` caps at 1024 bytes, and `--batch` aborts the whole `-o` list on the first
+expression error (don't deref non-pointer regs). Bootstrap is still flaky and got worse
+after ~15 window-opening runs in a row (early clean-exits) — warm/settle the box between
+runs. `pthread_setname_np` is a zero-stub here, so engine threads all show as 'cordial-run'
+in lldb rather than "RBX Worker A/B/…" (cosmetic).
