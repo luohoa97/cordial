@@ -721,9 +721,50 @@ pub fn request_quit() {
 
 static QUIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+// The engine's main-thread message queue. On Android the Java main thread
+// periodically calls NativeGLInterface.nativeCallMessagesFromMainThread() to
+// drain work the engine marshalled *to the main thread* (the FunctionMarshaller
+// target). Cordial's main thread runs this pump instead of the Java loop, so
+// unless we drain that queue here, main-thread-affine work never runs — the
+// render/step job that marshals to main sits perpetually "due" and the
+// TaskScheduler workers busy-spin without ever producing a frame. Resolved once
+// by the loader (which has the library) and stored here, because the pump runs
+// on the looper thread with no access to it. Null until set / when unresolved.
+static CALL_MAIN_MSGS: std::sync::atomic::AtomicPtr<c_void> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// Register the `nativeCallMessagesFromMainThread` native so the pump can drain
+/// the engine's main-thread queue each iteration. Pass null to disable.
+pub fn set_call_main_messages_native(native: *mut c_void) {
+    CALL_MAIN_MSGS.store(native, Ordering::Relaxed);
+}
+
+/// Drain the engine's main-thread message queue once. Called from the pump loop
+/// on the main thread. No-op until the native is registered.
+fn drain_main_messages() {
+    let f = CALL_MAIN_MSGS.load(Ordering::Relaxed);
+    if f.is_null() {
+        return;
+    }
+    // SAFETY: bare JNI native (JNIEnv*, jclass); invoked on the main/looper
+    // thread the engine considers its JNI thread, same as the foreground calls.
+    match cordial_linker_sys::game_activity::call_bare_on(
+        f,
+        "com/roblox/engine/jni/NativeGLInterface",
+    ) {
+        Ok(()) => {}
+        Err(e) => super::trace(format_args!("nativeCallMessagesFromMainThread failed: {e}")),
+    }
+}
+
 fn no_close_exit() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("CORDIAL_NO_CLOSE_EXIT").is_some())
+}
+
+fn pump_main_msgs() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("CORDIAL_PUMP_MAIN_MSGS").is_some())
 }
 
 pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
@@ -1407,6 +1448,13 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
         // copy happened on, and GDK may only be touched from the thread that
         // ran `gtk_init`, which is this one.
         super::clipboard::pump_pending();
+
+        // Drain the engine's main-thread message queue. This is the Java main
+        // loop's job on Android; here it must ride the pump. Gated for now so
+        // the effect can be isolated: CORDIAL_PUMP_MAIN_MSGS=1 turns it on.
+        if pump_main_msgs() {
+            drain_main_messages();
+        }
     }
 
     // Clean teardown, however the run ended — the timer expiring, the window

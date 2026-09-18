@@ -403,7 +403,21 @@ static int fbsd_clockid(int lx) {
 // clock_gettime / clock_getres translating the clockid. The engine imports
 // these directly (not only via syscall), so both need an override.
 int bionic_clock_gettime(int lx_clockid, struct timespec *ts) {
-    return clock_gettime(fbsd_clockid(lx_clockid), ts);
+    int r = clock_gettime(fbsd_clockid(lx_clockid), ts);
+    // DIAGNOSTIC (CORDIAL_TRACE_CLOCK=1): confirm the engine's clock_gettime is
+    // actually routed through this shim, and whether the value advances. Prints
+    // once per ~200k calls with the raw returned monotonic value.
+    static int trace = -1;
+    if (trace < 0) trace = getenv("CORDIAL_TRACE_CLOCK") ? 1 : 0;
+    if (trace && ts) {
+        static unsigned long n;
+        unsigned long i = __atomic_fetch_add(&n, 1UL, __ATOMIC_RELAXED);
+        if ((i % 200000) == 0)
+            fprintf(stderr, "[clk] call#%lu lx_clockid=%d fbsd=%d -> %lld.%09ld\n",
+                    i, lx_clockid, fbsd_clockid(lx_clockid),
+                    (long long)ts->tv_sec, (long)ts->tv_nsec);
+    }
+    return r;
 }
 int bionic_clock_getres(int lx_clockid, struct timespec *ts) {
     return clock_getres(fbsd_clockid(lx_clockid), ts);

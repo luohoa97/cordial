@@ -3661,6 +3661,20 @@ fn main() -> ExitCode {
                                             if mv.is_null() || bt.is_null() {
                                                 println!("  input: NativeInputInterface not fully exported; UI input will not work");
                                             }
+                                            // Main-thread message pump: hand the looper the native that
+                                            // drains the engine's main-thread queue (see looper::pump).
+                                            // Without this, work the engine marshals to the main thread
+                                            // never runs and the render job stalls perpetually-due.
+                                            {
+                                                let cm = lib.symbol(
+                                                    "Java_com_roblox_engine_jni_NativeGLInterface_nativeCallMessagesFromMainThread",
+                                                ).unwrap_or(std::ptr::null_mut());
+                                                cordial_runtime::android::looper::set_call_main_messages_native(cm);
+                                                println!(
+                                                    "  main-msgs: nativeCallMessagesFromMainThread {}",
+                                                    if cm.is_null() { "NOT exported" } else { "resolved" }
+                                                );
+                                            }
                                             // Named separately from the pair
                                             // above, because a build that
                                             // exports move and button but not

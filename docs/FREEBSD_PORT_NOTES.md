@@ -1204,3 +1204,45 @@ effort on the scheduler's cyclic-job re-arm logic, ideally on a warmed, non-flak
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01DoaDcG56gpFpbmAZ3nMMzw
+
+---
+
+## Session 2026-09-18: the freeze is a TaskScheduler busy-spin, not a clock/ABI bug
+
+Reproduced the "one frame then frozen" state reliably (resume-hijack + state-poll) and
+instrumented it hard. New, verified facts (each hypothesis below was *tested*, not reasoned):
+
+- **One real frame presents, then zero.** A single Roblox loading-screen element (the blue
+  progress bar) draws, then no further presents. So the render path (acquire→draw→present)
+  runs at least once; it does not *sustain*. "presents=0" from the heartbeat counter is
+  misleading — at least one present lands.
+- **The worker pool busy-spins.** At the frozen frame, ~24 engine worker threads
+  (`sub_2779820`←`sub_2784960`←`sub_2781D90`, thread entry `sub_27800B0`) hammer
+  `_umtx_op` **~656k times/sec**, every call returning **ETIMEDOUT (errno 60)**, and call
+  `clock_gettime` **~46 million times/sec**. They never block. The GPU (nvidia-glcore)
+  threads sit idle-parked; NO thread is in `vkAcquireNextImageKHR`/`vkQueuePresentKHR`.
+- **The futex ABI is correct.** `do_futex` maps `FUTEX_WAIT_BITSET|PRIVATE` (Linux op 0x89)
+  → `_umtx_op(WAIT_UINT_PRIVATE, {ABSTIME, clock 4}, size=24)`. The waits carry an absolute
+  monotonic deadline (in µs, built by `sub_2779820`); ETIMEDOUT is *correct* because the
+  deadline is at/just-past `now`. Not the bug.
+- **The clock is NOT frozen.** Instrumented `bionic_clock_gettime` (CORDIAL_TRACE_CLOCK):
+  the engine calls `clock_gettime(1)` → our shim → FreeBSD clock 4, and the value advances
+  smoothly (e.g. 2945.158→2946.182 over the trace). The earlier "frozen 2205.094208 deadline"
+  is a *fixed past deadline* (a specific stuck job's fire-time), not a stuck clock read.
+- **Not Choreographer/vsync:** `libroblox` imports zero `AChoreographer`/`FrameCallback`
+  symbols. **Not an external per-frame native:** there is no `nativeRender`/`nativeStep`/
+  `nativeDrawFrame` export. **Not main-thread-message starvation:** wiring
+  `nativeCallMessagesFromMainThread` into the pump loop (CORDIAL_PUMP_MAIN_MSGS) drains
+  cleanly (0 failures) but produces no additional frames.
+
+**Conclusion (narrowed):** inside the TaskScheduler, one cyclic job stays perpetually "due"
+(fixed/near-now deadline) and never dispatches to completion, so the workers spin and the
+render job never gets its turn. `sub_2781D90` is the worker main loop; `sub_2784960`/
+`sub_2779820` are the eventcount wait; the timed-job priority queue lives at
+`*(a2+1432)` (stride 64) with per-source next-fire times. Next: identify *which* job holds
+the fixed past deadline and what it waits on (decompile `sub_2784750` = the task-execute
+path, and the worker entry `sub_27800B0`), or diff against a rendering mocktail thread dump.
+
+Tooling added this session (both gated, both kept): `CORDIAL_TRACE_CLOCK` (clock-read trace
+in `bionic_clock_gettime`) and `CORDIAL_PUMP_MAIN_MSGS` (drain the engine's main-thread queue
+from `looper::pump` — Android parity even though it did not lift this freeze).
