@@ -1499,3 +1499,20 @@ This is the true root and it is a flag-handshake problem (deep, likely overlappi
 existing flag-init analysis), not a render-loop or scheduler-dispatch problem as earlier
 framings guessed. Next: make cordial's flag delivery set xmmword_7081250 / signal the getFlags
 CV so the FM thread proceeds — or deliver flags on the path NativeDM getFlags actually reads.
+
+### 2026-09-19 (cont. 8): getFlags is NOT unblocked by delivering the flag value
+
+Tested the obvious fix for cont.7's named root: added GameActivityFlagsLoaded (+ FFlag/DFFlag
+variants) = True to the BUILTIN flag layer so cordial delivers it. Cored a render run with it
+delivered: nativeEngineState_ STILL 2, and getFlags (sub_2C5CAF2) + the boost-CV wait STILL
+on the FM thread's stack (2 each). So delivering the flag's VALUE does not satisfy the wait —
+getFlags is not blocking on "is this flag true" reachable from the local store; it is blocking
+on the async flag-FETCH path (the GameActivity/platform flag source cordial never drives) or
+the CV that fetch would signal. Reverted the flag add (no effect, and unverified flags in
+BUILTIN are risk without payoff).
+
+Sharpened root: the FM thread's getFlags(GameActivityFlagsLoaded) waits on an asynchronous
+flag-load completion signal, not a stored value. The fix must make that async fetch complete
+or signal its CV on FreeBSD — i.e. drive whatever GameActivity-side flag-load the engine is
+waiting on, or satisfy the CV directly. Still the true root; the value-delivery shortcut is
+ruled out.
