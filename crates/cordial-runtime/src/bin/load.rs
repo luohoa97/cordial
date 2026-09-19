@@ -506,6 +506,42 @@ static BOOTSTRAP_RAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// this pair sits on the path that announces the verdict rather than merely
 /// before it. `when` is printed so a log makes it obvious which position a run
 /// used, which two earlier orderings did not.
+/// Run `call` with the engine's FunctionMarshaller handle (qword_7081868)
+/// temporarily pointed at THIS thread, so a DataModel dispatch the call makes
+/// runs inline (pthread_self()==FM) instead of deadlocking — on this port the
+/// FM thread never services the marshalled work, so any main-thread bootstrap
+/// call that marshals-and-waits (GameGlobalInit, StartApp, UpdateSurface, the
+/// surface hand-off, resume) hangs. Scoped: the handle is restored immediately
+/// after, so the real FM stays in place for the engine's own later marshals (a
+/// persistent overwrite breaks the state-advance, ADR-001). base = JNI_OnLoad -
+/// 0x22addd7. Enabled by CORDIAL_MARSHAL_HIJACK; a plain `call()` otherwise or
+/// off FreeBSD. Writes engine memory, so the write path is unsafe-experiments only.
+fn with_fm_hijack<T>(lib: &linker::Library, call: impl FnOnce() -> T) -> T {
+    #[cfg(all(target_os = "freebsd", feature = "unsafe-experiments"))]
+    {
+        if std::env::var_os("CORDIAL_MARSHAL_HIJACK").is_some() {
+            if let Some(jni) = lib.symbol("JNI_OnLoad") {
+                let slot =
+                    ((jni as usize).wrapping_sub(0x22addd7) + 0x7081868) as *mut usize;
+                extern "C" {
+                    fn pthread_self() -> usize;
+                }
+                // SAFETY: single pointer-sized read/write of a known engine global
+                // compared only by value; restored immediately after `call`.
+                unsafe {
+                    let old = *slot;
+                    *slot = pthread_self();
+                    let r = call();
+                    *slot = old;
+                    return r;
+                }
+            }
+        }
+    }
+    let _ = lib;
+    call()
+}
+
 fn call_globals(lib: &linker::Library, when: &str) {
     // `CORDIAL_NO_GLOBAL_INIT=1` is the control for the pair, not a setting.
     //
@@ -528,7 +564,9 @@ fn call_globals(lib: &linker::Library, when: &str) {
         let short = name.rsplit('_').next().unwrap_or(name);
         match lib.symbol(name) {
             None => println!("  {name} not exported"),
-            Some(f) => match linker::game_activity::appbridge_call_bare(f) {
+            // GameGlobalInit marshals DataModel work to the FM thread and waits;
+            // on this port that self-deadlocks, so run it through with_fm_hijack.
+            Some(f) => match with_fm_hijack(lib, || linker::game_activity::appbridge_call_bare(f)) {
                 Ok(()) => println!("  {short} ok ({when})"),
                 Err(e) => println!("  {short} failed ({when}): {e}"),
             },
