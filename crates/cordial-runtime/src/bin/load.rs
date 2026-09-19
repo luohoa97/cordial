@@ -4454,6 +4454,29 @@ fn main() -> ExitCode {
                                             }
                                         }
 
+                                        // Start the Lua app's DataModel RUNNING. Per the Waydroid
+                                        // capture the real client calls nativeAppBridgeStartLuaAppDM
+                                        // here (after AppStart/Init, before StartApp). This is what
+                                        // actually kicks the TaskScheduler heartbeat (TS::Step) into
+                                        // running; without it the scheduler is built but never driven,
+                                        // so 37 workers idle on empty deques and only one frame ever
+                                        // presents. It was skipped before because it deadlocked/crashed
+                                        // on the engine's own 'Main' thread — the same self-marshalling
+                                        // deadlock the FM-hijack now resolves. Marshal-hijacked + gated
+                                        // (CORDIAL_START_LUA_DM=1) so it can be A/B'd.
+                                        if std::env::var_os("CORDIAL_START_LUA_DM").is_some() {
+                                            if let Some(f) = lib.symbol(
+                                                "Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeStartLuaAppDM",
+                                            ) {
+                                                match with_fm_hijack(&lib, || linker::game_activity::appbridge_call_bare(f)) {
+                                                    Ok(()) => println!("  nativeAppBridgeStartLuaAppDM ok (DataModel run started)"),
+                                                    Err(e) => println!("  StartLuaAppDM failed: {e}"),
+                                                }
+                                            } else {
+                                                println!("  nativeAppBridgeStartLuaAppDM not exported");
+                                            }
+                                        }
+
                                         // And the call that delivers the surface.
                                         if let Some(f) = lib.symbol(
                                             "Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeV2StartAppWithParams",
