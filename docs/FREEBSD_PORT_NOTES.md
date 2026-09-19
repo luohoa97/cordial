@@ -1371,3 +1371,26 @@ Remaining root (narrowed to the deque): why an enqueued job does not become visi
 spinning workers' ready-deque poll on FreeBSD — i.e. the lock-free work-stealing deque push
 (sub_2780800 / sub_2784750 CAS chains) vs the workers' pop in sub_2784960. That is the last
 layer. Kept: render.core (base 0x37de301c0000) for offline deque-state analysis.
+
+### 2026-09-19 (cont. 3): re-corrected — TS::Step is NOT running; workers idle on EMPTY deques
+
+Read every thread's registers + stack straight from a render-freeze core (FreeBSD prstatus
+via lldb, then offline stack scans). Findings:
+  - 37 threads are in INFINITE _umtx_op waits (op 15, timeout ptr = NULL) on eventcount
+    words: their work deques are EMPTY and they are parked for a wake that never comes.
+  - 12 threads are in timed waits; their deadlines are ordinary (7 on CLOCK_REALTIME wall
+    timeouts ~now..now+30s; 2 on CLOCK_MONOTONIC, one ~now and one ~now+119s — the +119s
+    one is thread 23 in sub_277D0D0 but NOT TS::Step, i.e. an unrelated 2-minute timeout).
+  - Scanning each thread's live stack from RSP: NO thread has TS::Step (sub_2380982) on it.
+    The 3 earlier "TS::Step on stack" hits were the stored job *function pointer* (data:
+    scheduler+384 + the ctor temp), not live frames. So the previous correction was wrong:
+    **TS::Step's while(1) frame loop is not running on any thread.**
+
+Clean statement of the deadlock: the TaskScheduler ctor builds the TS::Step job and stores
+it (scheduler+384), but it never gets enqueued into a worker deque / invoked, so the
+heartbeat never runs, so nothing ever produces per-frame work or signals TS::CV, so all 37
+workers sit in infinite eventcount waits on empty deques. Zero wakes, zero production, one
+frame. The missing piece is whatever, on Android, first enqueues/kicks the TS::Step job (or
+drives the scheduler's step) after construction — cordial isn't doing it. Not a clock/futex/
+condvar bug (all verified). The mocktail diff (same engine, rendering) would show exactly
+what kicks TS::Step; that needs mocktail launched+logged-in.
