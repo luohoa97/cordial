@@ -1470,3 +1470,32 @@ says these did not block the reached path. Top init-adjacent suspect if revisite
 IPlatformLocalStorageHandler CppProxy (a Djinni C++/Java bridge the DataModel may need), but
 implementing it is a Djinni-proxy job and speculative. Recorded as a concrete work-queue,
 not a confirmed fix.
+
+### 2026-09-19 (cont. 7): the immovable deadlock NAMED — FM thread wedged in NativeDM getFlags
+
+Two results this push.
+
+(a) CORDIAL_ASYNC_GLOBALS correction: running GameGlobalInit on a detached thread while main
+drains nativeCallMessagesFromMainThread makes the *call return* ("nativeGameGlobalInit ok
+(async)", 4/6), confirming that specific call is mutual-deadlock-prone — BUT a core of an
+async-globals render run shows nativeEngineState_ STILL 2 and the FM thread STILL in the
+boost::condition_variable::wait. So async-globals is a mechanism confirmation, NOT a fix; it
+only lets the outer call return. Same frozen end-state. (Corrects the cont. commit's "cleaner
+fix" wording.)
+
+(b) The immovable deadlock is named. The FM thread's boost-CV wait sits inside sub_2C5CAF2,
+which is the **NativeDM getFlags** path — its log string is
+`[FLog::NativeDM] ... getFlags: Already got the flags.`. The blocked thread is on the
+v2==0 branch: the flag-ready global `xmmword_7081250` (2.721) is NOT set, so getFlags
+believes flags have not arrived and waits on a condition variable for them; the delivery that
+would set that state and signal the CV never does (on this thread's view). CORDIAL_SET_FLAGS_
+LOADED sets a *different* byte (the 0x75a8250 TaskScheduler gate), not this getFlags-ready
+xmmword. So the whole freeze traces to: the FM thread calls NativeDM getFlags before/while
+the flag store is (from its view) empty, and blocks forever waiting for a flag-ready signal
+cordial's settings/flags delivery does not produce for this path.
+
+Immovable across: marshal-hijack, async-globals, main-msg drain, every external render drive.
+This is the true root and it is a flag-handshake problem (deep, likely overlapping the
+existing flag-init analysis), not a render-loop or scheduler-dispatch problem as earlier
+framings guessed. Next: make cordial's flag delivery set xmmword_7081250 / signal the getFlags
+CV so the FM thread proceeds — or deliver flags on the path NativeDM getFlags actually reads.
