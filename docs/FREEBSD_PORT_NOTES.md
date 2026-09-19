@@ -1312,3 +1312,37 @@ Two big results today.
    Tooling that finally worked: gcore + offline scan_core.py. Live lldb is unreliable here
    (Lua-only, no unwind for stripped frames so outer-frame regs can't be read, and the
    sub_2784960 breakpoint only hits when workers actively spin, not when parked).
+
+### 2026-09-19 (cont.): full mechanism traced — the scheduler chicken-and-egg
+
+Runtime proof: at the frozen frame, `_umtx_op` runs at ~1.1M/s and EVERY call is op 15
+(WAIT_UINT_PRIVATE); ZERO op-16 wakes, zero of anything else. The workers only ever wait;
+nothing ever signals them.
+
+Decompiled the heartbeat. `sub_2380982` (TS::Step, scheduled in the TaskScheduler ctor) is
+a `while(1)` frame loop; each iteration does frame work then runs a frame limiter:
+`sub_277D0D0(scheduler+168 /*TS::CV*/, &mutexguard, v35 /*next-frame deadline µs*/)` — a
+timed wait on TS::CV until the frame deadline. `sub_277C660` = now() in µs
+(clock_gettime(1)->shim->FreeBSD monotonic 4). `sub_277CA80` builds TS::CV via `sub_2779D40`
+as a custom eventcount over the futex (op-15 WAIT_BITSET absolute-deadline), NOT pthread_cond.
+`sub_277C580` (first call each iter) is worker-count management (sysconf(97) already mapped
+bionic->FreeBSD 58 correctly; not the bug).
+
+The stall is a chicken-and-egg in the eventcount dispatch, not a clock or ABI bug (both
+verified correct):
+  - Worker threads block/spin on TS::CV waiting to be handed a job. Their timed wait
+    instant-times-out because the deadline is the stale next-frame time (past), so they
+    respin (op-15 at 1.1M/s) instead of staying blocked.
+  - The producer/notify side issues ZERO wakes: nothing promotes the due timed jobs
+    (TS::Step among them) into the ready deque and signals a worker. TS::Step therefore
+    never gets dispatched to a worker, so its `while(1)` frame loop never runs, so the
+    frame clock / next-frame deadline never advances, so the workers' deadline stays stale
+    — closing the loop. It runs ~2 iterations to APP_READY (mainWorkCallback ~2x) then wedges.
+
+So continuous rendering hinges on breaking this: get TS::Step dispatched and its frame loop
+sustained — i.e. make the eventcount either (a) actually block workers (so the producer sees
+a blocked waiter and issues the wake it currently skips), or (b) promote+dispatch the due
+timed job without relying on a wake. This is engine-internal scheduler dispatch logic; the
+next concrete step is to decompile the timed->ready promotion + the eventcount notify
+(the producer counterpart to sub_2779820) and find why, on FreeBSD, the notify path issues
+no _umtx_op wake when a job becomes due.
