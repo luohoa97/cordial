@@ -1346,3 +1346,28 @@ timed job without relying on a wake. This is engine-internal scheduler dispatch 
 next concrete step is to decompile the timed->ready promotion + the eventcount notify
 (the producer counterpart to sub_2779820) and find why, on FreeBSD, the notify path issues
 no _umtx_op wake when a job becomes due.
+
+### 2026-09-19 (cont. 2): correction — TS::Step IS running, blocked in the eventcount wait
+
+Scanned a render-freeze core for code addresses on stacks (offline, reliable — frame#0 is
+always a libc syscall and unwinding stripped frames is impossible in this lldb):
+  - TS::Step body (0x2380982..0x23812dd): 3 occurrences on stacks
+  - sub_2779820 (eventcount wait): 24
+  - sub_2781D90 (worker loop): 32
+So TS::Step is NOT "never started" (earlier guess corrected): it IS dispatched and running,
+blocked inside the eventcount wait. Full chain decompiled:
+  TS::Step (sub_2380982, while(1) frame loop)
+    -> sub_277D0D0 (TS::CV wait) -> sub_277B3D0 (cv wait-until deadline)
+    -> sub_2784960 -> sub_2779820 (futex WAIT_BITSET, absolute µs deadline).
+Deadline units are consistent µs throughout (sub_277C660 now()=clock_gettime(1)->shim->
+FreeBSD-4 monotonic; sub_2779820 converts µs->timespec). The MINBLOCK experiment proved
+parking the waiters doesn't help and there are zero wakes ever, so this is not a missed-wake
+race — the work-stealing DISPATCH is broken: TS::Step dispatches its per-frame DataModel/
+render jobs and then joins on them, but the ~24 worker threads never pick those jobs up
+(they spin/park in the eventcount and no enqueue ever reaches the ready deque they poll),
+so TS::Step blocks in the join forever after ~2 frames.
+
+Remaining root (narrowed to the deque): why an enqueued job does not become visible to the
+spinning workers' ready-deque poll on FreeBSD — i.e. the lock-free work-stealing deque push
+(sub_2780800 / sub_2784750 CAS chains) vs the workers' pop in sub_2784960. That is the last
+layer. Kept: render.core (base 0x37de301c0000) for offline deque-state analysis.
