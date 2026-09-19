@@ -1394,3 +1394,30 @@ frame. The missing piece is whatever, on Android, first enqueues/kicks the TS::S
 drives the scheduler's step) after construction — cordial isn't doing it. Not a clock/futex/
 condvar bug (all verified). The mocktail diff (same engine, rendering) would show exactly
 what kicks TS::Step; that needs mocktail launched+logged-in.
+
+### 2026-09-19 (cont. 4): the wedge is the startup thread T12 in a FunctionMarshaller wait
+
+Reconstructed a per-thread call-chain for every thread from a render-freeze core (return
+addresses on each stack). The engine's startup thread (T12) is NOT in the eventcount pool;
+its chain runs through GameGlobalInit (~0x2339xxx) and AppBridge (0x2c18/0x2c5c) into
+sub_23904A8 = **boost::condition_variable::wait -> pthread_cond_wait**, an INFINITE wait.
+
+The bionic pthread_cond shim is correct (resolve() is a proper UNINIT->INITIALISING->READY
+CAS; wait and signal resolve the same backing for a given cond), so this is not a lost/
+mis-routed signal — nothing ever calls signal. Confirmed by the whole-process fact: ZERO
+_umtx_op wakes of any kind; every one of the 50 threads is waiting, none signalling. Total
+wake-less deadlock.
+
+Reads from the core: FM handle qword_7081868 = a live pthread_t (the FunctionMarshaller
+thread exists), and nativeEngineState_ = 2 (the stuck intermediate state, never advances to
+1/0xb). So: startup thread T12 marshals an init call to the FM thread and blocks on the
+boost CV for the result; the FM thread never pumps it; engine state stays 2; the
+TaskScheduler heartbeat is never started; 37 workers idle on empty deques. Every layer waits
+on the one below. The main-thread FM-hijack fixes the calls CORDIAL makes, but T12 is the
+engine's own thread and can't be hijacked that way.
+
+Actionable next lead: why a call marshalled to the FM thread never wakes/runs it on FreeBSD
+(the FM thread exists but is parked and never signalled) — i.e. the marshaller's post+wake
+path, which is the single wedge that cascades into the whole freeze. That, not the render
+loop, is the true root: fix the FM pump/wake and state 2 -> ready should follow, and the
+scheduler with it.
