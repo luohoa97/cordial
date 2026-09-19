@@ -1421,3 +1421,31 @@ Actionable next lead: why a call marshalled to the FM thread never wakes/runs it
 path, which is the single wedge that cascades into the whole freeze. That, not the render
 loop, is the true root: fix the FM pump/wake and state 2 -> ready should follow, and the
 scheduler with it.
+
+### 2026-09-19 (cont. 5): correction — the FM-hijack is NOT the cause; init deadlock is intrinsic
+
+Cored a run WITHOUT the marshal-hijack that hung at GameGlobalInit. Result disproves the
+prior "hijack steals the FM identity" hypothesis: T12 is blocked in the SAME
+boost::condition_variable::wait (sub_23904A8, via GlobalInit->AppBridge) with OR without the
+hijack, and nativeEngineState_ is 2 either way. Without the hijack the MAIN thread is also
+blocked (in the eventcount/marshaller wait sub_2779820<-sub_2784960), i.e. the classic
+GameGlobalInit deadlock; the hijack only lets MAIN's call run inline, it does not create
+T12's deadlock. So the FM-hijack is exonerated (again — this walks back the cont.4 note).
+
+Also: GameGlobalInit is flaky WITHOUT the hijack too (completed on one try, hung on the
+next), consistent with a timing-sensitive init-coordination deadlock rather than a
+deterministic one.
+
+Verified facts that have survived every correction this session:
+  - Engine init wedges with nativeEngineState_ stuck at 2 (never reaches 1/0xb-ready).
+  - Multiple engine init threads block in boost::condition_variable / marshaller waits;
+    the whole process issues ZERO _umtx_op wakes (total wake-less deadlock).
+  - The bionic pthread_cond shim is correct; the FM thread exists; it's not a clock/futex
+    ABI bug (all independently verified).
+  - It is intrinsic to the engine's async-init coordination on FreeBSD, timing-sensitive,
+    and not broken by (nor fixed by) any external drive tried (resume, redraw, main-msgs,
+    StartLuaAppDM) or the FM-hijack.
+Honest status: root localized to the engine's startup thread-coordination deadlock, not yet
+fixed. Prior single-cause hypotheses (frozen clock, split clock, spin-vs-block, TS::Step
+never-dispatched, hijack-steals-FM) were each tested and walked back; the durable statement
+is the wedge above.
