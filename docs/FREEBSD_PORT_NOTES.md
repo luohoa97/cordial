@@ -1274,3 +1274,41 @@ expression error (don't deref non-pointer regs). Bootstrap is still flaky and go
 after ~15 window-opening runs in a row (early clean-exits) — warm/settle the box between
 runs. `pthread_setname_np` is a zero-stub here, so engine threads all show as 'cordial-run'
 in lldb rather than "RBX Worker A/B/…" (cosmetic).
+
+### 2026-09-19: the stuck "job" is the TaskScheduler's condition variable TS::CV
+
+Two big results today.
+
+1. **GameGlobalInit self-marshalling deadlock, fixed.** nativeGameGlobalInit marshals
+   DataModel work to the FM thread and waits; the FM never services it, so the main
+   thread deadlocks in do_futex during call_globals. with_fm_hijack() (CORDIAL_MARSHAL_HIJACK)
+   points the FM handle at the calling thread for the marshalling call so it runs inline.
+   Bootstrap went from ~0 to ~3/6 reaching render stage (commit 7ff4f59). The remaining
+   flakiness is an intermittent StartApp hang + EngineModule assert — and crucially:
+
+2. **The StartApp hang and the render freeze are the SAME bug.** The StartApp-hang main
+   thread is blocked in the *same* eventcount wait as the render-freeze workers
+   (sub_2779820 <- sub_2784960): StartApp schedules a job and blocks waiting for the
+   scheduler to run it; the scheduler won't. Same root.
+
+   Named it via offline core-dump analysis (scan_core.py: parse the ELF core's PT_LOAD
+   segments, find the scheduler's waiter table by the shared-executor signature
+   base+0x2786150 at slot+40, read each waiter's inline name at ctx+0x10). In a HUNG core
+   the table holds exactly ONE live waiter: **"TS::CV"** — and sub_2380400 (the
+   TaskScheduler constructor, "Can't initialize the TaskScheduler before flags have been
+   loaded") builds it as the scheduler's condition variable: `sub_277E3B0(+152,"TS::Mutex")`,
+   `sub_277CA80(+168,"TS::CV")`, then schedules "TS::Step" (sub_2380982). Healthy cores
+   also show "FrequencyEvaluator" and "AssetProvider::WorkFlow" waiters, which drain; only
+   TS::CV stays.
+
+   So the worker threads block on the TaskScheduler condition variable TS::CV and are never
+   signaled on FreeBSD — the wake that should fire when work is enqueued / a frame is due
+   doesn't reach the waiters, so they only ever wake on the (stale) timed deadline and
+   re-wait. That is the freeze. Next: decompile TS::CV's wait (sub_2779820) vs its signal
+   (the futex WAKE on the same word) to find why the wake is lost on this port — most
+   likely the condvar signal path (bionic pthread_cond / the eventcount notify) not issuing
+   the _umtx_op WAKE the waiter's address needs.
+
+   Tooling that finally worked: gcore + offline scan_core.py. Live lldb is unreliable here
+   (Lua-only, no unwind for stripped frames so outer-frame regs can't be read, and the
+   sub_2784960 breakpoint only hits when workers actively spin, not when parked).
