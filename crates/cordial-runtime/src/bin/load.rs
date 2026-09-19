@@ -3983,7 +3983,45 @@ fn main() -> ExitCode {
                                         }
 
                                         if !globals_early {
-                                            call_globals(&lib, "late");
+                                            // EXPERIMENT (CORDIAL_ASYNC_GLOBALS=1): the GameGlobalInit
+                                            // deadlock is a MUTUAL one — the main thread blocks
+                                            // synchronously inside GameGlobalInit waiting on the engine's
+                                            // FunctionMarshaller thread, while that thread's own init needs
+                                            // the main thread to service a callback it posts to the
+                                            // main-thread message queue. On Android GameGlobalInit returns
+                                            // fast (async); cordial's synchronous call wedges both. Fix:
+                                            // run globals on a detached thread and keep THIS (main) thread
+                                            // draining the main-thread message queue so the engine's
+                                            // cross-thread callback lands and the FM thread proceeds.
+                                            if std::env::var_os("CORDIAL_ASYNC_GLOBALS").is_some() {
+                                                let gg = lib.symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativeGameGlobalInit").map(|p| p as usize).unwrap_or(0);
+                                                let ua = lib.symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativeUpdateAdapterInit").map(|p| p as usize).unwrap_or(0);
+                                                let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                                                let d2 = done.clone();
+                                                println!("  [async-globals] running GameGlobalInit on a detached thread; main drains main-thread messages");
+                                                std::thread::spawn(move || {
+                                                    if gg != 0 {
+                                                        match linker::game_activity::appbridge_call_bare(gg as *mut std::ffi::c_void) {
+                                                            Ok(()) => println!("  nativeGameGlobalInit ok (async)"),
+                                                            Err(e) => println!("  nativeGameGlobalInit failed (async): {e}"),
+                                                        }
+                                                    }
+                                                    if ua != 0 { let _ = linker::game_activity::appbridge_call_bare(ua as *mut std::ffi::c_void); }
+                                                    d2.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                });
+                                                let start = std::time::Instant::now();
+                                                while !done.load(std::sync::atomic::Ordering::SeqCst)
+                                                    && start.elapsed().as_secs() < 30
+                                                {
+                                                    cordial_runtime::android::looper::drain_main_messages();
+                                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                                }
+                                                println!("  [async-globals] globals {} after {}ms",
+                                                    if done.load(std::sync::atomic::Ordering::SeqCst) { "completed" } else { "TIMED OUT" },
+                                                    start.elapsed().as_millis());
+                                            } else {
+                                                call_globals(&lib, "late");
+                                            }
                                         }
 
                                         // Restore the real FunctionMarshaller handle immediately, so ONLY

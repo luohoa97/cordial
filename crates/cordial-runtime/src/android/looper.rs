@@ -741,7 +741,7 @@ pub fn set_call_main_messages_native(native: *mut c_void) {
 
 /// Drain the engine's main-thread message queue once. Called from the pump loop
 /// on the main thread. No-op until the native is registered.
-fn drain_main_messages() {
+pub fn drain_main_messages() {
     let f = CALL_MAIN_MSGS.load(Ordering::Relaxed);
     if f.is_null() {
         return;
