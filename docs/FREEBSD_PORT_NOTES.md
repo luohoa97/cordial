@@ -1449,3 +1449,24 @@ Honest status: root localized to the engine's startup thread-coordination deadlo
 fixed. Prior single-cause hypotheses (frozen clock, split clock, spin-vs-block, TS::Step
 never-dispatched, hijack-steals-FM) were each tested and walked back; the durable statement
 is the wedge above.
+
+### 2026-09-19 (cont. 6): JNI-trace gap list (CORDIAL_JNI_TRACE=1) — data, not a smoking gun
+
+Rebuilt with CORDIAL_JNI_TRACE=1 (libjnivm emits "Constructed Unresolved symbol") and ran a
+wedged (marshal-hijack, frozen-frame) bootstrap. The native->Java calls the engine makes
+that cordial does NOT answer this run:
+  - java/lang/Class.getClassLoader ()Ljava/lang/ClassLoader;         (reflection)
+  - com/roblox/protocols/localstorageplatforminterface/generated/IPlatformLocalStorageHandler$CppProxy.<init>(J)... + field nativeRef:J   (Djinni local-storage proxy, at bootstrap)
+  - com/roblox/engine/jni/NativeGLJavaInterface: promptNativePurchase, saveImageToAlbum,
+    onVrSessionStateUpdate, onExtendedAnalyticsRecvCallback, getMobileAdvertisingId  (feature callbacks)
+  - com/google/androidgamesdk/GameActivity: finish(), getWindowInsets(I)Landroidx/core/graphics/Insets;
+
+Crucially, the init path PROGRESSES PAST all of them: same run still reaches vkCreateSwapchain,
+"app started with surface", APP_READY (PlatformAccountRouter + Startup), and resume ok. So
+none of these is what blocks the main thread — the freeze is still the scheduler not running
+after APP_READY, and T12(FM)/init-coordination deadlock, unaffected by these gaps. The
+report's own caveat holds: a gap here is not proof it broke anything, and here the evidence
+says these did not block the reached path. Top init-adjacent suspect if revisited:
+IPlatformLocalStorageHandler CppProxy (a Djinni C++/Java bridge the DataModel may need), but
+implementing it is a Djinni-proxy job and speculative. Recorded as a concrete work-queue,
+not a confirmed fix.
