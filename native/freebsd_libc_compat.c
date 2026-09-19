@@ -315,6 +315,29 @@ static long do_futex(void *uaddr, int op, unsigned int val, const struct timespe
                 ut._flags = 0; // plain WAIT is a relative timeout
                 ut._clockid = FBSD_CLOCK_MONOTONIC;
             }
+            // EXPERIMENT (CORDIAL_FUTEX_MINBLOCK=<us>): the TaskScheduler's
+            // eventcount (TS::CV) waits with an absolute deadline that is the
+            // stale next-frame time (already in the past because TS::Step hasn't
+            // advanced the frame clock), so every WAIT_BITSET insta-ETIMEDOUTs and
+            // the workers hot-spin instead of ever parking. A producer that only
+            // wakes *blocked* waiters then never issues a wake -> dispatch stalls.
+            // When set, a past absolute deadline is pushed to now+MINBLOCK (still
+            // ABSTIME, clock 4) so the waiter actually parks briefly, giving a
+            // concurrent notify a window to land. Off by default.
+            if (cmd == LX_FUTEX_WAIT_BITSET) {
+                static int mb = -2;
+                if (mb == -2) { const char *e = getenv("CORDIAL_FUTEX_MINBLOCK"); mb = e ? atoi(e) : -1; }
+                if (mb > 0) {
+                    struct timespec nowm; clock_gettime(4, &nowm);
+                    long long now_us = (long long)nowm.tv_sec * 1000000LL + nowm.tv_nsec / 1000;
+                    long long dl_us  = (long long)ut._timeout.tv_sec * 1000000LL + ut._timeout.tv_nsec / 1000;
+                    if (dl_us <= now_us) {
+                        long long t = now_us + mb;
+                        ut._timeout.tv_sec = t / 1000000LL;
+                        ut._timeout.tv_nsec = (t % 1000000LL) * 1000;
+                    }
+                }
+            }
             tptr = &ut;
             tsz = sizeof(ut);
         }
