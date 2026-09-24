@@ -78,6 +78,19 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.19.0" date="2026-09-25">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.19.0</url>
+      <description>
+        <p>
+          Private servers can be joined from the Roblox website and from a
+          game's Servers list, and joining a game from a Roblox web page
+          closes the page.
+        </p>
+        <p>
+          Plugins now apply to a running Cordial without restarting it.
+        </p>
+      </description>
+    </release>
     <release version="0.18.0" date="2026-09-24">
       <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.18.0</url>
       <description>

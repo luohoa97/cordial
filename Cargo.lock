@@ -301,14 +301,14 @@ dependencies = [
 
 [[package]]
 name = "cordial-linker-sys"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "cmake",
 ]
 
 [[package]]
 name = "cordial-plugins"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "base64 0.23.1",
  "blake2",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "cordial-runtime"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "cordial-linker-sys",
  "cordial-plugins",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "cordial-shell"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "cordial-linker-sys",
  "cordial-plugins",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "cordial-update"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "cordial-plugins",
  "http",
