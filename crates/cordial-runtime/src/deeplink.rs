@@ -877,6 +877,20 @@ fn url_value_safe(s: &str) -> bool {
         && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'))
 }
 
+/// The fields of a live `Roblox.Hybrid.Game.launchGame` payload that
+/// [`publish_hybrid_game_launch`] carries into the join link.
+pub struct HybridLaunch<'a> {
+    pub place_id: &'a str,
+    pub instance_id: Option<&'a str>,
+    pub join_attempt_id: Option<&'a str>,
+    pub join_attempt_origin: Option<&'a str>,
+    pub browser_tracker_id: Option<&'a str>,
+    pub access_code: Option<&'a str>,
+    pub link_code: Option<&'a str>,
+    pub reserved_server_access_code: Option<&'a str>,
+}
+
+
 /// Deliver a live `Roblox.Hybrid.Game.launchGame` interception, carrying the
 /// whole payload the page supplied rather than the bare `placeId` [`translate`]
 /// is limited to.
@@ -912,13 +926,15 @@ fn url_value_safe(s: &str) -> bool {
 /// it -- reported by name either way, so a link that behaves differently
 /// from the payload that produced it always says which field explains it,
 /// the same discipline [`translate`]'s own `dropped` list already keeps.
-pub fn publish_hybrid_game_launch(
-    place_id: &str,
-    instance_id: Option<&str>,
-    join_attempt_id: Option<&str>,
-    join_attempt_origin: Option<&str>,
-    browser_tracker_id: Option<&str>,
-) -> Result<(), String> {
+///
+/// **A private or reserved server's codes are carried too** (`accessCode`,
+/// `linkCode`, `reservedServerAccessCode`): all three are in the engine's own
+/// `FStringGameLaunchLinkURL` grammar (`docs/analysis/deep-links.md`), and a
+/// private-server Join from the Servers list sends `RequestPrivateGame` with
+/// them rather than `RequestGameJob`. Without them that Join did nothing. Only
+/// their names are ever logged, never their values.
+pub fn publish_hybrid_game_launch(launch: &HybridLaunch<'_>) -> Result<(), String> {
+    let place_id = launch.place_id;
     let Some(lib) = *LIVE_LIB.lock().expect("no other thread panics holding this") else {
         return Err("no engine library armed yet for a live publish (arm_live was never called)"
             .to_string());
@@ -927,28 +943,7 @@ pub fn publish_hybrid_game_launch(
         return Err("placeId is not a number, and Cordial will not invent one".to_string());
     }
 
-    let mut url = format!("roblox://experiences/start?placeId={place_id}");
-    let mut carried = vec!["placeId"];
-    let mut dropped = Vec::new();
-    for (name, value) in [
-        ("gameInstanceId", instance_id),
-        ("joinAttemptId", join_attempt_id),
-        ("joinAttemptOrigin", join_attempt_origin),
-        ("browserTrackerId", browser_tracker_id),
-    ] {
-        match value {
-            Some(v) if url_value_safe(v) => {
-                url.push('&');
-                url.push_str(name);
-                url.push('=');
-                url.push_str(v);
-                carried.push(name);
-            }
-            Some(_) => dropped.push(name),
-            None => {}
-        }
-    }
-
+    let (url, carried, dropped) = hybrid_launch_url(launch);
     let joined = validate(&url)
         .map_err(|e| format!("the built link is not one Cordial takes: {e}"))?;
     println!("[deeplink] live hybrid launch: carrying {}", carried.join(", "));
@@ -964,6 +959,36 @@ pub fn publish_hybrid_game_launch(
     } else {
         Err("MessageBus.publishRaw is not exported by this build".to_string())
     }
+}
+
+/// The link [`publish_hybrid_game_launch`] builds, with the names it carried
+/// and dropped. Split out so it can be tested without an engine.
+fn hybrid_launch_url(launch: &HybridLaunch<'_>) -> (String, Vec<&'static str>, Vec<&'static str>) {
+    let mut url = format!("roblox://experiences/start?placeId={}", launch.place_id);
+    let mut carried = vec!["placeId"];
+    let mut dropped = Vec::new();
+    for (name, value) in [
+        ("gameInstanceId", launch.instance_id),
+        ("joinAttemptId", launch.join_attempt_id),
+        ("joinAttemptOrigin", launch.join_attempt_origin),
+        ("browserTrackerId", launch.browser_tracker_id),
+        ("accessCode", launch.access_code),
+        ("linkCode", launch.link_code),
+        ("reservedServerAccessCode", launch.reserved_server_access_code),
+    ] {
+        match value {
+            Some(v) if url_value_safe(v) => {
+                url.push('&');
+                url.push_str(name);
+                url.push('=');
+                url.push_str(v);
+                carried.push(name);
+            }
+            Some(_) => dropped.push(name),
+            None => {}
+        }
+    }
+    (url, carried, dropped)
 }
 
 /// Put the URL on the engine's message bus.
@@ -1125,6 +1150,48 @@ fn probe(lib: linker::Library) {
 
 #[cfg(test)]
 mod tests {
+
+    /// A private server's Join carries its access code into the link the
+    /// engine gets, and that link passes the same validation every launch
+    /// does. Fake, obviously-shaped values; no real code in a test.
+    #[test]
+    fn a_private_server_join_carries_its_codes_and_validates() {
+        let launch = HybridLaunch {
+            place_id: "4924922222",
+            instance_id: None,
+            join_attempt_id: Some("0f0e0d0c-aaaa-bbbb-cccc-000000000001"),
+            join_attempt_origin: Some("privateServerListJoin"),
+            browser_tracker_id: None,
+            access_code: Some("00000000-1111-2222-3333-444444444444"),
+            link_code: Some("12345678901234567890"),
+            reserved_server_access_code: None,
+        };
+        let (url, carried, dropped) = hybrid_launch_url(&launch);
+        assert!(carried.contains(&"accessCode"), "carried: {carried:?}");
+        assert!(carried.contains(&"linkCode"), "carried: {carried:?}");
+        assert!(dropped.is_empty(), "dropped: {dropped:?}");
+        assert!(url.contains("&accessCode=00000000-1111-2222-3333-444444444444"));
+        assert!(validate(&url).is_ok(), "the engine-bound link must validate: {url}");
+    }
+
+    /// A value that is not safe to put in a query unescaped is dropped by
+    /// name, never passed through or silently lost.
+    #[test]
+    fn an_unsafe_access_code_is_dropped_and_named() {
+        let launch = HybridLaunch {
+            place_id: "1818",
+            instance_id: None,
+            join_attempt_id: None,
+            join_attempt_origin: None,
+            browser_tracker_id: None,
+            access_code: Some("a&b=c"),
+            link_code: None,
+            reserved_server_access_code: None,
+        };
+        let (url, _, dropped) = hybrid_launch_url(&launch);
+        assert_eq!(dropped, vec!["accessCode"]);
+        assert!(!url.contains("accessCode"));
+    }
     /// **The ticket is dropped unless the setting says otherwise.**
     ///
     /// The default matters more than the feature: `gameinfo` is a live

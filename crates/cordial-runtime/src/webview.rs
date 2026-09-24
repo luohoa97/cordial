@@ -1078,7 +1078,14 @@ fn route_as_hybrid_launch(message: &str) -> bool {
     let Some(object) = value.as_object() else {
         return false;
     };
-    if object.get("requestType").and_then(|v| v.as_str()) != Some("RequestGameJob") {
+    // `RequestGameJob` is a specific public server; a private server's Join
+    // sends `RequestPrivateGame` with its codes instead, and was left unclaimed
+    // here until 2026-09-25, so it went to `signalJavascriptCallback` and did
+    // nothing. The request names match mocktail's `roblox_launch_uri.cc`.
+    if !matches!(
+        object.get("requestType").and_then(|v| v.as_str()),
+        Some("RequestGameJob" | "RequestPrivateGame" | "RequestGame")
+    ) {
         return false;
     }
     let str_field = |k: &str| object.get(k).and_then(|v| v.as_str());
@@ -1088,13 +1095,16 @@ fn route_as_hybrid_launch(message: &str) -> bool {
         );
         return true;
     };
-    match crate::deeplink::publish_hybrid_game_launch(
+    match crate::deeplink::publish_hybrid_game_launch(&crate::deeplink::HybridLaunch {
         place_id,
-        str_field("instanceId"),
-        str_field("joinAttemptId"),
-        str_field("joinAttemptOrigin"),
-        str_field("browserTrackerId"),
-    ) {
+        instance_id: str_field("instanceId"),
+        join_attempt_id: str_field("joinAttemptId"),
+        join_attempt_origin: str_field("joinAttemptOrigin"),
+        browser_tracker_id: str_field("browserTrackerId"),
+        access_code: str_field("accessCode"),
+        link_code: str_field("linkCode"),
+        reserved_server_access_code: str_field("reservedServerAccessCode"),
+    }) {
         Ok(()) => {
             println!("[webview] hybrid launch: handed off to deeplink::publish_hybrid_game_launch");
             // The join is actually on the bus now -- close the same way
