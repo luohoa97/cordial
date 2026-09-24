@@ -240,6 +240,13 @@ was used — see §7. What is established is that the app shell asks for the rig
 place. The distance between those two is the same gap §7 already records for
 `roblox://`, and translating does not widen it.
 
+**Update, 2026-09-25: a link that picks a particular server is now carried,
+not refused.** The engine's own grammar above admits `accessCode`, `linkCode`
+and `reservedServerAccessCode`, so `translate` carries those (and a `gameId`
+or `jobId`, as `gameInstanceId`) under the engine's names; a value that cannot
+be passed on safely still refuses the link. The paragraph below is the
+reasoning as it stood when only the place id could be carried.
+
 **A link that picks a particular server is refused rather than flattened.** A
 private-server, reserved-server or join-a-running-game link names a place *and*
 an `accessCode`, `linkCode`, `reservedServerAccessCode`, `gameId` or `jobId`.

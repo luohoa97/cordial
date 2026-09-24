@@ -39,11 +39,12 @@
 //! apart — a version, then `+`-separated `key:value` pairs — percent-decodes its
 //! `placelauncherurl`, and carries the `placeId` out of that launcher query into
 //! `roblox://experiences/start?placeId=<id>`, which is the exact string measured
-//! to work. `CORDIAL_DEEPLINK_NO_TRANSLATE=1` is the control. Nothing else is
-//! carried: the desktop link's `gameinfo` is a one-time authentication ticket,
-//! and a launcher query that names a *particular server* rather than an
-//! experience is refused outright rather than flattened into a join somewhere
-//! else.
+//! to work. `CORDIAL_DEEPLINK_NO_TRANSLATE=1` is the control. A launcher query
+//! that names a *particular server* (a private server's codes, a job id) has
+//! that server carried too, under the engine's own parameter names; one that
+//! cannot be carried safely is refused rather than flattened into a join
+//! somewhere else. The desktop link's `gameinfo`, a one-time authentication
+//! ticket, is not carried by default.
 //!
 //! **This used to say the Android client "has no use for" that ticket, and
 //! that was asserted without a citation.** It is what makes browser launches
@@ -361,22 +362,29 @@ pub fn validate(raw: &str) -> Result<JoinUrl, String> {
 /// worth refusing carries one of these or no `placeId` at all, so the parameters
 /// answer the question the request kind would have.
 ///
-/// **This still guards exactly the case it always did, and is still right to.**
-/// [`translate`] only ever had a bare `placeId` to work with -- a browser
-/// click hands over a `roblox-player:` link, and the *only* thing this file
-/// could pull out of it was the place, never a specific server, so carrying
-/// one of these alone would have joined the wrong game silently. Issue #40's
-/// round 6 found a second, later path in ([`publish_hybrid_game_launch`])
-/// where the whole query the page actually sent — including a real
-/// `instanceId` naming one server — arrives intact, because it comes from
-/// intercepting a JS call rather than reparsing a launcher URL. That path
-/// carries the instance forward instead of refusing on it, precisely because
-/// nothing is lost there the way it would be here. The refusal below stays
-/// exactly as strict as it was for the path it was written for; it does not
-/// need to loosen for a different path to stop losing what this one always
-/// lost.
+/// **Carried, not refused, since 2026-09-25.** These used to stop the
+/// translation outright, when only the place id could be carried and doing so
+/// would have joined a different server from the one clicked. The engine's
+/// own link grammar names `accessCode`, `linkCode`, `reservedServerAccessCode`
+/// and `gameInstanceId`, so [`translate`] now carries each under that name
+/// (see [`server_key`]); a value it cannot pass on safely still refuses the
+/// whole link rather than flattening it to the place.
 const SERVER_SELECTING: [&str; 5] =
     ["accesscode", "linkcode", "reservedserveraccesscode", "gameid", "jobid"];
+
+/// The engine's own name for a server-picking launcher parameter, as its
+/// `FStringGameLaunchLinkURL` grammar and `publish_hybrid_game_launch` spell
+/// it. `gameid` and `jobid` both name a running server, which the mobile link
+/// calls `gameInstanceId`.
+fn server_key(launcher_key: &str) -> Option<&'static str> {
+    match launcher_key {
+        "accesscode" => Some("accessCode"),
+        "linkcode" => Some("linkCode"),
+        "reservedserveraccesscode" => Some("reservedServerAccessCode"),
+        "gameid" | "jobid" => Some("gameInstanceId"),
+        _ => None,
+    }
+}
 
 /// What [`translate`] made of the link.
 #[derive(Debug)]
@@ -448,11 +456,11 @@ fn ticket_shaped(ticket: &str) -> bool {
 /// or stop being claimed.
 ///
 /// **What is carried, and what is not.** The `placelauncherurl` decodes to a
-/// `PlaceLauncher.ashx` request whose query names a `placeId`. That id, and only
-/// that id, is carried into `roblox://experiences/start?placeId=<id>` — the
-/// exact shape measured to produce a `Game.launch`. Everything else in the
-/// launcher query is named in the log and dropped; nothing is guessed at, and
-/// [`SERVER_SELECTING`] is the set whose presence stops the translation instead.
+/// `PlaceLauncher.ashx` request whose query names a `placeId`. That id, and
+/// any server it picks ([`SERVER_SELECTING`]), are carried into
+/// `roblox://experiences/start?placeId=<id>` — the exact shape measured to
+/// produce a `Game.launch`. Everything else in the launcher query is named in
+/// the log and dropped; nothing is guessed at.
 ///
 /// **`gameinfo` is dropped unless [`carry_ticket`] says otherwise, and that is
 /// still the open question.** It is a one-time authentication ticket the
@@ -520,6 +528,7 @@ pub fn translate(url: &JoinUrl) -> Translated {
 
     let query = launcher.split_once('?').map(|(_, q)| q).unwrap_or_default();
     let mut place = None;
+    let mut server: Vec<(&'static str, &str)> = Vec::new();
     let mut blocking: Vec<&str> = Vec::new();
     let mut dropped: Vec<String> = Vec::new();
     for pair in query.split('&') {
@@ -530,9 +539,14 @@ pub fn translate(url: &JoinUrl) -> Translated {
         if lower == "placeid" {
             place = Some(value);
         } else if let Some(known) = SERVER_SELECTING.iter().find(|s| **s == lower) {
-            // The canonical spelling rather than the one that arrived, so that
-            // the sentence a user reads is Cordial's and not a web page's.
-            blocking.push(known);
+            // A server-picking parameter is carried under the name the
+            // engine's own link grammar uses, or the whole translation is
+            // refused: never flattened to the place alone, which would join
+            // a different server from the one clicked.
+            match (server_key(known), url_value_safe(value)) {
+                (Some(engine_key), true) => server.push((engine_key, value)),
+                _ => blocking.push(known),
+            }
         } else if is_identifier(key) {
             dropped.push(key.to_string());
         }
@@ -540,9 +554,8 @@ pub fn translate(url: &JoinUrl) -> Translated {
 
     if !blocking.is_empty() {
         return Translated::Refused(format!(
-            "its placelauncherurl carries {}, which picks a particular server rather than an \
-             experience; carrying only the place id would join a different game from the one \
-             clicked",
+            "its placelauncherurl carries {} in a form Cordial cannot pass on safely; carrying \
+             only the place id would join a different server from the one clicked",
             blocking.join(", ")
         ));
     }
@@ -580,7 +593,14 @@ pub fn translate(url: &JoinUrl) -> Translated {
         None => String::new(),
     };
 
-    match validate(&format!("roblox://experiences/start?placeId={place}{suffix}")) {
+    let mut selecting = String::new();
+    for (key, value) in &server {
+        selecting.push('&');
+        selecting.push_str(key);
+        selecting.push('=');
+        selecting.push_str(value);
+    }
+    match validate(&format!("roblox://experiences/start?placeId={place}{selecting}{suffix}")) {
         Ok(url) => Translated::To { url, dropped },
         // Unreachable as long as the digit check above holds, and reported
         // rather than unwrapped because a panic here would be a browser click
@@ -1394,30 +1414,46 @@ mod tests {
         }
     }
 
-    /// The honest refusal. A private-server link names a place *and* an access
-    /// code, so carrying only the place id would produce a link that joins —
-    /// into the public server, not the one that was clicked. That is worse than
-    /// not joining, which is the whole argument in AGENTS.md against a stub that
-    /// returns success.
+    /// A link that picks a server — a private server's access or link code, a
+    /// reserved server, a running server's job id — joins *that* server: the
+    /// code is carried under the engine's own name for it. Opening a private
+    /// server in the browser used to be refused here, because only the place
+    /// id could be carried and that would have joined a public server instead.
     #[test]
-    fn a_link_that_picks_a_particular_server_is_refused_by_name() {
-        for (query, named) in [
-            ("https://x/PlaceLauncher.ashx?placeId=1818&accessCode=abc", "accesscode"),
-            ("https://x/PlaceLauncher.ashx?placeId=1818&linkCode=abc", "linkcode"),
-            ("https://x/PlaceLauncher.ashx?placeId=1818&gameId=abc", "gameid"),
-            ("https://x/PlaceLauncher.ashx?placeId=1818&jobId=abc", "jobid"),
+    fn a_link_that_picks_a_particular_server_carries_it() {
+        for (query, engine_key) in [
+            ("https://x/PlaceLauncher.ashx?placeId=1818&accessCode=abc", "accessCode"),
+            ("https://x/PlaceLauncher.ashx?placeId=1818&linkCode=abc", "linkCode"),
+            ("https://x/PlaceLauncher.ashx?placeId=1818&gameId=abc", "gameInstanceId"),
+            ("https://x/PlaceLauncher.ashx?placeId=1818&jobId=abc", "gameInstanceId"),
             (
                 "https://x/PlaceLauncher.ashx?placeId=1818&reservedServerAccessCode=abc",
-                "reservedserveraccesscode",
+                "reservedServerAccessCode",
             ),
         ] {
             match translate(&validate(&desktop(query)).unwrap()) {
-                Translated::Refused(why) => {
-                    assert!(why.contains(named), "{why}");
-                    assert!(!why.contains("abc"), "the reason must not carry a value: {why}");
+                Translated::To { url, .. } => {
+                    let want = format!("placeId=1818&{engine_key}=abc");
+                    assert!(url.expose().contains(&want), "{query} gave {}", url.expose());
                 }
-                other => panic!("{query} should be refused: {other:?}"),
+                other => panic!("{query} should translate: {other:?}"),
             }
+        }
+    }
+
+    /// The honest refusal survives for a code that cannot be carried safely:
+    /// flattening to the place alone would join a different server from the
+    /// one clicked, which is worse than not joining (AGENTS.md on a stub that
+    /// returns success).
+    #[test]
+    fn a_server_code_that_cannot_be_carried_is_refused_by_name() {
+        let query = "https://x/PlaceLauncher.ashx?placeId=1818&accessCode=ab/cd";
+        match translate(&validate(&desktop(query)).unwrap()) {
+            Translated::Refused(why) => {
+                assert!(why.contains("accesscode"), "{why}");
+                assert!(!why.contains("ab/cd"), "the reason must not carry a value: {why}");
+            }
+            other => panic!("{query} should be refused: {other:?}"),
         }
     }
 
