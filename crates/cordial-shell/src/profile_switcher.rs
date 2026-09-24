@@ -545,7 +545,19 @@ mod tests {
         let held = profile::acquire("main").expect("a fresh profile is free");
         assert_eq!(availability("main"), Availability::Running);
         drop(held);
-        assert_eq!(availability("main"), Availability::Free);
+        // Allowed a moment to come free. Other tests in this binary spawn
+        // processes, and a child forked while the lock is still open shares it
+        // until its own exec closes the descriptor, so an immediate re-probe
+        // could read Running for a few milliseconds. Failed that way once in a
+        // full workspace run, 2026-09-25; it passes alone.
+        let freed = (0..50).any(|_| {
+            let free = availability("main") == Availability::Free;
+            if !free {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            free
+        });
+        assert!(freed, "a released profile must read as free again");
     }
 
     #[test]
