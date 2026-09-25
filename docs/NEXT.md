@@ -1393,10 +1393,88 @@ fullscreen at exactly the output size, which is the configuration Sober #1026
 fingers: only in fullscreen, only on Wayland, "stops when either is even a pixel
 below that".
 
-The case asserts the output mode actually changed before asserting anything
-about the editor. The first version did not, passed, and reported a
-byte-identical rectangle either side -- indistinguishable from a `swaymsg` that
-silently did nothing.
+### A real multi-line editor, 2026-09-25
+
+`TextBox.MultiLine` used to be reported and nothing else -- every box, single-
+or multi-line, got the single-line `gtk::Text` above, and a genuinely
+multi-line box (Circuit Maker 2's assembler and ROM boxes, a code editor, a
+chat entry more than one line tall) had its newlines flattened and its box
+handed a widget that could only ever draw one of them. `HostWindow` now also
+carries `editor_multiline`, a `gtk::TextView` in a `gtk::ScrolledWindow`, and
+`set_text_overlay` picks between the two per-box on `TextOverlay::multiline`,
+in `crates/cordial-shell/src/host_window.rs`. Font family/weight/style/size go
+through one mutable `GtkTextTag` reapplied across the buffer on every change,
+because `gtk::TextView` has no per-widget attribute list the way `gtk::Text`
+does; horizontal alignment maps onto `set_justification`; the box's own
+rectangle is used unshrunk, always -- there is no multi-line equivalent of
+`Top`/`Bottom` anchoring a single line.
+
+**The raw-`box_h` bug this section flagged is gone structurally, not
+patched.** `vertical_placement` no longer takes a `multiline` flag or has a
+branch for it at all -- a multi-line box never reaches it, because it takes
+the new widget's own placement function (`multiline_placement`, which is
+`(box_y, box_h)` and nothing else) instead. The single-line widget can no
+longer be handed a raw, unclamped box height by a box that happens to report
+`multiline=1`, because that box no longer goes anywhere near it.
+
+**Newlines, verified end to end, including the specific gap this file used to
+flag as untested.** devctl's `paste`/`settext` (`e61ed2b`) route to
+`HostWindow::editor_multiline_paste_at_caret`/`editor_multiline_set_text` for
+a multi-line box and to `editor_paste_at_caret`/`editor_set_text` for a
+single-line one, chosen by `HostWindow::editor_multiline_active`; the two
+single-line methods now flatten an embedded `\n` to a space before inserting,
+closing "newlines into the single-line widget on Wayland are untested".
+
+**Measured, not just written.** No multi-line Roblox `TextBox` was reachable
+in the time available -- Circuit Maker 2's assembler needs a place picked and
+blueprints pasted, which a prior session already tried and could not do
+quickly, and this one did not spend the budget re-trying it. Instead:
+`cordial_linker_sys::game_activity::test_focus_textbox`, the same round trip
+`textbox_info_arrives_slot_for_slot` already used inside that crate to prove
+the fifteen-slot FFI layout, is now reachable from devctl as `fakefocus
+<0|1> <x> <y> <w> <h> [text]` (and `fakeblur`), added for exactly this gap.
+**Every reading taken through it is SYNTHETIC**: it proves the GTK side does
+what a `multiline=1` spec says, and it proves nothing about what spec shape a
+real multi-line box actually sends. With that seam, on `cordial-agent-
+multiline`, `sway`, `--game-activity`, a synthetic 400x200 `multiline=1` box:
+
+- `settext` with `"first line\nsecond line\nthird line"` (33 chars, 2
+  newlines) read back byte-identical through `textbox`, and a `grim` capture
+  shows all three lines, left-aligned, top-anchored in the placed rectangle
+  -- not filling the window.
+- `paste` with `"\nfourth line"` appended without flattening -- 45 chars, 3
+  newlines afterward -- confirming `insert_at_cursor` on the buffer keeps
+  the newline the single-line `insert_text` path would have dropped.
+- Resizing the nested output 1280x800 -> 1600x900 with the box still focused
+  left `x`/`y`/`w`/`h`, `multiline` and the text byte-identical before and
+  after, and the `grim` capture afterward still shows a small, correctly
+  sized box -- not the whole window -- which is the one failure mode this
+  section exists to rule out. As with the single-line case above, a synthetic
+  fixed-rect box proves the widget survives a resize and does not prove it
+  follows a box whose own coordinates move, and it says nothing about
+  fullscreen at exactly the output size (Sober #1026, cited above).
+- Switching the same synthetic focus to `multiline=0` and `settext`-ing
+  `"one\ntwo"` read back as `"one two"`, 7 characters, zero newlines --
+  the single-line flattening path, exercised on the real Wayland widget for
+  the first time.
+- Enter inserting a newline in a multi-line box, and Escape/an outside click
+  releasing focus, need no code here at all: `dispatch_key` already returns
+  before editing anything once `editor_owns_text()` is true, whichever widget
+  that is, so GDK's own keyboard object drives `gtk::TextView`'s default
+  Enter-inserts-a-newline binding the same way it drives `gtk::Text`'s lack of
+  one -- see the comment above `editor_owns_text()`'s call in
+  `crates/cordial-runtime/src/android/wayland.rs`'s `dispatch_key`.
+  `returnKeyType`/`manualFocusRelease` (`RawTextBoxInfo` slots 11/12) are
+  still read nowhere in this codebase; that comment explains why that is
+  consistent rather than an oversight.
+
+**UNVERIFIED**: everything about a real multi-line `TextBox`'s own spec --
+whether Roblox ever actually sends `multiline=1` with a masked
+`textInputType`, whether a real box's `manualFocusRelease` ever disagrees with
+the always-defer-to-the-engine behaviour above, and whether `gtk::TextView`'s
+plain `grab_focus` genuinely never selects existing contents the way a bare
+`grab_focus` on `gtk::Text` would. Find a real one (Circuit Maker 2's
+assembler is the standing lead) before trusting any of those.
 
 ## Frame pacing, measured properly, 2026-08-26
 

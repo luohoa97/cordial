@@ -266,6 +266,44 @@ pub struct HostWindow {
     /// the APK. `None` until then, and `None` for ever if it is not there --
     /// see [`HostWindow::set_editor_font_family`].
     editor_font_family: std::cell::RefCell<Option<String>>,
+    /// The multi-line editor for a Roblox `TextBox` with `MultiLine` true.
+    ///
+    /// `gtk::Text` cannot hold more than one line -- see [`Self::editor`]'s own
+    /// doc -- so a genuinely multi-line box (Circuit Maker 2's assembler and
+    /// ROM boxes, a code editor, a chat entry more than one line tall) needs a
+    /// widget that can wrap and scroll. `gtk::TextView` is GTK's editable
+    /// multi-line widget; [`Self::editor_multiline_scroll`] is the
+    /// `gtk::ScrolledWindow` that actually sits in [`Self::text_layer`], so
+    /// text past the box's height scrolls inside the box instead of spilling
+    /// onto the canvas. Exactly one of `editor`/`editor_multiline` is visible
+    /// at a time -- chosen in [`Self::set_text_overlay`] by
+    /// `TextOverlay::multiline` -- and [`Self::editor_active_multiline`]
+    /// records which, for devctl's `paste`/`settext` to route to.
+    editor_multiline: gtk::TextView,
+    /// The scrollable container [`Self::editor_multiline`] sits in, and the
+    /// widget [`Self::text_layer`] actually places and sizes. See
+    /// [`Self::editor_multiline`].
+    editor_multiline_scroll: gtk::ScrolledWindow,
+    /// Same purpose as [`Self::editor_seeding`], and kept separate rather than
+    /// shared: the two widgets' change signals fire independently of each
+    /// other and only one editor is ever live, but a single flag toggled by
+    /// both would race if a stray signal from the widget being hidden arrived
+    /// after the other had already started seeding.
+    editor_multiline_seeding: std::rc::Rc<std::cell::Cell<bool>>,
+    /// The one `GtkTextTag` carrying the current box's font family, weight,
+    /// style and size, reapplied across the whole buffer on every change.
+    ///
+    /// `gtk::TextView` has no per-widget equivalent of `gtk::Text::set_attributes`
+    /// -- a `GtkTextBuffer`'s formatting lives in tags attached to ranges of
+    /// text, not in one Pango attribute list for the whole widget. One mutable
+    /// tag, restyled here and kept applied to the entire buffer (see the
+    /// `connect_changed` handler installed in [`Self::new`]), gets the same
+    /// effect as `gtk::Text`'s attribute list without hand-tracking which
+    /// ranges are tagged.
+    editor_multiline_tag: gtk::TextTag,
+    /// Which of `editor`/`editor_multiline` [`Self::set_text_overlay`] last
+    /// showed. `false` (and no editor visible) once a box has blurred.
+    editor_active_multiline: std::cell::Cell<bool>,
     /// Whether the canvas is currently lowered. Remembered for the CSS class;
     /// the input region no longer depends on it, see [`HostWindow::set_canvas_cutout`].
     canvas_see_through: std::cell::Cell<bool>,
@@ -334,15 +372,23 @@ pub struct TextOverlay<'a> {
     pub y_alignment: i32,
     /// Roblox's `TextBox.MultiLine`, from constructor slot 5.
     ///
-    /// **The editor is still a single-line `gtk::Text` when this is true, and
-    /// that is a known gap rather than a decision.** What it changes today is
-    /// only [`vertical_placement`]: a `Top`- or `Bottom`-aligned single-line
-    /// box is shrunk to one line's natural height and anchored, which is right
-    /// for a one-line field and wrong for a chat entry that is four lines tall
-    /// -- it would draw the editor as a one-line strip at the top or bottom of
-    /// a box the engine drew full height. Leaving the rectangle alone is the
-    /// smaller error of the two until there is a real multi-line editor.
+    /// **As of the `gtk::TextView` overlay, this picks the widget.** `true`
+    /// places [`HostWindow::editor_multiline`] -- a real multi-line, scrolling
+    /// editor -- instead of the single-line [`HostWindow::editor`]. Before
+    /// that widget existed this field was only ever *reported*: every box got
+    /// the single-line `gtk::Text` and [`vertical_placement`] special-cased a
+    /// `true` here to leave the box's full rectangle alone rather than
+    /// shrinking it to one line -- see that function's history for why the
+    /// shrink was the wrong failure mode for a box nothing could yet fill
+    /// properly. `vertical_placement` no longer takes this at all, because a
+    /// box this is true for never reaches it any more.
     pub multiline: bool,
+    /// Roblox's `TextBox.TextWrapped`, constructor slot 13.
+    ///
+    /// Only consulted by the multi-line editor -- `gtk::Text` never wraps,
+    /// being one line by definition, so a single-line box's own wrapping
+    /// preference has nothing to apply to here.
+    pub text_wrapped: bool,
 }
 
 /// GTK's `Editable::set_alignment` fraction for Roblox's `xAlignment`: `0.0`
@@ -459,20 +505,21 @@ fn corner_safe_rects(x: i32, y: i32, w: i32, h: i32, radius: i32) -> Vec<(i32, i
     ]
 }
 
-/// [`vertical_placement_tests`] covers the arithmetic, not a live box.
-fn vertical_placement(
-    y_alignment: i32,
-    box_y: i32,
-    box_h: i32,
-    natural_h: i32,
-    multiline: bool,
-) -> (i32, i32) {
-    // A multi-line box has no single "the line" to anchor, and `natural_h` is
-    // one line of the editor -- so every branch below would shrink a tall box
-    // to a strip. See `TextOverlay::multiline`.
-    if multiline {
-        return (box_y, box_h);
-    }
+/// Where to place the single-line `gtk::Text` overlay vertically.
+///
+/// **No longer takes a `multiline` flag.** It used to special-case
+/// `multiline` by returning `(box_y, box_h)` unshrunk -- the box's full
+/// height handed to a widget that can only ever draw one line -- because
+/// every box got this widget regardless of `TextBox.MultiLine`. That was the
+/// smaller of two wrong answers while there was nothing better, and it is the
+/// leading suspect for a report of the editor "filling the whole window"
+/// after a resize with a tall multi-line box focused: a box whose reported
+/// height happened to be the whole content area, handed straight through with
+/// no clamp at all. A genuinely multi-line box now gets
+/// [`HostWindow::editor_multiline`] instead -- see `TextOverlay::multiline` --
+/// and never calls this function, so the branch is deleted rather than kept
+/// dead. [`vertical_placement_tests`] covers the arithmetic, not a live box.
+fn vertical_placement(y_alignment: i32, box_y: i32, box_h: i32, natural_h: i32) -> (i32, i32) {
     let h = natural_h.clamp(1, box_h.max(1));
     match y_alignment {
         0 => (box_y, h),
@@ -481,6 +528,21 @@ fn vertical_placement(
         // from before this function existed.
         _ => (box_y, box_h),
     }
+}
+
+/// Where to place the multi-line `gtk::TextView` overlay vertically: the
+/// box's own rectangle, always.
+///
+/// A separate function from [`vertical_placement`] rather than a shared one
+/// with a flag, because there is nothing left to share -- a multi-line box
+/// has no single line to anchor a `Top`/`Bottom` alignment against, so
+/// `yAlignment` is not consulted at all. Kept as a named, tested function
+/// anyway rather than inlined at the one call site, so the choice is visible
+/// next to [`vertical_placement`]'s and a future edit cannot silently drop the
+/// "always the whole box" guarantee the way the old shared function nearly
+/// did for the single-line widget.
+fn multiline_placement(box_y: i32, box_h: i32) -> (i32, i32) {
+    (box_y, box_h)
 }
 
 /// Pango's `Weight` from an OpenType weight number.
@@ -644,6 +706,23 @@ impl HostWindow {
                  min-height: 0; \
                  min-width: 0; \
              } \
+             .cordial-editor-multiline, .cordial-editor-multiline text { \
+                 background: none; \
+                 background-image: none; \
+                 border: none; \
+                 box-shadow: none; \
+                 outline: none; \
+                 padding: 0; \
+                 margin: 0; \
+                 min-height: 0; \
+                 min-width: 0; \
+             } \
+             .cordial-editor-multiline-scroll { \
+                 background: none; \
+                 background-image: none; \
+                 border: none; \
+                 box-shadow: none; \
+             } \
              .cordial-text-fallback { \
                  background-color: rgba(28, 28, 30, 0.94); \
                  color: #ffffff; \
@@ -781,6 +860,70 @@ impl HostWindow {
         }
         text_layer.put(&editor, 0.0, 0.0);
 
+        // The multi-line editor. Same cursor and CSS reasoning as `editor`
+        // above -- see its comments, not repeated here -- applied to a
+        // `gtk::TextView` inside a `gtk::ScrolledWindow` instead of a bare
+        // `gtk::Text`, because a `TextBox` with `MultiLine` true needs a
+        // widget that can hold more than one line and scroll. See
+        // [`HostWindow::editor_multiline`]'s own doc.
+        let editor_multiline = gtk::TextView::new();
+        editor_multiline.add_css_class("cordial-editor-multiline");
+        editor_multiline.set_overflow(gtk::Overflow::Hidden);
+        editor_multiline.set_cursor_from_name(canvas_cursor());
+        let editor_multiline_scroll = gtk::ScrolledWindow::new();
+        editor_multiline_scroll.set_child(Some(&editor_multiline));
+        editor_multiline_scroll.set_has_frame(false);
+        editor_multiline_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        editor_multiline_scroll.add_css_class("cordial-editor-multiline-scroll");
+        editor_multiline_scroll.set_visible(false);
+
+        // One tag, mutated in place rather than replaced, carries the current
+        // box's font -- see [`HostWindow::editor_multiline_tag`]'s doc for why
+        // `gtk::TextView` needs this where `gtk::Text` needed only an
+        // attribute list.
+        let editor_multiline_tag = gtk::TextTag::new(Some("cordial-editor-style"));
+        let multiline_buffer = editor_multiline.buffer();
+        multiline_buffer.tag_table().add(&editor_multiline_tag);
+
+        let editor_multiline_seeding = std::rc::Rc::new(std::cell::Cell::new(false));
+        {
+            // Same shape as `editor`'s notify closure above: text and caret
+            // are one fact to the engine, so both signals feed one sink.
+            let seeding = editor_multiline_seeding.clone();
+            let sink = editor_changed.clone();
+            let buf = multiline_buffer.clone();
+            let notify: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(move || {
+                if seeding.get() {
+                    return;
+                }
+                if let Some(cb) = sink.borrow().as_ref() {
+                    let (start, end) = buf.bounds();
+                    let caret = buf.iter_at_mark(&buf.get_insert()).offset();
+                    cb(buf.text(&start, &end, true).as_str(), caret);
+                }
+            });
+            let on_text = notify.clone();
+            multiline_buffer.connect_changed(move |_| on_text());
+            multiline_buffer.connect_notify_local(Some("cursor-position"), move |_, _| notify());
+        }
+        {
+            // Reapply the style tag across the whole buffer on every content
+            // change, because a `GtkTextBuffer` does not extend a tag to text
+            // typed at its edges the way a single Pango attribute list applies
+            // to everything a `gtk::Text` draws -- see `editor_multiline_tag`'s
+            // doc. Fires on `changed`, not on `insert-text`/`delete-range`,
+            // because those run *before* the edit and a range spanning
+            // start/end taken then would miss the very text just inserted.
+            // Separate handler from the outward-sync one above so a keystroke
+            // is both retagged and pushed to the engine, not one or the other.
+            let tag = editor_multiline_tag.clone();
+            multiline_buffer.connect_changed(move |buf| {
+                let (start, end) = buf.bounds();
+                buf.apply_tag(&tag, &start, &end);
+            });
+        }
+        text_layer.put(&editor_multiline_scroll, 0.0, 0.0);
+
         overlay.add_overlay(&text_layer);
         toolbar.set_content(Some(&overlay));
 
@@ -811,6 +954,11 @@ impl HostWindow {
             editor,
             editor_css,
             editor_rect: std::cell::Cell::new(None),
+            editor_multiline,
+            editor_multiline_scroll,
+            editor_multiline_seeding,
+            editor_multiline_tag,
+            editor_active_multiline: std::cell::Cell::new(false),
             canvas_see_through: std::cell::Cell::new(false),
             opaque_unsized: std::cell::Cell::new(false),
             canvas_rect: std::cell::Cell::new(None),
@@ -879,10 +1027,20 @@ impl HostWindow {
     /// the opposite direction, the same as a keystroke.
     ///
     /// Caller has checked a box has focus; this does not.
+    ///
+    /// **Flattens embedded newlines to spaces.** `text` comes through
+    /// `input::flatten_for_field`, which deliberately keeps `\n` because the
+    /// multi-line widget below wants it -- so this, the single-line widget's
+    /// own insertion point, is where a newline that reaches a `gtk::Text`
+    /// anyway gets turned into a space rather than trusted to whatever GTK's
+    /// own filtering does. UNVERIFIED whether `gtk::Text::insert_text` would
+    /// have dropped it unaided; flattening explicitly is correct either way
+    /// and does not depend on finding out.
     pub fn editor_paste_at_caret(&self, text: &str) -> usize {
+        let text = text.replace('\n', " ");
         self.editor.delete_selection();
         let mut pos = self.editor.position();
-        self.editor.insert_text(text, &mut pos);
+        self.editor.insert_text(&text, &mut pos);
         self.editor.set_position(pos);
         self.editor.text().chars().count()
     }
@@ -893,11 +1051,46 @@ impl HostWindow {
     /// Deliberately not select-all followed by [`Self::editor_paste_at_caret`]
     /// -- see `clipboard::set_text`'s doc for why a test seam with no
     /// user-reachable equivalent is the more honest shape here. Same
-    /// synchronous signal path as the paste above.
+    /// synchronous signal path as the paste above, and the same newline
+    /// flattening.
     pub fn editor_set_text(&self, text: &str) -> usize {
-        self.editor.set_text(text);
+        let text = text.replace('\n', " ");
+        self.editor.set_text(&text);
         self.editor.set_position(text.chars().count() as i32);
         self.editor.text().chars().count()
+    }
+
+    /// [`Self::editor_paste_at_caret`]'s multi-line counterpart: insert at the
+    /// buffer's own caret (`GtkTextBuffer::insert_at_cursor`), after removing
+    /// a selection first exactly as `gtk::Text`'s does. Newlines in `text` are
+    /// kept -- this is the path a multi-line box's `paste`/`settext` actually
+    /// takes, and flattening them the way the single-line method above does
+    /// would defeat the entire point of routing here instead.
+    ///
+    /// Caller has checked a box has focus and that it is multi-line.
+    pub fn editor_multiline_paste_at_caret(&self, text: &str) -> usize {
+        let buffer = self.editor_multiline.buffer();
+        buffer.delete_selection(false, true);
+        buffer.insert_at_cursor(text);
+        buffer.char_count() as usize
+    }
+
+    /// [`Self::editor_set_text`]'s multi-line counterpart: replace the whole
+    /// buffer and place the caret at the end.
+    pub fn editor_multiline_set_text(&self, text: &str) -> usize {
+        let buffer = self.editor_multiline.buffer();
+        buffer.set_text(text);
+        let end = buffer.end_iter();
+        buffer.place_cursor(&end);
+        buffer.char_count() as usize
+    }
+
+    /// Which editor [`Self::set_text_overlay`] last showed -- `true` for
+    /// [`Self::editor_multiline`], `false` for [`Self::editor`] or for no box
+    /// focused at all. What the runtime's devctl `paste`/`settext` reads to
+    /// decide which of the two pairs of methods above to call.
+    pub fn editor_multiline_active(&self) -> bool {
+        self.editor_active_multiline.get()
     }
 
     /// Place (or hide) the desktop equivalent of Android's transparent
@@ -913,13 +1106,18 @@ impl HostWindow {
     pub fn set_text_overlay(&self, overlay: Option<TextOverlay<'_>>) {
         let Some(overlay) = overlay else {
             self.editor.set_visible(false);
+            self.editor_multiline_scroll.set_visible(false);
             self.text_layer.set_can_target(false);
             self.editor_rect.set(None);
+            self.editor_active_multiline.set(false);
             // Seeded, not typed: clearing on blur must not reach the engine as
             // an edit that empties the box the user just finished filling in.
             self.editor_seeding.set(true);
             self.editor.set_text("");
             self.editor_seeding.set(false);
+            self.editor_multiline_seeding.set(true);
+            self.editor_multiline.buffer().set_text("");
+            self.editor_multiline_seeding.set(false);
             self.refresh_input_region();
             self.window.queue_draw();
             return;
@@ -936,26 +1134,55 @@ impl HostWindow {
         // defaults to the themed text colour and takes no notice of a Pango
         // foreground override -- so an attribute-styled editor on Roblox's
         // light search field drew dark text with the theme's white caret,
-        // invisible on exactly the field it was in.
+        // invisible on exactly the field it was in. Both editors share one
+        // sheet: only one of them is ever visible, so there is nothing to
+        // disambiguate by restricting the selector to whichever is active.
         let rgb = format!(
             "#{:02x}{:02x}{:02x}",
             (overlay.text_color >> 16) & 0xff,
             (overlay.text_color >> 8) & 0xff,
             overlay.text_color & 0xff
         );
-        // **Colour here, size deliberately not.** A CSS `font-size` is scaled
-        // by the desktop's text-scaling factor before it reaches Pango, so on
-        // any setup with font scaling turned up -- which is most laptops -- the
-        // editor drew visibly larger than the text Roblox draws in the same box
-        // when it is not focused. Reported as "text gets too big when
-        // selected", and "selected" is "focused", because the editor only
-        // exists while the box has focus.
-        //
-        // The size is set below as an absolute Pango attribute instead, which
-        // is in the same units as the rest of this spec.
-        self.editor_css
-            .load_from_string(&format!(".cordial-editor {{ color: {rgb}; caret-color: {rgb}; }}"));
+        self.editor_css.load_from_string(&format!(
+            ".cordial-editor, .cordial-editor-multiline text {{ color: {rgb}; caret-color: {rgb}; }}"
+        ));
 
+        self.editor_active_multiline.set(overlay.multiline);
+        // Each branch may adjust `y`/`h` for its own vertical placement rule
+        // (`vertical_placement` for the single-line widget, `multiline_placement`
+        // -- a no-op -- for the multi-line one) and hands back the rectangle it
+        // actually drew at, which is what the input-region punch below must
+        // match. Using the pre-adjustment `(x, y, w, h)` here instead would
+        // reopen the coordinate-space bug `the_editor_is_clickable_where_it_is_drawn`
+        // regression-tests: a `Top`- or `Bottom`-aligned single-line box would
+        // punch a hole for its full height while the widget itself only drew
+        // (and could only be clicked) inside the shrunk strip.
+        let placed = if overlay.multiline {
+            self.editor.set_visible(false);
+            self.set_multiline_overlay(&overlay, x, y, w, h)
+        } else {
+            self.editor_multiline_scroll.set_visible(false);
+            self.set_singleline_overlay(&overlay, x, y, w, h)
+        };
+
+        self.text_layer.set_can_target(true);
+        self.editor_rect.set(Some(placed));
+        self.refresh_input_region();
+        self.window.queue_draw();
+    }
+
+    /// [`Self::set_text_overlay`]'s single-line branch: place and style
+    /// [`Self::editor`]. Split out so the multi-line branch below is not
+    /// buried inside it -- the two widgets share nothing past the colour CSS
+    /// and the rectangle already handled by the caller.
+    fn set_singleline_overlay(
+        &self,
+        overlay: &TextOverlay<'_>,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> (i32, i32, i32, i32) {
         // `new_size_absolute`, not `new`. `AttrSize::new` takes points and Pango
         // converts them through the context's resolution; the absolute form takes
         // device units and skips that conversion entirely. The engine's
@@ -968,6 +1195,14 @@ impl HostWindow {
         // field's own doc comment -- and that is a different adjustment for a
         // different reason: it is reconciling Roblox's own two text stacks
         // with each other, not converting between Pango's and the engine's.
+        //
+        // **Colour is set by the caller, size deliberately not the same way.**
+        // A CSS `font-size` is scaled by the desktop's text-scaling factor
+        // before it reaches Pango, so on any setup with font scaling turned up
+        // -- which is most laptops -- the editor drew visibly larger than the
+        // text Roblox draws in the same box when it is not focused. Reported
+        // as "text gets too big when selected", and "selected" is "focused",
+        // because the editor only exists while the box has focus.
         let attrs = gtk::pango::AttrList::new();
         attrs.insert(gtk::pango::AttrSize::new_size_absolute(
             (overlay.font_size.max(1.0) * gtk::pango::SCALE as f32).round() as i32,
@@ -1068,7 +1303,7 @@ impl HostWindow {
         // project has ever measured) leaves `y`/`h` exactly as they arrived,
         // so this changes nothing for every box checked in docs/NEXT.md.
         let (_, natural_h, _, _) = self.editor.measure(gtk::Orientation::Vertical, -1);
-        let (y, h) = vertical_placement(overlay.y_alignment, y, h, natural_h, overlay.multiline);
+        let (y, h) = vertical_placement(overlay.y_alignment, y, h, natural_h);
 
         self.editor.set_size_request(w, h);
         self.text_layer.move_(&self.editor, x as f64, y as f64);
@@ -1086,9 +1321,6 @@ impl HostWindow {
         }
 
         self.editor.set_visible(true);
-        self.text_layer.set_can_target(true);
-        self.editor_rect.set(Some((x, y, w, h)));
-        self.refresh_input_region();
         if !self.editor.has_focus() {
             // **`grab_focus_without_selecting`, and the difference is not
             // cosmetic.** GTK's `gtk-entry-select-on-focus` is on by default,
@@ -1115,7 +1347,112 @@ impl HostWindow {
         // nothing and dragging across text would not highlight it.
         // `grab_focus_without_selecting` already handles the only case that
         // needed handling. The widget owns its selection.
-        self.window.queue_draw();
+        (x, y, w, h)
+    }
+
+    /// [`Self::set_text_overlay`]'s multi-line branch: place and style
+    /// [`Self::editor_multiline`].
+    ///
+    /// Mirrors [`Self::set_singleline_overlay`] wherever the two widgets can
+    /// agree -- horizontal alignment, text seeding, fallback chrome -- and
+    /// departs where `gtk::TextView` genuinely differs: font styling goes
+    /// through [`Self::editor_multiline_tag`] rather than `set_attributes`
+    /// (`gtk::TextView` has no such method -- see the field's own doc), the
+    /// vertical rectangle is never shrunk (see [`multiline_placement`]), and
+    /// there is no password masking: Roblox's own masked `textInputType`
+    /// values have never been observed on a box that also reports
+    /// `multiline=1`, and `gtk::TextView` has nothing built in to mask with in
+    /// any case. Should a masked multi-line box ever turn up, drawing it
+    /// unmasked is the same "smaller of two wrong answers" this project has
+    /// taken before rather than the worse failure of drawing nothing.
+    fn set_multiline_overlay(
+        &self,
+        overlay: &TextOverlay<'_>,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> (i32, i32, i32, i32) {
+        let tag = &self.editor_multiline_tag;
+        tag.set_size((overlay.font_size.max(1.0) * gtk::pango::SCALE as f32).round() as i32);
+        let per_box = overlay.font_family;
+        let process_wide = self.editor_font_family.borrow();
+        tag.set_family(per_box.or(process_wide.as_deref()));
+        drop(process_wide);
+        if per_box.is_some() {
+            tag.set_weight(overlay.font_weight);
+            tag.set_style(if overlay.font_italic {
+                gtk::pango::Style::Italic
+            } else {
+                gtk::pango::Style::Normal
+            });
+        } else {
+            // Put the weight/style back to the tag's own unset state, the
+            // same reasoning as `gtk::Text`'s attribute list starting empty
+            // each call: a restyled box followed by an unstyled one must not
+            // carry the first box's weight over.
+            tag.set_weight(400);
+            tag.set_style(gtk::pango::Style::Normal);
+        }
+
+        self.editor_multiline.set_justification(match overlay.x_alignment {
+            2 => gtk::Justification::Right,
+            1 => gtk::Justification::Center,
+            _ => gtk::Justification::Left,
+        });
+        self.editor_multiline.set_wrap_mode(if overlay.text_wrapped {
+            gtk::WrapMode::WordChar
+        } else {
+            gtk::WrapMode::None
+        });
+
+        let buffer = self.editor_multiline.buffer();
+        let (start, end) = buffer.bounds();
+        if buffer.text(&start, &end, true).as_str() != overlay.text {
+            self.editor_multiline_seeding.set(true);
+            buffer.set_text(overlay.text);
+            self.editor_multiline_seeding.set(false);
+        }
+        // The tag is reapplied on every text change too (see the
+        // `connect_changed` handler installed in `Self::new`), which is what
+        // keeps newly typed characters styled; this covers the seed above and
+        // the case where only the styling changed and the text did not, which
+        // would fire no `changed` signal to trigger that handler.
+        let (start, end) = buffer.bounds();
+        buffer.apply_tag(tag, &start, &end);
+        // Caret placement, mirroring `gtk::Text::set_position` above: only
+        // meaningful right after a reseed, since `edit_text_buffer`'s own
+        // caret tracking is what moves it the rest of the time and this would
+        // otherwise fight the user's own cursor on every pump tick.
+        let target = buffer.iter_at_offset(overlay.caret_chars.max(0));
+        if buffer.iter_at_mark(&buffer.get_insert()).offset() != target.offset() {
+            buffer.place_cursor(&target);
+        }
+
+        // `multiline_placement` rather than the box's `(y, h)` inline: see its
+        // own doc for why a multi-line box is never shrunk to a line height,
+        // and why that decision has its own named, tested function rather
+        // than being folded back into this one.
+        let (y, h) = multiline_placement(y, h);
+        self.editor_multiline_scroll.set_size_request(w, h);
+        self.text_layer.move_(&self.editor_multiline_scroll, x as f64, y as f64);
+
+        if overlay.fallback {
+            self.editor_multiline_scroll.add_css_class("cordial-text-fallback");
+        } else {
+            self.editor_multiline_scroll.remove_css_class("cordial-text-fallback");
+        }
+
+        self.editor_multiline_scroll.set_visible(true);
+        if !self.editor_multiline.has_focus() {
+            // `gtk::TextView` has no `gtk-entry-select-on-focus` equivalent --
+            // that setting is `GtkEntry`'s -- so a plain `grab_focus` here
+            // does not select the field's contents the way it would on
+            // `gtk::Text`. UNVERIFIED against a real multi-line box; see
+            // docs/NEXT.md.
+            self.editor_multiline.grab_focus();
+        }
+        (x, y, w, h)
     }
 
     /// The `wl_display` GTK opened, as a raw pointer.
@@ -1859,44 +2196,46 @@ mod tests {
     #[test]
     fn vertical_placement_centre_is_untouched_top_and_bottom_anchor() {
         assert_eq!(
-            vertical_placement(1, 10, 22, 13, false),
+            vertical_placement(1, 10, 22, 13),
             (10, 22),
             "Centre must pass y/h through unchanged -- this is the measured case"
         );
         assert_eq!(
-            vertical_placement(0, 10, 22, 13, false),
+            vertical_placement(0, 10, 22, 13),
             (10, 13),
             "Top anchors the natural height at the box's own top"
         );
         assert_eq!(
-            vertical_placement(2, 10, 22, 13, false),
+            vertical_placement(2, 10, 22, 13),
             (19, 13),
             "Bottom anchors it at the box's own bottom: 10 + (22 - 13)"
         );
         // An unrecognised ordinal must be as inert as Centre, not stretch or
         // shrink the widget to something nobody asked for.
-        assert_eq!(vertical_placement(99, 10, 22, 13, false), (10, 22));
+        assert_eq!(vertical_placement(99, 10, 22, 13), (10, 22));
     }
 
-    /// **A multi-line box keeps its whole rectangle, whatever it aligns to.**
-    ///
-    /// `natural_h` is one line of a single-line `gtk::Text`, so without this
-    /// a `Top`-aligned four-line chat entry would draw the editor as a
-    /// one-line strip along the top of a box the engine drew full height --
-    /// which is the shape "the text box is misaligned" describes. Asserted
-    /// against the arithmetic; UNVERIFIED against a real multi-line box,
-    /// because no capture in this project holds one yet.
+    /// **A multi-line box gets the whole rectangle, whatever it aligns to --**
+    /// but through [`HostWindow::editor_multiline`] and its scrolled window
+    /// now, not through `vertical_placement`, which no longer has a multiline
+    /// branch at all. This is the replacement for the test that used to be
+    /// here (`vertical_placement_leaves_a_multiline_box_its_full_height`): the
+    /// case it asserted -- a `Top`-aligned box keeping its full height rather
+    /// than being shrunk to one line -- is no longer `vertical_placement`'s
+    /// problem, because a box `TextOverlay::multiline` is true for never calls
+    /// it. `editor_multiline_fills_its_whole_box` below is the equivalent
+    /// assertion for the function that replaced it.
     #[test]
-    fn vertical_placement_leaves_a_multiline_box_its_full_height() {
+    fn editor_multiline_fills_its_whole_box() {
         for align in [0, 1, 2, 99] {
             assert_eq!(
-                vertical_placement(align, 10, 88, 13, true),
+                multiline_placement(10, 88),
                 (10, 88),
-                "yAlignment {align} must not shrink a multi-line box to one line"
+                "yAlignment {align} is not consulted -- a multi-line box always fills its rectangle"
             );
         }
-        // And the single-line behaviour it is contrasted with is unchanged.
-        assert_eq!(vertical_placement(0, 10, 88, 13, false), (10, 13));
+        // And the single-line function it replaced for this box is unchanged.
+        assert_eq!(vertical_placement(0, 10, 88, 13), (10, 13));
     }
 
     /// A natural height taller than the box (a font too big for its own line
@@ -1905,8 +2244,8 @@ mod tests {
     /// outside it or invert the `Bottom` offset into a negative height.
     #[test]
     fn vertical_placement_clamps_a_natural_height_taller_than_the_box() {
-        assert_eq!(vertical_placement(0, 10, 22, 40, false), (10, 22));
-        assert_eq!(vertical_placement(2, 10, 22, 40, false), (10, 22));
+        assert_eq!(vertical_placement(0, 10, 22, 40), (10, 22));
+        assert_eq!(vertical_placement(2, 10, 22, 40), (10, 22));
     }
 
     /// **While a dialog is up the whole window is ours to click.**

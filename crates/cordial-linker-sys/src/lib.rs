@@ -3112,6 +3112,56 @@ pub mod game_activity {
         (start, end)
     }
 
+    extern "C" {
+        fn cordial_textbox_test_focus(
+            handle: i64, text: *const c_char,
+            f0: f32, f1: f32, f2: f32, f3: f32, f4: f32, multiline: c_int,
+            x_alignment: c_int, y_alignment: c_int, text_color: c_int,
+            font: c_int, text_input_type: c_int, return_key_type: c_int,
+            manual_focus_release: c_int, text_wrapped: c_int, z14: c_int,
+        );
+        fn cordial_textbox_blurred();
+    }
+
+    /// Synthesise a focused `NativeTextBoxInfo` exactly as the engine's own
+    /// `showKeyboard`/`<init>` hook would -- for devctl's `fakefocus` verb,
+    /// added alongside the multi-line `gtk::TextView` overlay so its GTK side
+    /// can be exercised without a running game.
+    ///
+    /// **Test-only, and the engine never calls this.**
+    /// `native/android_classes.cpp` built `cordial_textbox_test_focus` for
+    /// this module's own `textbox_info_arrives_slot_for_slot` test below, to
+    /// prove the fifteen-slot layout survives the FFI boundary intact. This is
+    /// the same round trip, made reachable from outside the crate so devctl
+    /// can drive `WaylandWindow::sync_text_overlay`'s real placement and
+    /// styling code with a `multiline=1` box on demand. A reading taken
+    /// through it establishes that the GTK side does what the spec says --
+    /// it establishes nothing about what shape of spec a real multi-line
+    /// Roblox `TextBox` sends, which no capture in this project has yet held.
+    /// Say so plainly wherever a reading taken this way is reported.
+    pub fn test_focus_textbox(handle: i64, text: &str, info: RawTextBoxInfo) {
+        let text = CString::new(text.replace('\0', "")).unwrap_or_default();
+        // SAFETY: `text` outlives the call, which only reads it, same as
+        // `textbox_info_arrives_slot_for_slot` below.
+        unsafe {
+            cordial_textbox_test_focus(
+                handle, text.as_ptr(),
+                info.x, info.y, info.width, info.height, info.font_size, info.multiline,
+                info.x_alignment, info.y_alignment, info.text_color,
+                info.font, info.text_input_type, info.return_key_type,
+                info.manual_focus_release, info.text_wrapped, info.z14,
+            )
+        }
+    }
+
+    /// Clear whatever [`test_focus_textbox`] focused -- the same
+    /// `cordial_textbox_blurred` call `hideKeyboard` makes, declared again in
+    /// this `extern` block so the binding exists outside `#[cfg(test)]` too.
+    pub fn test_blur_textbox() {
+        // SAFETY: no arguments.
+        unsafe { cordial_textbox_blurred() }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;

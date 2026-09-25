@@ -199,6 +199,72 @@ fn handle(line: &str) -> String {
             }
             _ => "err fakeenginelock <true|false|clear>".into(),
         },
+        // A second test seam, same shape as `fakeenginelock` above and added
+        // for the same reason: `TextOverlay::multiline` picking between
+        // `gtk::Text` and the new `gtk::TextView` overlay is a real GTK path
+        // that no capture in this project has yet exercised with a genuinely
+        // multi-line Roblox `TextBox` focused (Circuit Maker 2's assembler and
+        // ROM boxes are the maintainer's own repro; nothing here can reach
+        // one). `cordial_linker_sys::game_activity::test_focus_textbox` is the
+        // same round trip `textbox_info_arrives_slot_for_slot` already uses to
+        // prove the FFI layout, made reachable here so `paste`/`settext` and a
+        // screenshot can drive the multi-line widget on demand.
+        //
+        // **A reading taken through this is synthetic and must be reported as
+        // such.** It shows the GTK side does what the spec says; it says
+        // nothing about what spec shape a real multi-line box actually sends.
+        // Do not run it while a real game might also focus a box -- both
+        // write the same engine-side globals, and this seam would either
+        // stomp on or be stomped by whatever the game just did.
+        "fakefocus" => {
+            let multiline = match it.next() {
+                Some("1") => 1,
+                Some("0") => 0,
+                _ => return "err fakefocus <0|1> <x> <y> <w> <h> [text]".into(),
+            };
+            match (num(it.next()), num(it.next()), num(it.next()), num(it.next())) {
+                (Some(x), Some(y), Some(w), Some(h)) => {
+                    // Whatever is left of the line, exactly as `text`'s own
+                    // parsing takes its payload. Empty is fine -- an empty
+                    // multi-line box is still worth placing and screenshotting.
+                    let rest = line.splitn(6, char::is_whitespace).nth(5).unwrap_or("").trim();
+                    // A handle no real engine build has ever assigned to
+                    // anything Cordial has captured -- see the caveat above
+                    // about not overlapping this with a real focus.
+                    const SYNTHETIC_HANDLE: i64 = 0x0063_6f72_6469_616c; // "cordial" in hex
+                    let info = cordial_linker_sys::game_activity::RawTextBoxInfo {
+                        x, y, width: w, height: h,
+                        font_size: 16.0,
+                        multiline,
+                        x_alignment: 0,
+                        y_alignment: 1,
+                        // The one opaque grey every real capture in this
+                        // project has ever reported (`android_classes.cpp`'s
+                        // own doc comment) rather than an invented colour.
+                        text_color: 0xffd5_d5ddu32 as i32,
+                        font: 0,
+                        text_input_type: 0,
+                        return_key_type: 0,
+                        manual_focus_release: 1,
+                        text_wrapped: 1,
+                        z14: 0,
+                    };
+                    cordial_linker_sys::game_activity::test_focus_textbox(
+                        SYNTHETIC_HANDLE, rest, info,
+                    );
+                    format!(
+                        "ok fakefocus synthetic handle={SYNTHETIC_HANDLE} multiline={multiline} \
+                         x={x} y={y} w={w} h={h} chars={}",
+                        rest.chars().count()
+                    )
+                }
+                _ => "err fakefocus <0|1> <x> <y> <w> <h> [text]".into(),
+            }
+        }
+        "fakeblur" => {
+            cordial_linker_sys::game_activity::test_blur_textbox();
+            "ok fakeblur".into()
+        }
         // `natives <class>` -- what the engine registered on a Java class, as
         // opposed to what it exported. See `registered_natives`' own doc for
         // the weeks-old wrong conclusion this exists to settle.

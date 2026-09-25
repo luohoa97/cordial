@@ -2355,8 +2355,9 @@ impl WaylandWindow {
             // values are the ones observed on boxes that masked their text.
             // Roblox's own enum, not Android's `InputType` -- see the field.
             password: matches!(info.text_input_type, 5 | 9 | 10),
-            // Passed through and, for now, only *reported*. See `TextOverlay`.
+            // Picks the widget -- see `TextOverlay::multiline`.
             multiline: info.multiline != 0,
+            text_wrapped: info.text_wrapped != 0,
             // Only the placed bar draws its own chrome. An editor held at the
             // previous box's place is still sitting on a real field and must
             // not suddenly grow a background.
@@ -5060,6 +5061,42 @@ impl WaylandWindow {
         // unchanged. What stops is only this side's editing of a buffer that
         // is no longer the authority -- which is what the comment above wanted
         // and could not have until something else was willing to own it.
+        //
+        // **This is also why Enter needs no special case for a multi-line
+        // box.** `gtk::TextView`'s own default key bindings insert a newline
+        // on Enter -- unlike `gtk::Text`, which is single-line and has
+        // nothing to insert it into -- and that binding runs on GDK's own
+        // keyboard object, entirely below this function, whichever widget
+        // `editor_owns_text` says is up. Nothing here decides "newline versus
+        // submit"; the widget already drew that line for free by being the
+        // right shape of widget. `pass_key_event`/`deliver_key` above still
+        // hand the engine the same raw Enter regardless, exactly as for any
+        // other key, so Roblox's own script-side `TextBox.FocusLost` handling
+        // sees it too and can still act on `EnterPressed` if a game wants to.
+        //
+        // **Escape and a click outside need no special case here either**, for
+        // the same reason the comment above this function gives Escape: both
+        // reach the engine as ordinary input (Escape through this same path,
+        // an outside click through `dispatch_button`) and it is the engine's
+        // `hideKeyboard`/focus-loss handling that decides whether the box
+        // blurs -- Cordial never second-guesses that decision for a
+        // single-line box today, so there is nothing to add for a multi-line
+        // one.
+        //
+        // **`returnKeyType`/`manualFocusRelease` (`RawTextBoxInfo`'s slots 11
+        // and 12) are not read anywhere in this file, and that is consistent
+        // rather than an oversight.** On Android they tell the real
+        // `EditText` wrapper which IME action button to show and whether it,
+        // rather than the game, is allowed to release focus on it -- both
+        // meaningless without a soft keyboard to draw a button on. Cordial
+        // supplies neither: every key reaches the engine and no widget here
+        // ever calls `hideKeyboard` unprompted, which is the same as always
+        // deferring to the game the way `manualFocusRelease=1` would ask for.
+        // A build that changes this would need to read `return_key_type` to
+        // decide when Enter should end editing on a *single*-line box
+        // (`Enum.ReturnKeyType::Done`/`Send`, say) -- untested here because no
+        // capture in this project has yet shown Cordial itself needing to
+        // make that call.
         if self.editor_owns_text() {
             return;
         }
@@ -5222,8 +5259,23 @@ impl WaylandWindow {
     ///
     /// Callers have already checked a box has focus and already flattened
     /// `text` -- this only decides which GTK primitive to use.
+    ///
+    /// **Now three-way, not two.** Added alongside the multi-line editor:
+    /// [`cordial_shell::host_window::HostWindow::editor_multiline_active`]
+    /// reports which of `editor`/`editor_multiline`
+    /// [`cordial_shell::host_window::HostWindow::set_text_overlay`] most
+    /// recently placed, which is the same widget GDK is currently handing
+    /// keystrokes to -- so a `paste`/`settext` into a multi-line box lands in
+    /// the widget that owns it and keeps its newlines, rather than in the
+    /// single-line widget, which would silently flatten them.
     pub fn devctl_replace_editor_text(&self, text: &str, replace_all: bool) -> usize {
-        if replace_all {
+        if self.host.0.editor_multiline_active() {
+            if replace_all {
+                self.host.0.editor_multiline_set_text(text)
+            } else {
+                self.host.0.editor_multiline_paste_at_caret(text)
+            }
+        } else if replace_all {
             self.host.0.editor_set_text(text)
         } else {
             self.host.0.editor_paste_at_caret(text)
