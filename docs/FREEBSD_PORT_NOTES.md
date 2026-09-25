@@ -1704,3 +1704,43 @@ never use them, or `CORDIAL_SET_FLAGS_LOADED`, on another build.
   newest by mtime is not always the current run's.
 - Account safety: repeated kicked joins come from one IP; keep test accounts
   off any IP a real account uses (AGENTS.md).
+
+### 2026-09-26 (cont.): 2.738 in-game, DummyClient fixed, and where this port stops
+
+Supersedes the "next step" and the 304 hypothesis in the entry above.
+
+**Measured, in order:**
+
+- **2.738.1397 joins and plays.** Signed in, NDS lobby with other players and
+  the character rendered; screenshot taken by the user. 2.721's immediate 262
+  does not occur on 2.738 (several joins).
+- **The recipe no longer needs any engine-memory write.** Plain release build
+  (no `unsafe-experiments`), `CORDIAL_EARLY_SETTINGS=1`, no
+  `CORDIAL_SET_FLAGS_LOADED`, no state probe; see the recipe above.
+- **`4095088`: the DummyClient was broken by lying epoll stubs**, not by the
+  network. `epoll_create/_create1/_ctl/_wait` returned zero; the DummyClient
+  sent its handshake 19 times and never read its socket. Routed to epoll-shim:
+  "DummyClient Connected" in 44 ms with ping and time-sync threads, matching
+  Sober. UDP GSO (`UDP_SEGMENT`/`UDP_GRO`) is emulated in the same commit; the
+  ten cmsg and five setsockopt refusals of the previous join are gone.
+- **The DummyClient was not the cause of the 304.** With it connected, both
+  joins were still disconnected with 304 ("missing or corrupted files") at
+  60.16 s and 60.11 s after `Connection accepted`. The earlier inference that
+  the dead channel triggered the kick is withdrawn.
+- **`/proc` filesystem type is not answered wrongly by Cordial.** The engine's
+  libc imports include only `statvfs`, which has no type field; under the
+  Linuxulator, `stat -f /proc` already reports `9fa0` on this host.
+
+**Where this port stops, and why.** A trace of the seconds before the
+disconnect points at an engine-side integrity check whose result the server
+acts on. What that check inspects is deliberately not recorded here.
+Making it pass would mean shaping what the engine observes about its own
+environment, which is defeating anti-tamper — out of scope permanently under
+ADR-001 regardless of the layer it is done at (Cordial, a kernel patch, or a
+modified procfs). The remaining legitimate questions are the ones a faithful
+port can answer truthfully; if the check fails on a truthful answer, the port
+is not playable online and that is the honest result.
+
+**Account safety.** Every one of these sessions ended in a 304 "missing or
+corrupted files" disconnect from one IP. Test only with throwaway accounts on
+an IP no real account uses (AGENTS.md); do not main this build.
