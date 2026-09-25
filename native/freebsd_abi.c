@@ -44,6 +44,11 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <pthread.h>
+#include <time.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <string.h>
 #include <sys/eventfd.h>
 #include <sys/filio.h>
@@ -205,10 +210,15 @@ int* cordial_fbsd_bionic_errno(void) {
     return &errno;
 }
 
-#define FAIL_LX(e)       \
-    do {                 \
-        set_lx_errno(e); \
-        return -1;       \
+// A refusal here never reaches the kernel, so ktrace cannot see it: a RakNet
+// join stalled after `binding socket on inaddr_any:0` with no socket() in the
+// trace at all. `CORDIAL_TRACE_ABI=1` names every refusal.
+#define FAIL_LX(e)                                                              \
+    do {                                                                        \
+        if (getenv("CORDIAL_TRACE_ABI"))                                        \
+            fprintf(stderr, "[abi] %s refused: Linux errno %d\n", __func__, (e)); \
+        set_lx_errno(e);                                                        \
+        return -1;                                                              \
     } while (0)
 
 #define LX_EINVAL 22
@@ -1294,6 +1304,110 @@ int cordial_fbsd___poll_chk(struct pollfd* fds, nfds_t n, int timeout, size_t fd
 // socket or tty user reaches for; answer ENOTTY for the rest, which is what
 // either kernel says to a request the file does not support -- rather than let
 // a Linux number land on whatever FreeBSD request happens to share it.
+// bionic's pthread_condattr_t is a `long`, and nothing on this port owned
+// it: pthread_condattr_init/destroy were generated stubs (they print
+// `[stub] pthread_condattr_init`), so the object was never initialised, and
+// setclock went to the host with a Linux clock id (1 = MONOTONIC on Linux,
+// CLOCK_VIRTUAL on FreeBSD). The attribute is now just the FreeBSD clock id
+// the condvar should use, read back by make_cond in bionic/pthread.rs.
+// Handing the uninitialised object to the host's pthread_cond_init instead
+// crashed a game join outright, which is how the stubs were found.
+static int cordial_fbsd_condattr_init(long* a) {
+    if (!a) return 22;
+    *a = CLOCK_REALTIME; // bionic's default, and what libc++ deadlines assume
+    return 0;
+}
+static int cordial_fbsd_condattr_destroy(long* a) {
+    (void)a;
+    return 0;
+}
+static int cordial_fbsd_condattr_setclock(long* a, int lx) {
+    if (!a) return 22;
+    switch (lx) {
+    case 0: case 5: *a = CLOCK_REALTIME; return 0;           // REALTIME(_COARSE)
+    case 1: case 4: case 6: case 7: *a = CLOCK_MONOTONIC; return 0;
+    default: return 22; // Linux EINVAL, returned as pthread functions do
+    }
+}
+static int cordial_fbsd_condattr_getclock(const long* a, int* lx) {
+    if (!a || !lx) return 22;
+    *lx = *a == CLOCK_MONOTONIC ? 1 : 0;
+    return 0;
+}
+
+// Linux SIOCGIFCONF, answered from getifaddrs. See the call site in
+// cordial_fbsd_ioctl for why FreeBSD's own ioctl cannot be passed through.
+static int cordial_fbsd_siocgifconf(void* arg) {
+    enum { LX_IFREQ = 40, LX_IFNAMSIZ = 16 };
+    struct lx_ifconf { int len; int pad; char* buf; };
+    struct lx_ifconf* ifc = (struct lx_ifconf*)arg;
+    if (!ifc) FAIL_LX(LX_EINVAL);
+    struct ifaddrs* all = NULL;
+    if (getifaddrs(&all) != 0) {
+        cordial_fbsd_errno_to_linux();
+        return -1;
+    }
+    int n = 0, cap = ifc->buf ? ifc->len / LX_IFREQ : 0;
+    for (struct ifaddrs* a = all; a; a = a->ifa_next) {
+        if (!a->ifa_addr || a->ifa_addr->sa_family != AF_INET) continue;
+        if (ifc->buf) {
+            if (n >= cap) break;
+            unsigned char* r = (unsigned char*)ifc->buf + (size_t)n * LX_IFREQ;
+            memset(r, 0, LX_IFREQ);
+            strncpy((char*)r, a->ifa_name, LX_IFNAMSIZ - 1);
+            const struct sockaddr_in* in = (const struct sockaddr_in*)a->ifa_addr;
+            uint16_t fam = 2; // Linux AF_INET, host order, no sa_len
+            memcpy(r + 16, &fam, 2);
+            memcpy(r + 18, &in->sin_port, 2);
+            memcpy(r + 20, &in->sin_addr, 4);
+        }
+        n++;
+    }
+    freeifaddrs(all);
+    ifc->len = n * LX_IFREQ;
+    return 0;
+}
+
+// Linux per-interface queries (SIOCGIFADDR/NETMASK/BRDADDR/FLAGS) on a
+// 40-byte struct ifreq named by its first 16 bytes. RakNet asks for each
+// address after SIOCGIFCONF; refused, a join sat at stage UGCGame presenting
+// nothing. Answered from getifaddrs for AF_INET, in Linux layout.
+static int cordial_fbsd_siocgif(unsigned req, void* arg) {
+    unsigned char* r = (unsigned char*)arg;
+    if (!r) FAIL_LX(LX_EINVAL);
+    char name[17] = {0};
+    memcpy(name, r, 16);
+    struct ifaddrs* all = NULL;
+    if (getifaddrs(&all) != 0) {
+        cordial_fbsd_errno_to_linux();
+        return -1;
+    }
+    int found = 0;
+    for (struct ifaddrs* a = all; a && !found; a = a->ifa_next) {
+        if (strcmp(a->ifa_name, name) != 0) continue;
+        if (req == 0x8913) { // SIOCGIFFLAGS: low bits agree; MULTICAST differs
+            unsigned fl = a->ifa_flags, lx = fl & 0x7ff;
+            if (fl & IFF_MULTICAST) lx |= 0x1000;
+            short v = (short)lx;
+            memcpy(r + 16, &v, 2);
+            found = 1;
+            break;
+        }
+        if (!a->ifa_addr || a->ifa_addr->sa_family != AF_INET) continue;
+        const struct sockaddr* src = req == 0x8915 ? a->ifa_addr
+                                   : req == 0x891b ? a->ifa_netmask
+                                   : a->ifa_broadaddr;
+        memset(r + 16, 0, 24);
+        uint16_t fam = 2;
+        memcpy(r + 16, &fam, 2);
+        if (src) memcpy(r + 20, &((const struct sockaddr_in*)src)->sin_addr, 4);
+        found = 1;
+    }
+    freeifaddrs(all);
+    if (!found) FAIL_LX(19); // Linux ENODEV
+    return 0;
+}
+
 int cordial_fbsd_ioctl(int fd, int req, ...) {
     va_list ap;
     va_start(ap, req);
@@ -1308,7 +1422,22 @@ int cordial_fbsd_ioctl(int fd, int req, ...) {
     case 0x5452: fb = FIOASYNC; break;
     case 0x8905: fb = SIOCATMARK; break;
     case 0x5413: fb = TIOCGWINSZ; break; // struct winsize agrees
-    default: FAIL_LX(LX_ENOTTY);
+    case 0x8912: // SIOCGIFCONF
+        // RakNet lists the host's IPv4 addresses with this before it binds its
+        // UDP socket. Refused with ENOTTY, a game join logged `binding socket
+        // on inaddr_any:0` and never created a socket at all. FreeBSD's own
+        // SIOCGIFCONF returns variable-length records with sa_len, so the
+        // answer is built from getifaddrs in Linux's fixed layout instead:
+        // struct ifconf { int len; void* buf } (buf at offset 8), and 40-byte
+        // struct ifreq { char name[16]; sockaddr_in addr; pad }, with a
+        // two-byte family and no sa_len.
+        return cordial_fbsd_siocgifconf(arg);
+    case 0x8913: case 0x8915: case 0x8919: case 0x891b:
+        return cordial_fbsd_siocgif((unsigned)req, arg);
+    default:
+        if (getenv("CORDIAL_TRACE_ABI"))
+            fprintf(stderr, "[abi] ioctl request %#x on fd %d has no translation\n", (unsigned)req, fd);
+        FAIL_LX(LX_ENOTTY);
     }
     RET_TRANSLATED(ioctl(fd, fb, arg));
 }
@@ -1398,6 +1527,10 @@ struct CordialFbsdAbiSymbol {
 const struct CordialFbsdAbiSymbol* cordial_fbsd_abi_symbols(size_t* count) {
     static const struct CordialFbsdAbiSymbol table[] = {
         {"__errno", (void*)&cordial_fbsd_bionic_errno},
+        {"pthread_condattr_init", (void*)&cordial_fbsd_condattr_init},
+        {"pthread_condattr_destroy", (void*)&cordial_fbsd_condattr_destroy},
+        {"pthread_condattr_setclock", (void*)&cordial_fbsd_condattr_setclock},
+        {"pthread_condattr_getclock", (void*)&cordial_fbsd_condattr_getclock},
         {"__open_2", (void*)&cordial_fbsd___open_2},
         {"openat", (void*)&cordial_fbsd_openat},
         {"pipe2", (void*)&cordial_fbsd_pipe2},

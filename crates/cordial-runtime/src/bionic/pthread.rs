@@ -111,13 +111,28 @@ unsafe fn free_backing(ptr: *mut c_void) {
 /// CLOCK_MONOTONIC to match bionic's timedwait deadlines (a REALTIME cond makes
 /// every monotonic-deadline `timedwait` time out instantly and busy-spin).
 unsafe fn make_cond(p: *mut c_void, attr: *const c_void) {
+    // Forcing CLOCK_MONOTONIC on every condvar was right for boost, which asks
+    // for it through the attribute, and wrong for everything that does not:
+    // libc++'s condition_variable and RakNet build *realtime* absolute
+    // deadlines (~1.79e9 s), which on a monotonic condvar are decades away. A
+    // game join's RakNet update thread entered such a wait and never came back,
+    // so no handshake was ever sent. The attribute now decides; its clock id is
+    // translated in `pthread_condattr_setclock` (freebsd_abi.c).
+    // `CORDIAL_COND_FORCE_MONOTONIC=1` restores the old behaviour as a control.
     #[cfg(target_os = "freebsd")]
     {
-        let _ = attr;
         extern "C" {
             fn bionic_cond_init_monotonic(cond: *mut c_void) -> c_int;
         }
-        bionic_cond_init_monotonic(p);
+        // The attribute is a bionic `long` holding a FreeBSD clock id, owned
+        // by freebsd_abi.c's condattr functions; 4 is CLOCK_MONOTONIC.
+        let monotonic = std::env::var_os("CORDIAL_COND_FORCE_MONOTONIC").is_some()
+            || (!attr.is_null() && *(attr as *const i64) == 4);
+        if monotonic {
+            bionic_cond_init_monotonic(p);
+        } else {
+            pthread_cond_init(p, std::ptr::null());
+        }
     }
     #[cfg(not(target_os = "freebsd"))]
     pthread_cond_init(p, attr);
