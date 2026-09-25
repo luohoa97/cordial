@@ -1550,3 +1550,32 @@ and the engine throws `'<apk>' is not a directory`. The 2.721 universal APK in
 
 Without the feature it stops at `Can't initialize the TaskScheduler before flags
 have been loaded`.
+
+### 2026-09-25 (cont.): after the retry the settings fetch is never started
+
+Same recipe as above, three measurements, each on its own run:
+
+- **The wedge reproduces.** `[state]` reads 11 before `nativeRetryInit`, the
+  retry succeeds, and a `gcore` at 25 s reads `nativeEngineState_` = **2**
+  (chain `*(base+0x70811c8)->[0x38]->[0x10]`, base from the linker's
+  `notifylldb` line). A raw scan of every thread's stack in that core finds a
+  return address inside getFlags (`0x2c5ccac`) on exactly one thread, whose top
+  frame is in `libthr`. So the stuck getFlags is the *post-retry* one.
+- **No network or file activity while it waits.** `ktrace -p` attached for 5 s
+  after `late retry`: 955,346 syscalls, of which 955,346 are `_umtx_op`, every
+  one `UMTX_OP_WAIT_UINT_PRIVATE`. Zero wakes, zero `socket`/`connect`/`sendto`,
+  zero `NAMI`. `procstat -f` at the same point shows one UDP socket and no TCP.
+  On Linux the same point is followed by `getFlagsFromEngine_` ->
+  `bootstrapTheApp_` -> `settingsUrl: ...` -> an HTTPS fetch (flag-init.md
+  ~2340). Here the fetch is not failing; it is never begun.
+- **ktrace from process start perturbs the run** into a different failure
+  (`HardAssert (EngineModule not found)`) before the retry; attach late instead.
+
+INFERRED, not yet shown: the task that would start the fetch is queued on the
+TaskScheduler whose workers are the ~190k/s expired-deadline waiters described in
+"the scheduler chicken-and-egg" above, so it is never dispatched. Next
+measurement: whether TS::Step runs at all after the retry.
+
+Live `lldb -p` still kills the client here (SIGTRAP, nothing printed), and this
+lldb has Lua but no Python, so core analysis is plain `memory read` dumped to a
+file and parsed on the host.
