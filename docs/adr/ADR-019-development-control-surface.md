@@ -11,10 +11,26 @@ only when `CORDIAL_DEV_CONTROL` is set, which can
 - capture the frame the engine just presented, read out of the Vulkan
   swapchain, and
 - deliver pointer motion, clicks, keys, text and scroll through Cordial's own
-  `input::pass_*` entry points.
+  `input::pass_*` entry points, and
+- fill a focused Roblox TextBox in one edit rather than one synthetic
+  keystroke per character (`paste`/`settext`), for a harness payload too large
+  to type.
 
 `tools/cordial-mcp.py` speaks MCP over stdio against that socket and adds
 debugger tools on top of it.
+
+**`paste`/`settext` are the one pair of verbs that do not go through
+`input::pass_*`.** Since `fd0f0c6` a real `gtk::Text` owns a focused box's text
+on Wayland (see the text-entry sections of `docs/NEXT.md`), so the two verbs
+write that widget directly through ordinary `GtkEditable` calls
+(`insert_text`/`set_text`) and let its own `changed` signal do what a keystroke
+already does -- mirror the write, push it to the engine, redraw. Writing
+Cordial's own mirror buffer and the engine instead, bypassing the widget, was
+tried first and is not what shipped: the widget would not agree with the
+engine until the next pump tick's overlay refresh caught up, and a real
+keystroke landing in that window would revert the edit. X11 has no such
+widget (ADR-024) and keeps the buffer-and-engine path this whole surface used
+before the widget existed.
 
 It works in **coordinates and pixels only**. There is no semantic access to
 Roblox's interface: no element tree, no "click the button named Play".

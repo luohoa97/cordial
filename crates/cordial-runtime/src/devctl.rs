@@ -62,6 +62,12 @@ pub enum Cmd {
     /// so provoking it meant restarting the client, which loses the state you
     /// were trying to provoke it in.
     Fullscreen(bool),
+    /// `paste <path>`: insert the file's text at the focused box's caret, like
+    /// Ctrl+V (see `clipboard::paste_text`).
+    PasteText(String),
+    /// `settext <path>`: replace the focused box's whole contents (see
+    /// `clipboard::set_text`).
+    SetText(String),
 }
 
 static QUEUE: Mutex<Vec<Cmd>> = Mutex::new(Vec::new());
@@ -269,6 +275,32 @@ fn handle(line: &str) -> String {
             }
             push(Cmd::Text(rest.to_string()));
             "ok".into()
+        }
+        // `paste <path>`: insert the file's text at the caret, like Ctrl+V.
+        // `settext <path>`: replace the whole field. Both read here rather
+        // than on the pump thread, so a bad path is reported on this reply
+        // line instead of silently doing nothing; the result of the edit is
+        // visible through `textbox`'s `chars=`. Payloads too big to type
+        // one keystroke per character (`text` goes through `script_type`)
+        // are the reason either exists, and a file rather than the socket
+        // line itself because the protocol is one command per line and a
+        // multi-line payload cannot be one line of it.
+        "paste" | "settext" => {
+            let path = line.splitn(2, char::is_whitespace).nth(1).unwrap_or("").trim();
+            if path.is_empty() {
+                return format!("err {verb} <path>");
+            }
+            match std::fs::read_to_string(path) {
+                Ok(text) => {
+                    let n = text.chars().count();
+                    // `lines=` says newlines are kept (multi-line boxes); a
+                    // build that flattened them would not report it.
+                    let lines = text.lines().count();
+                    push(if verb == "paste" { Cmd::PasteText(text) } else { Cmd::SetText(text) });
+                    format!("ok queued chars={n} lines={lines}")
+                }
+                Err(e) => format!("err reading {path}: {e}"),
+            }
         }
         "fullscreen" | "windowed" => {
             push(Cmd::Fullscreen(verb == "fullscreen"));
@@ -484,6 +516,22 @@ pub fn apply_queued(handle: i64) {
                 crate::android::input::wheel(handle, x, y, 0.0, detents, now_ms())
             }
             Cmd::Fullscreen(on) => crate::android::backend_set_fullscreen(on),
+            Cmd::PasteText(text) => {
+                report_replace("paste", &text, crate::android::clipboard::paste_text(handle, &text))
+            }
+            Cmd::SetText(text) => {
+                report_replace("settext", &text, crate::android::clipboard::set_text(handle, &text))
+            }
         }
+    }
+}
+
+/// Shared by `paste` and `settext`'s pump-side reporting, so the two verbs
+/// cannot describe the same three outcomes in different words.
+fn report_replace(verb: &str, text: &str, result: Result<usize, String>) {
+    match result {
+        Ok(0) if !text.is_empty() => println!("  devctl: {verb}: no box has focus"),
+        Ok(n) => println!("  devctl: {verb}: field now holds {n} characters"),
+        Err(e) => println!("  devctl: {verb} failed: {e}"),
     }
 }

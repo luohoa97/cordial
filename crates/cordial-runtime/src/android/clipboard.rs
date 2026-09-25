@@ -415,6 +415,89 @@ pub fn paste_into_engine(handle: i64) -> Result<usize, String> {
     Ok(n)
 }
 
+/// Insert `text` at the focused box's caret, for the development control
+/// surface's `paste` verb -- a harness's equivalent of Ctrl+V, from a file
+/// instead of the host clipboard, for a payload too big to type one keystroke
+/// per character (`text` goes through `script_type`) and without touching the
+/// clipboard the developer sitting at this machine is using.
+///
+/// **On Wayland this does not touch [`paste_into_engine`] or `TEXT_BUFFER` at
+/// all.** Since `fd0f0c6` a real `gtk::Text` owns the field whenever one has
+/// focus -- see `wayland::WaylandWindow::editor_owns_text` -- and a real
+/// Ctrl+V is delivered to *that widget's own* clipboard handling; the guard
+/// right above the `is_paste_shortcut` check in `wayland.rs` returns before
+/// `paste_into_engine` is ever reached while a box is focused, which is
+/// **always**, given a paste is only meaningful with one. So the widget is
+/// where a real paste's insert-at-caret happens, and this verb goes there too
+/// -- writing `TEXT_BUFFER` directly instead (as an earlier, uncommitted
+/// version of this function did) leaves the widget showing stale text until
+/// the next pump tick's `sync_text_overlay` catches up, and a real keystroke
+/// landing in that window reverts the paste: GDK delivers it straight to the
+/// widget, which still holds the old text, and the resulting `changed` signal
+/// overwrites `TEXT_BUFFER` with the widget's stale content plus one
+/// keystroke. Going through the widget makes that window not exist, because
+/// GTK's `changed`/`notify::cursor-position` signals are emitted synchronously
+/// inside `insert_text`/`set_position`, so `connect_editor_changed` has
+/// already run -- mirroring the buffer, pushing to the engine, redrawing --
+/// by the time this function returns.
+///
+/// Returns the field's new character count. `Ok(0)` means no box had focus,
+/// which is a result and not a failure.
+pub fn paste_text(handle: i64, text: &str) -> Result<usize, String> {
+    replace_focused_text(handle, text, false)
+}
+
+/// Replace the focused box's whole contents, for the development control
+/// surface's `settext` verb.
+///
+/// Deliberately not select-all followed by [`paste_text`]: that would make a
+/// harness using `settext` incidentally exercise select-all as well, and
+/// whether select-all itself works through this surface is a separate
+/// question (see `docs/NEXT.md` and the devctl `tap 30 4096` check). This is
+/// a test seam with no user-reachable equivalent, documented the way
+/// `input::FAKE_ENGINE_LOCK` is: a real user cannot instantly replace a
+/// field's contents without going through a selection first, and `settext`
+/// skips straight to the state that selection would have produced.
+///
+/// Same widget-vs-buffer split as [`paste_text`], and the same reasoning.
+pub fn set_text(handle: i64, text: &str) -> Result<usize, String> {
+    replace_focused_text(handle, text, true)
+}
+
+/// Shared by [`paste_text`] and [`set_text`]: check the size once, then hand
+/// off to whichever backend is the authority for the focused field's text.
+fn replace_focused_text(handle: i64, text: &str, replace_all: bool) -> Result<usize, String> {
+    if text.len() > MAX_BYTES {
+        return Err(format!("{} bytes; the limit is {MAX_BYTES}", text.len()));
+    }
+    if linker::game_activity::focused_textbox().is_none() {
+        return Ok(0);
+    }
+    if let Some(w) = super::wayland::current() {
+        // The widget flattens exactly as the buffer path below would --
+        // `editor_paste_at_caret`/`editor_set_text` call GTK's `insert_text`/
+        // `set_text` with this same flattened string, not the raw file
+        // contents, so a payload is treated identically whichever backend
+        // ends up holding it.
+        let flattened = super::input::flatten_for_field(text);
+        return Ok(w.devctl_replace_editor_text(&flattened, replace_all));
+    }
+    // X11, which has no editor widget (ADR-024) and so has `TEXT_BUFFER` as
+    // the only place the text lives -- the same shape `paste_into_engine`
+    // already uses for X11's own Ctrl+V. Also Wayland before a window exists,
+    // which should not be reachable given the focus check above, but is a
+    // safe fallback rather than a panic if it ever is.
+    match super::input::devctl_replace_text(text, replace_all, MAX_BYTES)? {
+        None => Ok(0),
+        Some((which, contents, caret)) => {
+            let _ = linker::game_activity::text_input(handle, &contents, caret, caret);
+            super::input::pass_text(which, &contents, caret);
+            super::input::deliver_surface_redraw(handle);
+            Ok(contents.chars().count())
+        }
+    }
+}
+
 // ------------------------------------------------------------------- arming
 
 static ARMED: AtomicBool = AtomicBool::new(false);

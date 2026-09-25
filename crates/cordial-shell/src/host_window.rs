@@ -862,6 +862,44 @@ impl HostWindow {
         *self.editor_changed.borrow_mut() = Some(Box::new(f));
     }
 
+    /// The development control surface's `paste`: insert `text` at the
+    /// caret, replacing a selection first exactly as a real Ctrl+V would.
+    ///
+    /// `delete_selection` then `insert_text` is not an approximation of what
+    /// GTK's own paste handling does -- it is the same pair of `GtkEditable`
+    /// calls that handling makes internally, so this and a real paste share
+    /// an implementation rather than merely agreeing on the outcome. Both
+    /// calls emit the widget's ordinary signals (`changed`, then
+    /// `notify::cursor-position` from the explicit `set_position` below,
+    /// needed because `insert_text`'s own cursor placement is not
+    /// documented to land where its `position` out-parameter says) --
+    /// synchronously, so `connect_editor_changed`'s callback has already run
+    /// by the time this returns. No `editor_seeding` guard: seeding is for
+    /// the engine telling the widget what it already contains, and this is
+    /// the opposite direction, the same as a keystroke.
+    ///
+    /// Caller has checked a box has focus; this does not.
+    pub fn editor_paste_at_caret(&self, text: &str) -> usize {
+        self.editor.delete_selection();
+        let mut pos = self.editor.position();
+        self.editor.insert_text(text, &mut pos);
+        self.editor.set_position(pos);
+        self.editor.text().chars().count()
+    }
+
+    /// The development control surface's `settext`: replace the field's
+    /// whole contents and place the caret at the end.
+    ///
+    /// Deliberately not select-all followed by [`Self::editor_paste_at_caret`]
+    /// -- see `clipboard::set_text`'s doc for why a test seam with no
+    /// user-reachable equivalent is the more honest shape here. Same
+    /// synchronous signal path as the paste above.
+    pub fn editor_set_text(&self, text: &str) -> usize {
+        self.editor.set_text(text);
+        self.editor.set_position(text.chars().count() as i32);
+        self.editor.text().chars().count()
+    }
+
     /// Place (or hide) the desktop equivalent of Android's transparent
     /// `EditText` over the engine canvas. The caller controls subsurface
     /// stacking; this method only updates GTK's parent surface.

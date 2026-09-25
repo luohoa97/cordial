@@ -355,6 +355,36 @@ TOOLS = [
         },
     },
     {
+        "name": "cordial_paste",
+        "description": (
+            "Insert text at the focused box's caret in one edit, like Ctrl+V -- for a payload "
+            "too large to type one keystroke per character with cordial_text (which goes "
+            "through script_type). The existing text is not cleared; a selection is replaced, "
+            "same as a real paste. Ok(0) means no box has focus. 64 KB limit, same as a host "
+            "clipboard paste; newlines survive for multi-line boxes, other control characters "
+            "become spaces."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "cordial_settext",
+        "description": (
+            "Replace the focused box's whole contents in one edit. A test seam with no "
+            "user-reachable equivalent -- deliberately not select-all followed by "
+            "cordial_paste, so using this does not incidentally depend on select-all also "
+            "working. Same limits as cordial_paste."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    },
+    {
         "name": "cordial_scroll",
         "description": "Scroll at a coordinate, in wheel detents. Positive is away from the user.",
         "inputSchema": {
@@ -471,6 +501,31 @@ def tool_key(c, args):
 def tool_text(c, args):
     c.send(f"text {args['text']}")
     return [{"type": "text", "text": f"sent {len(args['text'])} characters"}]
+
+
+def _replace_focused_text(c, verb, text):
+    # A file rather than the socket line itself: devctl's protocol is one
+    # command per line, and a multi-line or many-kilobyte payload cannot be
+    # sent as one line of it the way `cordial_text` sends a short string.
+    path = tempfile.mktemp(prefix="cordial-", suffix=".txt")
+    with open(path, "w") as f:
+        f.write(text)
+    try:
+        reply = c.send(f"{verb} {path}", timeout=15)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return [{"type": "text", "text": reply}]
+
+
+def tool_paste(c, args):
+    return _replace_focused_text(c, "paste", args["text"])
+
+
+def tool_settext(c, args):
+    return _replace_focused_text(c, "settext", args["text"])
 
 
 def tool_scroll(c, args):
@@ -637,6 +692,8 @@ HANDLERS = {
     "cordial_move": tool_move,
     "cordial_key": tool_key,
     "cordial_text": tool_text,
+    "cordial_paste": tool_paste,
+    "cordial_settext": tool_settext,
     "cordial_scroll": tool_scroll,
     "cordial_fps": tool_fps,
     "cordial_backtrace": tool_backtrace,

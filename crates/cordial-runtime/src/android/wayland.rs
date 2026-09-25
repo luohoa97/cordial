@@ -5208,6 +5208,28 @@ impl WaylandWindow {
         cordial_linker_sys::game_activity::focused_textbox().is_some()
     }
 
+    /// The development control surface's `paste`/`settext`, dispatched to
+    /// whichever GTK primitive a real edit of that shape uses --
+    /// [`host_window::HostWindow::editor_paste_at_caret`] calls the same
+    /// `delete_selection`/`insert_text` pair GTK's own Ctrl+V handler does,
+    /// and `editor_set_text` is `set_text`, the primitive `set_text_overlay`
+    /// already reaches for when the engine reseeds the field. Either one fires
+    /// the widget's ordinary `changed`/`cursor-position` signals, so
+    /// `connect_editor_changed` -- installed once, above -- mirrors the write
+    /// into `TEXT_BUFFER`, pushes it to the engine and redraws, exactly as it
+    /// would for a keystroke. See `clipboard::paste_text`/`clipboard::set_text`
+    /// for why this is what runs instead of touching `TEXT_BUFFER` directly.
+    ///
+    /// Callers have already checked a box has focus and already flattened
+    /// `text` -- this only decides which GTK primitive to use.
+    pub fn devctl_replace_editor_text(&self, text: &str, replace_all: bool) -> usize {
+        if replace_all {
+            self.host.0.editor_set_text(text)
+        } else {
+            self.host.0.editor_paste_at_caret(text)
+        }
+    }
+
     /// Drive `enable()`/`disable()` off the same focus signal `input.rs`
     /// already tracks (`focused_textbox`/`textbox_generation`), rather than
     /// this file inventing a second notion of "which box is focused". Cheap

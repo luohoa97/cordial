@@ -2441,6 +2441,10 @@ static TEXT_REVISION: AtomicU64 = AtomicU64::new(0);
 /// What a key press means to the focused field.
 pub enum Edit<'a> {
     Insert(&'a str),
+    /// A block of text that may span lines: like `Insert`, but newlines are
+    /// kept (other control characters are still refused). For the dev control
+    /// surface's `paste` and `settext` into multi-line boxes.
+    InsertLines(&'a str),
     Backspace,
     Delete,
     Move(Caret),
@@ -2532,6 +2536,14 @@ pub fn edit_text_buffer(edit: Edit<'_>) -> Option<(String, i32)> {
                 true
             }
         }
+        Edit::InsertLines(s) => {
+            if s.is_empty() || s.chars().any(|c| c.is_control() && c != '\n') {
+                false
+            } else {
+                buf.insert(s);
+                true
+            }
+        }
         Edit::Backspace => buf.backspace(),
         Edit::Delete => buf.delete(),
         Edit::Move(to) => buf.move_caret(to),
@@ -2544,6 +2556,103 @@ pub fn edit_text_buffer(edit: Edit<'_>) -> Option<(String, i32)> {
         TEXT_REVISION.fetch_add(1, Ordering::Relaxed);
         (buf.text.clone(), buf.caret as i32)
     })
+}
+
+/// What a bulk edit does with a control character on the way in: newlines
+/// survive -- a multi-line box such as CM2's Assembler needs them, and this
+/// path exists for payloads a harness writes, not for a single-line search
+/// bar -- CRLF is normalised to LF first so a Windows-authored file does not
+/// double every line, and any other control character becomes a space rather
+/// than silently vanishing the whole insert the way [`Edit::Insert`]'s
+/// all-or-nothing refusal would. Shared by [`compose_replacement`] below and,
+/// for the Wayland `gtk::Text` widget which does not go through `Edit` at
+/// all, by `clipboard::paste_text` and `clipboard::set_text` directly -- so a
+/// payload is flattened identically whichever backend ends up holding the
+/// field.
+pub fn flatten_for_field(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .chars()
+        .map(|c| if c.is_control() && c != '\n' { ' ' } else { c })
+        .collect()
+}
+
+/// `paste`/`settext`'s shared arithmetic: flatten, reject a payload over
+/// `max_bytes`, then either clear the field first (`settext`) or leave it
+/// alone (`paste`, which inserts at the caret like a real Ctrl+V). Pure and
+/// independent of `TEXT_BUFFER` and the engine, so it can be driven against a
+/// throwaway [`TextField`] in a test instead of a running client -- see
+/// `mod tests` below.
+fn compose_replacement(
+    field: &mut TextField,
+    text: &str,
+    replace_all: bool,
+    max_bytes: usize,
+) -> Result<(), String> {
+    if text.len() > max_bytes {
+        return Err(format!("{} bytes; the limit is {max_bytes}", text.len()));
+    }
+    let flattened = flatten_for_field(text);
+    if replace_all {
+        // Clamped by `delete_surrounding` to whatever the field holds, same
+        // as `clipboard::replace_focused_text`'s prototype did -- a caret
+        // anywhere in the field still ends up with nothing on either side.
+        field.delete_surrounding(1 << 30, 1 << 30);
+    }
+    if !flattened.is_empty() {
+        field.insert(&flattened);
+    }
+    Ok(())
+}
+
+/// [`compose_replacement`] behind the one guard that cannot be tested through
+/// it alone: nothing to edit when no box has focus. `focused` is a parameter
+/// rather than a call to `game_activity::focused_textbox()` so a test can
+/// supply `None` directly instead of needing an engine to answer it; the live
+/// caller, [`devctl_replace_text`], passes the real answer straight through.
+fn replace_if_focused(
+    focused: Option<i64>,
+    field: &mut TextField,
+    text: &str,
+    replace_all: bool,
+    max_bytes: usize,
+) -> Result<usize, String> {
+    if focused.is_none() {
+        return Ok(0);
+    }
+    compose_replacement(field, text, replace_all, max_bytes)?;
+    Ok(field.len_chars())
+}
+
+/// The devctl `paste`/`settext` buffer path: X11, which has no editor widget
+/// at all, and Wayland's own fallback if this is ever reached before a window
+/// exists. **Not what runs while a `gtk::Text` owns the field** -- see
+/// `clipboard::paste_text`/`clipboard::set_text`, which write the widget
+/// directly on Wayland so it, this mirror and the engine cannot disagree
+/// afterward; this function exists for the backend that has no widget to be
+/// the authority in the first place.
+///
+/// `Ok(None)` means no box has focus. Otherwise the handle text was sent to,
+/// the field's new contents and its caret are returned for the caller to
+/// forward to the engine — this function does not touch the engine itself,
+/// so it stays as pure as `replace_if_focused` allows.
+pub fn devctl_replace_text(
+    text: &str,
+    replace_all: bool,
+    max_bytes: usize,
+) -> Result<Option<(i64, String, i32)>, String> {
+    let focused = cordial_linker_sys::game_activity::focused_textbox();
+    let mut buf = TEXT_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
+    reseed_if_needed(&mut buf);
+    let n = replace_if_focused(focused, &mut buf, text, replace_all, max_bytes)?;
+    if n == 0 {
+        return Ok(None);
+    }
+    TEXT_REVISION.fetch_add(1, Ordering::Relaxed);
+    Ok(Some((
+        focused.expect("replace_if_focused only returns non-zero when focused is Some"),
+        buf.text.clone(),
+        buf.caret as i32,
+    )))
 }
 
 /// Cheap invalidation key for consumers which only need a fresh snapshot
@@ -2828,6 +2937,71 @@ mod tests {
         assert!(!is_paste_shortcut('v' as c_ulong, META_ALT_ON | META_CTRL_ON));
         assert!(!is_paste_shortcut('v' as c_ulong, 0));
         assert!(!is_paste_shortcut('c' as c_ulong, META_CTRL_ON));
+    }
+
+    // -------------------------------------------------- devctl paste/settext
+    //
+    // All five against `replace_if_focused` directly, with a throwaway
+    // `TextField` and no engine, no widget and no socket -- see its own doc
+    // comment for why `focused` is a parameter rather than a live FFI call.
+
+    #[test]
+    fn devctl_replace_with_no_focus_does_nothing() {
+        let mut f = TextField::new();
+        f.seed("hello".into());
+        let n = replace_if_focused(None, &mut f, "ignored", true, 1 << 20).unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(f.text, "hello", "no box focused must leave the field untouched");
+    }
+
+    #[test]
+    fn devctl_settext_clears_before_inserting() {
+        // Unlike `paste`, `settext` throws away what was there whatever the
+        // caret's position was -- it is a replace, not an edit at a point.
+        let mut f = TextField::new();
+        f.seed("old content".into());
+        f.move_caret(Caret::Home);
+        let n = replace_if_focused(Some(1), &mut f, "new", true, 1 << 20).unwrap();
+        assert_eq!(f.text, "new");
+        assert_eq!(f.caret, 3);
+        assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn devctl_paste_inserts_at_the_caret_without_clearing() {
+        // The rest of the field survives -- this is Ctrl+V's semantics, not
+        // select-all's.
+        let mut f = TextField::new();
+        f.seed("hello".into());
+        f.move_caret(Caret::Home);
+        f.move_caret(Caret::Right);
+        f.move_caret(Caret::Right); // caret between "he" and "llo"
+        let n = replace_if_focused(Some(1), &mut f, "XY", false, 1 << 20).unwrap();
+        assert_eq!(f.text, "heXYllo");
+        assert_eq!(f.caret, 4);
+        assert_eq!(n, 7);
+    }
+
+    #[test]
+    fn devctl_replace_rejects_a_payload_over_the_limit() {
+        let mut f = TextField::new();
+        let err = replace_if_focused(Some(1), &mut f, "toolong", false, 3).unwrap_err();
+        assert!(err.contains("7 bytes"), "error should name the size it saw: {err}");
+        assert_eq!(f.text, "", "a rejected payload must not touch the field");
+    }
+
+    #[test]
+    fn devctl_replace_flattens_control_characters_but_keeps_newlines() {
+        // Unlike `paste_into_engine`'s single-line host-clipboard path, a
+        // newline survives here -- payloads through this path are written by
+        // a harness, not typed into a search bar, and a multi-line box such
+        // as CM2's Assembler needs them. A tab is not text a field can
+        // represent and becomes a space rather than vanishing the whole
+        // insert. See `flatten_for_field`.
+        let mut f = TextField::new();
+        let n = replace_if_focused(Some(1), &mut f, "a\nb\tc\r\nd", false, 1 << 20).unwrap();
+        assert_eq!(f.text, "a\nb c\nd", "CRLF should collapse to one LF, not two lines");
+        assert_eq!(n, 7);
     }
 
     #[test]
