@@ -1609,3 +1609,98 @@ on `HardAssert (EngineModule not found)`. `/proc/meminfo` reads still fail
 because the new open wrappers bypass the /proc redirect. The screen was reported
 as frozen after drawing; not yet measured (presents drop to 1/s after ~13 s
 without input by design, see AGENTS.md, so check `cordial_info` twice first).
+
+---
+
+## 2026-09-25/26 session: from the startup wedge to a live game, and the 304
+
+The latest entry wins, as elsewhere in this file. This one supersedes the
+2026-09-25 entries above where they disagree, and several of its findings
+retract framings from the 2026-09-19 entries: **the wedge was never the
+TaskScheduler**. Everything below was measured on this host (FreeBSD 14.4,
+X11, RTX 4070 Ti); each commit message carries its numbers.
+
+### What is on screen now
+
+Signed in (a throwaway test account), Home, search, a game page, and a join
+into a live Natural Disaster Survival server (place 189707) with other players
+visible and the character rendered — on engine **2.738.1397**. That session
+was then kicked with **304** ("missing or corrupted files") **60.17 s after
+`Connection accepted`**. Frame rate at Home under driven pointer motion is
+19–31/s, not 60; nobody has looked at why.
+
+### Fixed, in order, with the measurement that justified each
+
+| Commit | Gap | Measured effect |
+|---|---|---|
+| `fcda98f` | line 63 of this file still said futex "returns 0" | retracted in place; do_futex has been a real `_umtx_op` since `1089c41` |
+| `3c8d973` | `pthread_cond_timedwait` returned FreeBSD ETIMEDOUT (60), not Linux 110 | correct, but zero timeouts occurred: not the wedge |
+| `6d601a6` | — | wedge located: post-retry `getFlags` waits on a settings fetch that is never started (0 sockets, 955k waits, 0 wakes in 5 s) |
+| `ed8cd32` | silent `ENOSYS` from `bionic_syscall` | `CORDIAL_TRACE_SYSCALL`; no unhandled number reached |
+| `baadd92`, `7b71e9a` (merged `507c3eb`) | **no Linux→FreeBSD ABI translation**: `socket(SOCK_NONBLOCK)` and `eventfd(EFD_NONBLOCK)` failed, `fcntl(F_SETFL, 0x800)` ignored, sockaddr/errno untranslated | engine threads 8 → 38, state at 25 s 2 → 11, getFlags returns, real HTTPS works. **This was the wedge.** |
+| `6cd6e60`, `bc7bee6` | empty base url: `settingsUrl: https:///v2/...` although the engine reads `InitParams.baseURL()` correctly | `CORDIAL_SET_BASE_URL` calls `nativeSetBaseUrl`: settings fetched (1.36 MB), `startLuaApp_`, **login screen** |
+| `0fd51a2` | `syscall()` returned kernel-style `-errno` where libc's contract is `-1`/errno | 3 threads spinning on ETIMEDOUT at ~90k/s; presents under motion **0 → 19/s** (twice, A/B) |
+| `2e1c13d` | `pthread_condattr_init/destroy` were stubs, clock ids untranslated, every condvar forced monotonic; `ioctl(SIOCGIFCONF/SIOCGIF*)` refused | RakNet's update thread no longer stuck in a decades-long wait; the join creates and binds its socket; **`Connection accepted`**. `CORDIAL_TRACE_ABI` names refusals |
+| `74111f2` | the ABI layer's `open/openat` bypassed the `/proc` and `/system` redirects | `Failed to open /proc/...` 68,286 → 0 per engine log |
+
+### Findings that are not commits
+
+- **The flags-loaded memory write is no longer needed.** `CORDIAL_EARLY_SETTINGS=1`
+  lets the engine's own parse set the byte: 3/3 runs to Home with
+  `CORDIAL_SET_FLAGS_LOADED` removed, where 3/3 without either died on
+  `Can't initialize the TaskScheduler before flags have been loaded`. So the
+  ADR-001 scaffolding is gone from the working recipe, and the plain build (no
+  `unsafe-experiments`) is the one to use. The notes' old reason for abandoning
+  early settings (a spin in the parse) was the `syscall()` convention bug.
+- **The intermittent startup crash** ("Illegal instruction", "trashed its
+  stack", SIGTRAP; ~1 run in 2) is the engine's own `int3` at 2.721
+  `0x6a9ce19`, guarded by `cmpb $0, 0x75a8250` — the flags-loaded check racing
+  the external write. It goes away with the write.
+- **2.721 is too old.** Joins on 2.721 were kicked with **262** ("Error while
+  sending data") 48–52 ms after `Replicator created`, on every server tried
+  (one 6 s exception). The current engine is 0.740 (`WindowsPlayer` endpoint).
+  `cargo run --release -p cordial-update --example fetch_probe -- <dir>`
+  fetched a signature-checked **2.738.1397** from APKPure; it imports nothing
+  new; with it the join held until the 304. One session: evidence, not proof.
+- **The 304 is the Linux 304.** Same shape as `docs/HANDOVER.md` records for
+  Linux Cordial in August: `RbxTransport DummyClient ... NoResponse` after
+  10 s, then 304 at ~60 s, where Sober's DummyClient connects in 38 ms and is
+  never kicked. Next step: passively ktrace that UDP socket during a join and
+  see what it sends and receives. A socket translation gap (control messages,
+  `IP_PKTINFO`, don't-fragment — listed by the ABI agent as untranslated or
+  refused) is the suspect, and fixing one is ordinary compatibility.
+- **Out of bounds, stated so nobody spends time on it:** patching the kernel
+  or linprocfs, or shaping anything `/proc` reports, so an integrity check sees
+  what it expects. The `/proc` redirect serves linprocfs as it is (comment in
+  `system_paths.cpp` reworded to say so); the 304 above happened with it in place.
+
+### Recipe that works (2.738, no memory writes)
+
+```sh
+cargo build --release -p cordial-runtime --bin cordial-run      # no unsafe-experiments
+CORDIAL_DEV_CONTROL=1 CORDIAL_EARLY_SETTINGS=1 \
+CORDIAL_SET_BASE_URL='https://www.roblox.com/,www.roblox.com' \
+CORDIAL_STARTUP_POLL_MS=6000 XDG_DATA_HOME=~/.cache/cordial-agent-<yours> \
+./target/release/cordial-run --lib-dir <2.738>/lib/x86_64 --apk <2.738>.apk \
+    --host-libc --game-activity --run 1800
+```
+
+Add `CORDIAL_SECRET_STORE=file` with `cookies`/`identity` files in the profile
+for a signed-in run. For 2.721 only, `CORDIAL_PROBE_STATE=1
+CORDIAL_STATE_POLL_MS=5000` are also needed and their offsets are 2.721's —
+never use them, or `CORDIAL_SET_FLAGS_LOADED`, on another build.
+
+### Practical traps met this session
+
+- `~/FreeRoblox/apk/com.roblox.client@x86_64.apk` is not a valid zip.
+- Cores go to the profile's `run/` directory (`kern.corefile=%N.core`, cwd).
+- Closing the client window does not end the process; the profile lock stays
+  held until it is killed.
+- `ktrace` from process start perturbs startup into a different failure;
+  attach with `-p` after the point of interest. Live `lldb -p` kills the client.
+- This lldb has Lua, not Python; core analysis is `memory read` plus host
+  Python.
+- The engine's own log (`appData/logs/*_last.log`) is the best instrument; the
+  newest by mtime is not always the current run's.
+- Account safety: repeated kicked joins come from one IP; keep test accounts
+  off any IP a real account uses (AGENTS.md).

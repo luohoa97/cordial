@@ -91,7 +91,9 @@ const char* remap(const char* path, char* buf, size_t n) {
     // (mounted at /proc) has a different, sparser layout — /proc/meminfo does not
     // exist there at all — so those reads return wrong data or ENOENT. The Linux
     // layout lives under linprocfs at /compat/linux/proc. Redirect there so the
-    // engine (and its anti-cheat's process introspection) sees what it expects.
+    // engine reads the real Linux-format data it was written against. That is the
+    // whole justification: this serves linprocfs as it is, and must never be
+    // shaped to satisfy an integrity check (ADR-001).
     // Independent of g_root: /proc redirection is not tied to the /system root.
     if (std::strncmp(path, "/proc", 5) == 0 && (path[5] == '/' || path[5] == '\0')) {
         // `path + 5` keeps the separator: "/proc/self/maps" -> ".../proc/self/maps".
