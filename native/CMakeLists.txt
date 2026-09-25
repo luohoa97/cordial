@@ -162,6 +162,12 @@ else()
 endif()
 
 # Thin extern "C" surface over the linker's C++ API, so Rust can drive it.
+#
+# `freebsd_abi.c` sits in this archive rather than beside freebsd_libc_compat.c
+# because system_paths.cpp and netdb_compat.cpp call into it: the Linux flag,
+# sockaddr and errno translation the engine needs on FreeBSD. It compiles to
+# nothing anywhere else.
+#
 # Android liblog. Roblox narrates its own startup through it, so this is the
 # runtime layer's most valuable diagnostic. It is not the source of
 # onLogLine/onJoin: neither event exists, see the header of liblog.cpp.
@@ -174,7 +180,8 @@ endif()
 # `slCreateEngine` does.
 add_library(cordial_liblog STATIC
   liblog.cpp system_paths.cpp netdb_compat.cpp opensles.cpp pipewire_backend.cpp
-  pulse_backend.cpp alsa_backend.cpp oss_backend.cpp aaudio.cpp thread_trace.cpp)
+  pulse_backend.cpp alsa_backend.cpp oss_backend.cpp aaudio.cpp thread_trace.cpp
+  freebsd_abi.c)
 # Compiled unconditionally, like every other file here: without the headers it
 # is its own honest "unavailable" arm, so the selector gets a truthful answer
 # rather than a link error. Only the define is conditional.

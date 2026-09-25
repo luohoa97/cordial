@@ -18,6 +18,8 @@
 
 use std::ffi::{c_char, c_int, c_void, CStr};
 
+#[cfg(target_os = "freebsd")]
+pub mod fbsd_abi;
 pub mod pthread;
 pub mod signal;
 pub mod trace;
@@ -83,9 +85,7 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             fn __strcpy_chk();
             fn __strcat_chk();
             fn __strncpy_chk();
-            fn __read_chk();
             fn __pread64_chk();
-            fn __sendto_chk();
             fn __fwrite_chk();
             fn __vsnprintf_chk();
             fn __vsprintf_chk();
@@ -106,7 +106,6 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             fn bionic_pthread_rwlock_trywrlock();
             fn bionic_pthread_rwlock_unlock();
             fn bionic_pthread_rwlock_destroy();
-            fn __open_2();
             fn prctl();
             fn bionic_sysinfo();
             fn bionic_mmap();
@@ -124,7 +123,6 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             fn bionic_pthread_attr_setschedparam();
             fn sched_setscheduler();
             fn sched_setparam();
-            fn pipe2();
             fn pipe();
         }
         v.extend_from_slice(&[
@@ -142,7 +140,6 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             f!("pthread_rwlock_trywrlock", bionic_pthread_rwlock_trywrlock),
             f!("pthread_rwlock_unlock", bionic_pthread_rwlock_unlock),
             f!("pthread_rwlock_destroy", bionic_pthread_rwlock_destroy),
-            f!("__open_2", __open_2),
             f!("prctl", prctl),
             f!("sysinfo", bionic_sysinfo),
             f!("mmap", bionic_mmap),
@@ -168,9 +165,10 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             f!("pthread_attr_setschedparam", bionic_pthread_attr_setschedparam),
             f!("sched_setscheduler", sched_setscheduler),
             f!("sched_setparam", sched_setparam),
-            // Track pipe2 fd pairs so cordial can find the GameActivity command
+            // Track pipe fd pairs so cordial can find the GameActivity command
             // pipe's write end (it only sees the read end via ALooper_addFd).
-            f!("pipe2", pipe2),
+            // `pipe2` is registered by `fbsd_abi`, which translates the engine's
+            // Linux flags and then calls the same recording function.
             f!("pipe", pipe),
             f!("__memcpy_chk", __memcpy_chk),
             f!("__memmove_chk", __memmove_chk),
@@ -178,9 +176,7 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             f!("__strcpy_chk", __strcpy_chk),
             f!("__strcat_chk", __strcat_chk),
             f!("__strncpy_chk", __strncpy_chk),
-            f!("__read_chk", __read_chk),
             f!("__pread64_chk", __pread64_chk),
-            f!("__sendto_chk", __sendto_chk),
             f!("__fwrite_chk", __fwrite_chk),
             f!("__vsnprintf_chk", __vsnprintf_chk),
             f!("__vsprintf_chk", __vsprintf_chk),
@@ -198,6 +194,15 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             static mut environ: *mut *mut core::ffi::c_char;
         }
         v.push(("environ", unsafe { core::ptr::addr_of_mut!(environ) } as *mut c_void));
+
+        // The engine's Linux flag words, sockaddrs and errno numbers, translated
+        // for FreeBSD -- `native/freebsd_abi.c`. Several names here (`__errno`,
+        // `__write_chk`, `__poll_chk`, `__gnu_strerror_r`) also have a generic
+        // entry above that forwards untranslated; drop those rather than rely on
+        // which of two duplicates the symbol table happens to keep.
+        let abi = fbsd_abi::overrides();
+        v.retain(|(name, _)| !abi.iter().any(|(n, _)| n == name));
+        v.extend(abi);
     }
 
     // sigset_t is 8 bytes in bionic and 128 in glibc; struct sigaction is 32
