@@ -1519,3 +1519,34 @@ flag-load completion signal, not a stored value. The fix must make that async fe
 or signal its CV on FreeBSD — i.e. drive whatever GameActivity-side flag-load the engine is
 waiting on, or satisfy the CV directly. Still the true root; the value-delivery shortcut is
 ruled out.
+
+### 2026-09-25: the ETIMEDOUT mismatch is real and fixed, and it is not the wedge
+
+`pthread_cond_timedwait` is the only timed wait `libroblox.so` imports
+(`nm -D -u` shows just `pthread_cond_timedwait@LIBC`), and `cond_timedwait` in
+`bionic/pthread.rs` handed the engine FreeBSD's ETIMEDOUT (60) rather than
+Linux's (110). boost's `do_wait_until` throws on any code but 0 and its own
+ETIMEDOUT, so every genuine timeout would have become an exception. It now maps
+60 to 110; `CORDIAL_COND_ERRNO_RAW=1` restores the passthrough and
+`CORDIAL_TRACE_COND=1` counts translated timeouts.
+
+Measured, fixed build against that control, back to back: both reach
+`vkCreateSwapchainKHR` and `late retry: nativeRetryInit ok` and exit 0 at the end
+of `--run 30`, and the fixed run printed no `[cond]` line at all, so no timed
+wait timed out in the whole window and the fix had nothing to act on. The
+mismatch is therefore not what holds the getFlags wait, at least in this
+recipe. Kept because it is a correct ABI translation.
+
+**How to reproduce, since this file never said.** `~/FreeRoblox/apk/com.roblox.client@x86_64.apk`
+is not a valid zip (Python's `zipfile` refuses it), so asset extraction fails
+and the engine throws `'<apk>' is not a directory`. The 2.721 universal APK in
+`~/Downloads` is intact. The bring-up bytes need the non-shipping feature:
+
+    cargo build --release -p cordial-runtime --bin cordial-run --features unsafe-experiments
+    CORDIAL_SET_FLAGS_LOADED=1 CORDIAL_PROBE_STATE=1 CORDIAL_STATE_POLL_MS=5000 \
+    CORDIAL_STARTUP_POLL_MS=6000 XDG_DATA_HOME=$HOME/.cache/cordial-agent-<yours> \
+    ./target/release/cordial-run --lib-dir .roblox-libs/lib/x86_64 \
+        --apk ~/Downloads/com.roblox.client_2.721*.apk --host-libc --game-activity --run 30
+
+Without the feature it stops at `Can't initialize the TaskScheduler before flags
+have been loaded`.

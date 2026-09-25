@@ -266,7 +266,40 @@ pub extern "C" fn cond_timedwait(
         bionic_mutex_real(mutex)
     };
     // SAFETY: as above; `struct timespec` is identical between the two libcs.
-    unsafe { pthread_cond_timedwait(backing, mutex, abstime) }
+    let r = unsafe { pthread_cond_timedwait(backing, mutex, abstime) };
+    #[cfg(target_os = "freebsd")]
+    let r = cond_timedwait_result_to_linux(r);
+    r
+}
+
+/// FreeBSD's ETIMEDOUT is 60 and Linux's is 110, and this is the one pthread
+/// entry point whose host return value reaches the engine unmodified: it is the
+/// only timed wait `libroblox.so` imports. boost's `do_wait_until` treats any
+/// code other than 0 or its own ETIMEDOUT as a failure and throws
+/// `condition_variable timed_wait failed`, so every *genuine* timeout on
+/// FreeBSD became an exception in whatever engine task was waiting. EINVAL,
+/// EPERM and EBUSY share values between the two, so only the timeout needs
+/// mapping. `CORDIAL_COND_ERRNO_RAW=1` restores the old passthrough as a
+/// control; `CORDIAL_TRACE_COND=1` reports how many timeouts were translated.
+#[cfg(target_os = "freebsd")]
+fn cond_timedwait_result_to_linux(r: c_int) -> c_int {
+    const HOST_ETIMEDOUT: c_int = 60;
+    const LINUX_ETIMEDOUT: c_int = 110;
+    static RAW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+    if r != HOST_ETIMEDOUT {
+        return r;
+    }
+    let n = TIMEOUTS.fetch_add(1, Ordering::Relaxed) + 1;
+    if *TRACE.get_or_init(|| std::env::var_os("CORDIAL_TRACE_COND").is_some()) && n.is_power_of_two() {
+        eprintln!("[cond] pthread_cond_timedwait timeouts so far: {n}");
+    }
+    if *RAW.get_or_init(|| std::env::var_os("CORDIAL_COND_ERRNO_RAW").is_some()) {
+        r
+    } else {
+        LINUX_ETIMEDOUT
+    }
 }
 
 fn cond_backing(cond: *mut c_void) -> Option<*mut c_void> {
