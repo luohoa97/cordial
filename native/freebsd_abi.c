@@ -221,6 +221,10 @@ int* cordial_fbsd_bionic_errno(void) {
         return -1;                                                              \
     } while (0)
 
+// Linux SOL_UDP options; see the UDP segmentation offload block below.
+enum { LX_SOL_UDP = 17, LX_UDP_SEGMENT = 103, LX_UDP_GRO = 104, GSO_FDS = 65536 };
+static unsigned short g_gso[GSO_FDS];
+
 #define LX_EINVAL 22
 #define LX_ENOTTY 25
 #define LX_ENOPROTOOPT 92
@@ -858,9 +862,21 @@ static const struct optmap* find_opt(int level, int opt) {
 }
 
 int cordial_fbsd_setsockopt(int fd, int level, int opt, const void* val, socklen_t len) {
+    if (level == LX_SOL_UDP && (opt == LX_UDP_SEGMENT || opt == LX_UDP_GRO)) {
+        if (!val || len < sizeof(int)) FAIL_LX(LX_EINVAL);
+        if (opt == LX_UDP_SEGMENT) {
+            int v = *(const int*)val;
+            if (v < 0 || v > 65535 || fd < 0 || fd >= GSO_FDS) FAIL_LX(LX_EINVAL);
+            g_gso[fd] = (unsigned short)v;
+        }
+        return 0; // UDP_GRO: accepted; datagrams are delivered singly, as Linux may
+    }
     const struct optmap* m = find_opt(level, opt);
-    if (!m)
+    if (!m) {
+        if (getenv("CORDIAL_TRACE_ABI"))
+            fprintf(stderr, "[abi] setsockopt level %d opt %d has no translation\n", level, opt);
         FAIL_LX(LX_ENOPROTOOPT);
+    }
     if (m->value == V_PMTU) {
         // Linux IP_PMTUDISC_DO (2) and _PROBE (3) set DF; DONT (0) and WANT (1)
         // leave it clear, which is FreeBSD's default behaviour too.
@@ -874,6 +890,12 @@ int cordial_fbsd_setsockopt(int fd, int level, int opt, const void* val, socklen
 }
 
 int cordial_fbsd_getsockopt(int fd, int level, int opt, void* val, socklen_t* len) {
+    if (level == LX_SOL_UDP && (opt == LX_UDP_SEGMENT || opt == LX_UDP_GRO)) {
+        if (!val || !len || *len < sizeof(int)) FAIL_LX(LX_EINVAL);
+        *(int*)val = (opt == LX_UDP_SEGMENT && fd >= 0 && fd < GSO_FDS) ? g_gso[fd] : 0;
+        *len = sizeof(int);
+        return 0;
+    }
     const struct optmap* m = find_opt(level, opt);
     if (!m)
         FAIL_LX(LX_ENOPROTOOPT);
@@ -1079,6 +1101,8 @@ static int convert_cmsgs(const unsigned char* src, size_t srclen, unsigned char*
             }
         }
         if (ol < 0) {
+            if (to_fb && getenv("CORDIAL_TRACE_ABI"))
+                fprintf(stderr, "[abi] cmsg level %d type %d has no translation\n", level, type);
             if (to_fb)
                 FAIL_LX(LX_EINVAL);
             *truncated = 1;
@@ -1103,6 +1127,41 @@ static int convert_cmsgs(const unsigned char* src, size_t srclen, unsigned char*
     return 0;
 }
 
+// ── UDP segmentation offload (Linux SOL_UDP 17: UDP_SEGMENT 103, UDP_GRO 104) ──
+// The engine's RbxTransport "DummyClient" channel -- the one whose failure
+// precedes the 60 s 304 disconnect -- sends with UDP_SEGMENT: one sendmsg whose
+// buffer the kernel splits into datagrams of gso_size bytes. FreeBSD has no GSO,
+// and with no entry here every such send was refused with EINVAL (ten refusals
+// in one traced join). Sending each segment as its own datagram is exactly what
+// Linux puts on the wire. UDP_GRO asks the kernel to coalesce received
+// datagrams; the kernel is never obliged to, so accepting it and delivering
+// datagrams singly is correct Linux behaviour, not a stub that lies.
+
+static ssize_t send_segments(int fd, const struct msghdr* h, int fl, size_t gso) {
+    size_t total = 0;
+    for (int i = 0; i < h->msg_iovlen; i++) total += h->msg_iov[i].iov_len;
+    if (gso == 0 || total <= gso) return sendmsg(fd, h, fl);
+    unsigned char* all = malloc(total);
+    if (!all) { errno = ENOMEM; return -1; }
+    size_t off = 0;
+    for (int i = 0; i < h->msg_iovlen; i++) {
+        memcpy(all + off, h->msg_iov[i].iov_base, h->msg_iov[i].iov_len);
+        off += h->msg_iov[i].iov_len;
+    }
+    ssize_t sent = 0;
+    for (off = 0; off < total; off += gso) {
+        struct iovec v = { all + off, total - off < gso ? total - off : gso };
+        struct msghdr seg = *h;
+        seg.msg_iov = &v;
+        seg.msg_iovlen = 1;
+        ssize_t r = sendmsg(fd, &seg, fl);
+        if (r < 0) { if (sent == 0) sent = -1; break; }
+        sent += r;
+    }
+    free(all);
+    return sent;
+}
+
 ssize_t cordial_fbsd_sendmsg(int fd, const struct lx_msghdr* m, int lxflags) {
     int fl;
     if (msg_flags_to_fb(lxflags, &fl) != 0)
@@ -1122,20 +1181,49 @@ ssize_t cordial_fbsd_sendmsg(int fd, const struct lx_msghdr* m, int lxflags) {
     h.msg_iov = m->msg_iov; // struct iovec agrees
     h.msg_iovlen = (int)m->msg_iovlen;
     unsigned char* ctl = NULL;
+    size_t gso = (fd >= 0 && fd < GSO_FDS) ? g_gso[fd] : 0;
+    unsigned char* kept = NULL;
+    size_t keptlen = 0;
     if (m->msg_control && m->msg_controllen) {
-        ctl = calloc(1, m->msg_controllen);
-        if (!ctl)
+        // Pull out UDP_SEGMENT before translation; everything else goes on.
+        kept = calloc(1, m->msg_controllen);
+        if (!kept)
             FAIL_LX(12 /* ENOMEM */);
-        size_t cl = m->msg_controllen;
+        const unsigned char* src = m->msg_control;
+        size_t si = 0;
+        while (si + CM_HDR <= m->msg_controllen) {
+            const struct lx_cmsghdr* c = (const struct lx_cmsghdr*)(src + si);
+            if (c->cmsg_len < CM_HDR || si + c->cmsg_len > m->msg_controllen) break;
+            if (c->cmsg_level == LX_SOL_UDP && c->cmsg_type == LX_UDP_SEGMENT &&
+                c->cmsg_len >= CM_HDR + sizeof(unsigned short)) {
+                unsigned short g;
+                memcpy(&g, src + si + CM_HDR, sizeof g);
+                gso = g;
+            } else {
+                memcpy(kept + keptlen, src + si, c->cmsg_len);
+                keptlen += CM_ALIGN(c->cmsg_len);
+            }
+            si += CM_ALIGN(c->cmsg_len);
+        }
+    }
+    if (kept && keptlen) {
+        ctl = calloc(1, keptlen);
+        if (!ctl) {
+            free(kept);
+            FAIL_LX(12 /* ENOMEM */);
+        }
+        size_t cl = keptlen;
         int tr = 0;
-        if (convert_cmsgs(m->msg_control, m->msg_controllen, ctl, &cl, 1, &tr) != 0) {
+        if (convert_cmsgs(kept, keptlen, ctl, &cl, 1, &tr) != 0) {
             free(ctl);
+            free(kept);
             return -1;
         }
         h.msg_control = ctl;
         h.msg_controllen = (socklen_t)cl;
     }
-    ssize_t r = sendmsg(fd, &h, fl);
+    free(kept);
+    ssize_t r = send_segments(fd, &h, fl, gso);
     if (r < 0)
         cordial_fbsd_errno_to_linux();
     free(ctl);
@@ -1415,6 +1503,58 @@ static int cordial_fbsd_siocgif(unsigned req, void* arg) {
     return 0;
 }
 
+// ── epoll, answered by epoll-shim (kqueue) ──────────────────────────────────
+// The engine imports epoll_create/_create1/_ctl/_wait, and on this port they
+// were generated stubs that returned zero: create "succeeded" with fd 0,
+// ctl registered nothing, and wait never reported an event -- three stubs that
+// lie. The engine's RbxTransport DummyClient waits for its UDP reply this way:
+// a traced join shows it sending 19 x 1231-byte datagrams, one every 500 ms,
+// and not one recvmsg on that socket before logging NoResponse; the server
+// disconnects with 304 sixty seconds later. epoll-shim (MIT, FreeBSD ports)
+// implements epoll on kqueue with Linux's packed x86-64 struct epoll_event
+// and Linux event bits, so only EPOLL_CLOEXEC (Linux 0x80000) needs mapping.
+// Loaded lazily; if it is missing the calls fail with ENOSYS rather than lie.
+#include <dlfcn.h>
+static void* epoll_sym(const char* name) {
+    static void* lib = NULL;
+    static int tried = 0;
+    if (!tried) {
+        tried = 1;
+        lib = dlopen("libepoll-shim.so.0", RTLD_NOW | RTLD_LOCAL);
+        if (!lib) lib = dlopen("/usr/local/lib/libepoll-shim.so.0", RTLD_NOW | RTLD_LOCAL);
+        if (!lib && getenv("CORDIAL_TRACE_ABI"))
+            fprintf(stderr, "[abi] epoll-shim not found: %s\n", dlerror());
+    }
+    return lib ? dlsym(lib, name) : NULL;
+}
+#define LX_EPOLL_CLOEXEC 0x80000
+static int cordial_fbsd_epoll_create1(int lxflags) {
+    int (*f)(int) = (int (*)(int))epoll_sym("epoll_create1");
+    if (!f) FAIL_LX(38 /* ENOSYS */);
+    if (lxflags & ~LX_EPOLL_CLOEXEC) FAIL_LX(LX_EINVAL);
+    int r = f((lxflags & LX_EPOLL_CLOEXEC) ? O_CLOEXEC : 0);
+    if (r < 0) cordial_fbsd_errno_to_linux();
+    return r;
+}
+static int cordial_fbsd_epoll_create(int size) {
+    if (size <= 0) FAIL_LX(LX_EINVAL);
+    return cordial_fbsd_epoll_create1(0);
+}
+static int cordial_fbsd_epoll_ctl(int epfd, int op, int fd, void* ev) {
+    int (*f)(int, int, int, void*) = (int (*)(int, int, int, void*))epoll_sym("epoll_ctl");
+    if (!f) FAIL_LX(38);
+    int r = f(epfd, op, fd, ev); // EPOLL_CTL_ADD/DEL/MOD are 1/2/3 on both
+    if (r < 0) cordial_fbsd_errno_to_linux();
+    return r;
+}
+static int cordial_fbsd_epoll_wait(int epfd, void* evs, int max, int timeout) {
+    int (*f)(int, void*, int, int) = (int (*)(int, void*, int, int))epoll_sym("epoll_wait");
+    if (!f) FAIL_LX(38);
+    int r = f(epfd, evs, max, timeout);
+    if (r < 0) cordial_fbsd_errno_to_linux();
+    return r;
+}
+
 int cordial_fbsd_ioctl(int fd, int req, ...) {
     va_list ap;
     va_start(ap, req);
@@ -1534,6 +1674,10 @@ struct CordialFbsdAbiSymbol {
 const struct CordialFbsdAbiSymbol* cordial_fbsd_abi_symbols(size_t* count) {
     static const struct CordialFbsdAbiSymbol table[] = {
         {"__errno", (void*)&cordial_fbsd_bionic_errno},
+        {"epoll_create", (void*)&cordial_fbsd_epoll_create},
+        {"epoll_create1", (void*)&cordial_fbsd_epoll_create1},
+        {"epoll_ctl", (void*)&cordial_fbsd_epoll_ctl},
+        {"epoll_wait", (void*)&cordial_fbsd_epoll_wait},
         {"pthread_condattr_init", (void*)&cordial_fbsd_condattr_init},
         {"pthread_condattr_destroy", (void*)&cordial_fbsd_condattr_destroy},
         {"pthread_condattr_setclock", (void*)&cordial_fbsd_condattr_setclock},
