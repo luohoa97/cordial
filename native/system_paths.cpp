@@ -22,6 +22,7 @@
 // is C++.
 
 #include "os_compat.h"
+#include "freebsd_abi.h"
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
@@ -277,16 +278,39 @@ FILE* s_fopen(const char* path, const char* mode) {
 /// Reading it unconditionally would walk the register save area for an argument
 /// the caller never pushed, which is the mistake that makes `CORDIAL_TRACE=1`
 /// abort the engine.
+///
+/// On FreeBSD the flags are the engine's *Linux* O_ bits, and the test for
+/// whether a mode was passed has to be made in that vocabulary too: Linux
+/// O_CREAT is 0x40, which FreeBSD calls O_ASYNC, so testing the host's O_CREAT
+/// (0x200, Linux O_TRUNC) read a mode that was never passed on every truncating
+/// open and skipped the one that was on every creating one.
 int s_open(const char* path, int flags, ...) {
     unsigned mode = 0;
-    if (flags & (O_CREAT | O_TMPFILE)) {
+#if defined(__FreeBSD__)
+    const bool has_mode = cordial_fbsd_open_takes_mode(flags) != 0;
+#else
+    const bool has_mode = (flags & (O_CREAT | O_TMPFILE)) != 0;
+#endif
+    if (has_mode) {
         va_list ap;
         va_start(ap, flags);
         mode = va_arg(ap, unsigned);
         va_end(ap);
     }
+#if defined(__FreeBSD__)
+    int host_flags;
+    if (cordial_fbsd_open_flags(flags, &host_flags) != 0) {
+        trace_i("open", path, -1);
+        return -1;
+    }
+    flags = host_flags;
+#endif
     REMAP(path);
     int r = ::open(real, flags, mode);
+#if defined(__FreeBSD__)
+    if (r < 0)
+        cordial_fbsd_errno_to_linux();
+#endif
     trace_i("open", real, r);
     return r;
 }
