@@ -452,4 +452,60 @@ mod tests {
         assert_eq!(fd, -1);
         assert_eq!(engine_errno(), 22);
     }
+
+    #[test]
+    fn getaddrinfo_hands_back_linux_family_and_sockaddr_layout() {
+        #[repr(C)]
+        struct BionicAddrinfo {
+            ai_flags: c_int,
+            ai_family: c_int,
+            ai_socktype: c_int,
+            ai_protocol: c_int,
+            ai_addrlen: u32,
+            ai_canonname: *mut i8,
+            ai_addr: *mut u8,
+            ai_next: *mut BionicAddrinfo,
+        }
+        let find = |name: &str| {
+            crate::bionic::netdb_overrides()
+                .into_iter()
+                .find(|(n, _)| *n == name)
+                .unwrap()
+                .1
+        };
+        // SAFETY: netdb_compat.cpp's bionic-layout getaddrinfo/freeaddrinfo.
+        let gai: unsafe extern "C" fn(
+            *const i8,
+            *const i8,
+            *const BionicAddrinfo,
+            *mut *mut BionicAddrinfo,
+        ) -> c_int = unsafe { std::mem::transmute(find("getaddrinfo")) };
+        let fai: unsafe extern "C" fn(*mut BionicAddrinfo) =
+            unsafe { std::mem::transmute(find("freeaddrinfo")) };
+
+        for (host, lx_af, len) in [("127.0.0.1", LX_AF_INET, 16u32), ("::1", LX_AF_INET6, 28)] {
+            let hints = BionicAddrinfo {
+                ai_flags: 0x4, // AI_NUMERICHOST: no resolver traffic
+                ai_family: lx_af,
+                ai_socktype: LX_SOCK_STREAM,
+                ai_protocol: 0,
+                ai_addrlen: 0,
+                ai_canonname: std::ptr::null_mut(),
+                ai_addr: std::ptr::null_mut(),
+                ai_next: std::ptr::null_mut(),
+            };
+            let h = CString::new(host).unwrap();
+            let port = CString::new("443").unwrap();
+            let mut res: *mut BionicAddrinfo = std::ptr::null_mut();
+            let rc = unsafe { gai(h.as_ptr(), port.as_ptr(), &hints, &mut res) };
+            assert_eq!(rc, 0, "{host}: getaddrinfo failed with {rc}");
+            let ai = unsafe { &*res };
+            assert_eq!(ai.ai_family, lx_af, "{host}: ai_family");
+            assert_eq!(ai.ai_addrlen, len, "{host}: ai_addrlen");
+            let sa = unsafe { std::slice::from_raw_parts(ai.ai_addr, len as usize) };
+            assert_eq!(u16::from_ne_bytes([sa[0], sa[1]]), lx_af as u16, "{host}: sa_family");
+            assert_eq!(u16::from_be_bytes([sa[2], sa[3]]), 443, "{host}: port");
+            unsafe { fai(res) };
+        }
+    }
 }

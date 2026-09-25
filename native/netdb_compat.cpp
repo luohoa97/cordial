@@ -46,6 +46,8 @@
 #include <netdb.h>
 #include <sys/socket.h>
 
+#include "freebsd_abi.h"
+
 namespace {
 
 /// `struct addrinfo` exactly as Roblox was compiled to see it.
@@ -133,8 +135,18 @@ int cordial_getaddrinfo(const char* node, const char* service,
     if (hints) {
         std::memset(&host_hints, 0, sizeof host_hints);
         host_hints.ai_flags = flags_to_host(hints->ai_flags);
-        // AF_*, SOCK_* and IPPROTO_* are kernel constants and agree.
+        // SOCK_* and IPPROTO_* agree everywhere. AF_* agree between bionic and
+        // glibc, but not with FreeBSD: bionic's AF_INET6 is 10, FreeBSD's 28, and
+        // FreeBSD 10 is AF_CCITT -- a v6-only lookup came back EAI_FAMILY.
+#if defined(__FreeBSD__)
+        host_hints.ai_family = cordial_fbsd_af_from_linux(hints->ai_family);
+        if (host_hints.ai_family < 0) {
+            if (res) *res = nullptr;
+            return 5; // bionic EAI_FAMILY
+        }
+#else
         host_hints.ai_family = hints->ai_family;
+#endif
         host_hints.ai_socktype = hints->ai_socktype;
         host_hints.ai_protocol = hints->ai_protocol;
         host_hints_p = &host_hints;
@@ -161,9 +173,29 @@ int cordial_getaddrinfo(const char* node, const char* service,
         // echoing a host-numbered value back would be a small lie in the
         // caller's own vocabulary.
         b->ai_flags = 0;
-        b->ai_family = g->ai_family;
         b->ai_socktype = g->ai_socktype;
         b->ai_protocol = g->ai_protocol;
+#if defined(__FreeBSD__)
+        // FreeBSD's sockaddrs lead with a 1-byte sa_len and a 1-byte family, and
+        // number AF_INET6 28. Copied as they were, the engine read an IPv4
+        // result's family as 0x0210 and a v6 one as a family it has no name
+        // for -- every address it was handed was unusable. Translate to the
+        // Linux layout the engine was compiled against.
+        b->ai_family = cordial_fbsd_af_to_linux(g->ai_family);
+        b->ai_addrlen = 0;
+        if (g->ai_addr && g->ai_addrlen > 0) {
+            unsigned char tmp[sizeof(struct sockaddr_storage)];
+            size_t n = cordial_fbsd_sockaddr_to_linux(g->ai_addr, tmp, sizeof tmp);
+            if (n > 0) {
+                b->ai_addr = static_cast<struct sockaddr*>(std::malloc(n));
+                if (b->ai_addr) {
+                    std::memcpy(b->ai_addr, tmp, n);
+                    b->ai_addrlen = static_cast<socklen_t>(n);
+                }
+            }
+        }
+#else
+        b->ai_family = g->ai_family;
         b->ai_addrlen = g->ai_addrlen;
         if (g->ai_addr && g->ai_addrlen > 0) {
             b->ai_addr = static_cast<struct sockaddr*>(std::malloc(g->ai_addrlen));
@@ -173,6 +205,7 @@ int cordial_getaddrinfo(const char* node, const char* service,
                 b->ai_addrlen = 0;
             }
         }
+#endif
         if (g->ai_canonname) {
             b->ai_canonname = strdup(g->ai_canonname);
         }
