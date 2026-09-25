@@ -1579,3 +1579,33 @@ measurement: whether TS::Step runs at all after the retry.
 Live `lldb -p` still kills the client here (SIGTRAP, nothing printed), and this
 lldb has Lua but no Python, so core analysis is plain `memory read` dumped to a
 file and parsed on the host.
+
+### 2026-09-25 (cont. 2): the login screen renders
+
+Two changes, each measured against the run before it with the same recipe:
+
+1. **The Linux-to-FreeBSD ABI layer** (`native/freebsd_abi.c`, merged from
+   `baadd92`/`7b71e9a`). Before it, the engine's `socket(SOCK_NONBLOCK|SOCK_CLOEXEC)`
+   and `eventfd(EFD_NONBLOCK)` failed outright on FreeBSD and `fcntl(F_SETFL, 0x800)`
+   was silently ignored. With it: engine threads 8 -> 38, state at 25 s 2 -> 11,
+   and getFlags *returns* (`success = false`) instead of parking. Real HTTPS
+   works: `users.roblox.com` answers `401 Authentication token is missing`.
+   **This, not the scheduler, was the wedge** every entry above chased.
+2. **The base url.** The engine reads `InitParams.baseURL()` correctly
+   (`CORDIAL_TRACE_BASEURL`) yet logs `The base url is ` empty and fetches
+   `https:///v2/...`. Calling its own `nativeSetBaseUrl("https://www.roblox.com/",
+   "https://www.roblox.com/")` before the late post-settings call
+   (`CORDIAL_SET_BASE_URL`) gives `The base url is https://www.roblox.com/`,
+   the real `clientsettingscdn` URL, `getFlags: success = true` (1,364,178 bytes),
+   then `continueAfterFlagsLoaded_ -> initEngine_ -> startLuaApp_`, and the
+   login screen (Create Account / Sign In) on screen. Why the InitParams value
+   is lost on FreeBSD and not on Linux is not established. The second argument's
+   meaning is still unknown; duplicating the first is what was run.
+
+Still needed and still wrong: the `unsafe-experiments` build and
+`CORDIAL_SET_FLAGS_LOADED`, which writes engine memory (ADR-001 allows it only as
+local bring-up scaffolding), so this is not shippable. One run in two died early
+on `HardAssert (EngineModule not found)`. `/proc/meminfo` reads still fail
+because the new open wrappers bypass the /proc redirect. The screen was reported
+as frozen after drawing; not yet measured (presents drop to 1/s after ~13 s
+without input by design, see AGENTS.md, so check `cordial_info` twice first).

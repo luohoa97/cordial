@@ -4675,6 +4675,23 @@ fn main() -> ExitCode {
                                                             }
                                                         }
                                                     }
+                                                    // EXPERIMENT (CORDIAL_SET_BASE_URL=<a>,<b>): on FreeBSD
+                                                    // the engine reads InitParams.baseURL() correctly and still
+                                                    // logs `The base url is ` empty, then aims its settings
+                                                    // fetch at `https:///v2/...`. Call the engine's own
+                                                    // setter with two explicit strings and see whether the base
+                                                    // url and settings url come alive. The second argument is
+                                                    // not known (see the comment on the SETTINGS list).
+                                                    if let Ok(v) = std::env::var("CORDIAL_SET_BASE_URL") {
+                                                        let (a, b) = v.split_once(',').unwrap_or((v.as_str(), v.as_str()));
+                                                        let (a, b): (&'static str, &'static str) = (a.to_string().leak(), b.to_string().leak());
+                                                        if let Some(f) = lib.symbol("Java_com_roblox_engine_jni_NativeSettingsInterface_nativeSetBaseUrl") {
+                                                            match linker::game_activity::call_static_strings(f, "com/roblox/engine/jni/NativeSettingsInterface", &[a, b]) {
+                                                                Ok(()) => println!("  [baseurl] nativeSetBaseUrl({a:?}, {b:?}) ok"),
+                                                                Err(e) => println!("  [baseurl] nativeSetBaseUrl failed: {e}"),
+                                                            }
+                                                        }
+                                                    }
                                                     match lib.symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativePostClientSettingsLoadedInitialization3") {
                                                         None => println!("  late post: not exported"),
                                                         Some(f) => match linker::game_activity::post_client_settings_loaded(f) {
