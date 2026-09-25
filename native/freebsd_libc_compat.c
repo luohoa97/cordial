@@ -520,8 +520,28 @@ long bionic_syscall(long number, ...) {
         return nanosleep((const struct timespec *)a0, (struct timespec *)a1);
     case LX_futex:
         // futex(uaddr=a0, op=a1, val=a2, timeout=a3) -> real _umtx_op wait/wake.
-        return do_futex((void *)a0, (int)a1, (unsigned int)a2,
-                        (const struct timespec *)a3);
+        {
+            long r = do_futex((void *)a0, (int)a1, (unsigned int)a2,
+                              (const struct timespec *)a3);
+            // This function answers
+            // the engine's import of libc `syscall()`, whose contract is -1
+            // with errno set -- not the kernel's raw -errno, which is what
+            // bionic's *internal* __futex expects. A caller testing
+            // `== -1 && errno == ETIMEDOUT` reads -60 as success and waits
+            // again: three threads were measured doing exactly that at ~90k/s,
+            // and the client presented 0 frames/s under driven motion (twice);
+            // with this, 19.1 and 19.2. CORDIAL_SYSCALL_RAW_ERRNO=1 restores
+            // the raw return as the control.
+            static int conv = -1;
+            if (conv < 0) conv = getenv("CORDIAL_SYSCALL_RAW_ERRNO") ? 0 : 1;
+            if (conv && r < 0) {
+                extern void cordial_fbsd_errno_to_linux(void);
+                errno = (int)-r;
+                cordial_fbsd_errno_to_linux();
+                return -1;
+            }
+            return r;
+        }
     default:
         // A refusal here is silent to the engine's caller and to us, which is
         // the shape of bug that hides for weeks: `CORDIAL_TRACE_SYSCALL=1`
