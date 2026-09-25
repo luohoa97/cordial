@@ -61,6 +61,9 @@ first thing to try.
   FreeBSD mutexes (recursive) — sidesteps the layout mismatch entirely. Currently stubbed (denylist).
 - **syscall**: `bionic_syscall` handles gettid/getpid/getrandom/clock_gettime/gettimeofday/sched_yield/
   nanosleep; `futex` returns 0 (no real `_umtx_op` translation yet); rest → `-ENOSYS`.
+  **SUPERSEDED (1089c41):** `futex` is now a real `_umtx_op` WAIT/WAKE translation
+  (`do_futex` in `native/freebsd_libc_compat.c`); see the futex entry below. A stale
+  reading of this line sent a later brief after a futex fix that already existed.
 - **rwlock**: same treatment as mutex when it surfaces.
 
 ---
