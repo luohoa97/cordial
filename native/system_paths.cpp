@@ -378,6 +378,16 @@ int s_statvfs(const char* path, bionic_statvfs* out) {
 
 } // namespace
 
+/// The same rewrite for freebsd_abi.c, whose `open`/`__open_2`/`openat`
+/// replaced this file's for the engine when the ABI layer landed and so
+/// silently dropped the /proc and /system redirects: the engine then logged
+/// `Failed to open /proc/meminfo` and reported 0 MB of memory. Returns `path`
+/// itself when nothing applies.
+extern "C" const char* cordial_path_remap(const char* path, char* buf, size_t n) {
+    const char* r = remap(path, buf, n);
+    return r ? r : path;
+}
+
 extern "C" struct CordialSystemSymbol {
     const char* name;
     void* addr;

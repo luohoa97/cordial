@@ -332,6 +332,8 @@ static int oflags_to_lx(int fb) {
     return lx;
 }
 
+extern const char* cordial_path_remap(const char* path, char* buf, size_t n);
+
 int cordial_fbsd_open(const char* path, int flags, ...) {
     mode_t mode = 0;
     if (cordial_fbsd_open_takes_mode(flags)) {
@@ -343,7 +345,8 @@ int cordial_fbsd_open(const char* path, int flags, ...) {
     int fb;
     if (cordial_fbsd_open_flags(flags, &fb) != 0)
         return -1;
-    RET_TRANSLATED(open(path, fb, mode));
+    char buf[PATH_MAX];
+    RET_TRANSLATED(open(cordial_path_remap(path, buf, sizeof buf), fb, mode));
 }
 
 // bionic's FORTIFY `open` without a mode: only legal without O_CREAT.
@@ -351,7 +354,8 @@ int cordial_fbsd___open_2(const char* path, int flags) {
     int fb;
     if (cordial_fbsd_open_flags(flags, &fb) != 0)
         return -1;
-    RET_TRANSLATED(open(path, fb, 0));
+    char buf[PATH_MAX];
+    RET_TRANSLATED(open(cordial_path_remap(path, buf, sizeof buf), fb, 0));
 }
 
 int cordial_fbsd_openat(int dirfd, const char* path, int flags, ...) {
@@ -366,7 +370,10 @@ int cordial_fbsd_openat(int dirfd, const char* path, int flags, ...) {
     if (cordial_fbsd_open_flags(flags, &fb) != 0)
         return -1;
     // AT_FDCWD is -100 on both.
-    RET_TRANSLATED(openat(dirfd, path, fb, mode));
+    char buf[PATH_MAX];
+    // Only absolute paths are remapped; a relative one is the caller's dirfd's.
+    const char* p = (path && path[0] == '/') ? cordial_path_remap(path, buf, sizeof buf) : path;
+    RET_TRANSLATED(openat(dirfd, p, fb, mode));
 }
 
 // ── pipe2 ───────────────────────────────────────────────────────────────────
