@@ -523,6 +523,17 @@ long bionic_syscall(long number, ...) {
         return do_futex((void *)a0, (int)a1, (unsigned int)a2,
                         (const struct timespec *)a3);
     default:
+        // A refusal here is silent to the engine's caller and to us, which is
+        // the shape of bug that hides for weeks: `CORDIAL_TRACE_SYSCALL=1`
+        // names each unanswered number once so the gap can be found.
+        if (getenv("CORDIAL_TRACE_SYSCALL")) {
+            static unsigned char seen[512];
+            if (number < 0 || number >= 512 || !seen[number]) {
+                if (number >= 0 && number < 512) seen[number] = 1;
+                fprintf(stderr, "[syscall] unhandled Linux syscall %ld (a0=%#lx a1=%#lx a2=%#lx) -> ENOSYS\n",
+                        number, a0, a1, a2);
+            }
+        }
         errno = ENOSYS;
         return -1;
     }
