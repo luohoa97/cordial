@@ -1741,7 +1741,7 @@ public:
     // methods; the field hooks above stay for anything that does read directly.
     std::shared_ptr<DeviceParams> get_deviceParams(ENV*) { return deviceParams; }
     std::shared_ptr<PlatformParams> get_platformParams(ENV*) { return platformParams; }
-    std::shared_ptr<String> get_baseURL(ENV*) { return baseURL; }
+    std::shared_ptr<String> get_baseURL(ENV*) { if (getenv("CORDIAL_TRACE_BASEURL")) fprintf(stderr, "[baseurl] engine read InitParams.baseURL() = %s\n", baseURL ? baseURL->c_str() : "(null)"); return baseURL; }
     std::shared_ptr<String> get_buildVariant(ENV*) { return buildVariant; }
     std::shared_ptr<String> get_userAgent(ENV*) { return userAgent; }
     jboolean get_isPotato(ENV*) { return isPotato; }
@@ -1751,7 +1751,7 @@ public:
 
     static std::shared_ptr<InitParams> Create(ENV* env, const char* assets, int width, int height) {
         auto p = std::make_shared<InitParams>();
-        p->baseURL = S("https://www.roblox.com");
+        p->baseURL = S(getenv("CORDIAL_BASE_URL") ? getenv("CORDIAL_BASE_URL") : "https://www.roblox.com");
         p->buildVariant = S("release");
         // See `build_user_agent`. The literal that used to be here was
         // invented, and the comment beside it claimed the opposite.
