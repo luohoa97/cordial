@@ -533,11 +533,19 @@ const WL_SUBSURFACE_SET_DESYNC: u32 = 5;
 const WL_DISPLAY_GET_REGISTRY: u32 = 1;
 const WL_REGISTRY_BIND: u32 = 0;
 const WL_COMPOSITOR_CREATE_SURFACE: u32 = 0;
+/// `wl_compositor.create_region`, for the opaque region `set_engine_stacking`
+/// builds by hand -- see the comment there.
+const WL_COMPOSITOR_CREATE_REGION: u32 = 1;
 const WL_POINTER_SET_CURSOR: u32 = 0;
 const WL_SURFACE_COMMIT: u32 = 6;
 /// `wl_surface.set_opaque_region`. Sent by Cordial directly, not through GDK --
 /// see `set_engine_stacking`.
 const WL_SURFACE_SET_OPAQUE_REGION: u32 = 4;
+/// `wl_region.destroy`/`wl_region.add`. No `subtract` -- the rectangles
+/// `HostWindow::opaque_region_rects` hands back are already the finished,
+/// non-overlapping shape, so only `add` is ever needed to reproduce it.
+const WL_REGION_DESTROY: u32 = 0;
+const WL_REGION_ADD: u32 = 1;
 const WL_SEAT_GET_POINTER: u32 = 0;
 const WL_SEAT_GET_KEYBOARD: u32 = 1;
 const WL_SEAT_GET_TOUCH: u32 = 2;
@@ -675,6 +683,10 @@ struct WlClient {
     pointer_interface: *const WlInterface,
     keyboard_interface: *const WlInterface,
     touch_interface: *const WlInterface,
+    /// For `wl_compositor.create_region`, in `set_engine_stacking` -- see the
+    /// comment there on why the opaque region sent in that commit is built by
+    /// hand rather than left to GDK.
+    region_interface: *const WlInterface,
 }
 // SAFETY: every field is either a function pointer (inherently `Send + Sync`
 // — it is a code address, not aliased state) or a pointer into a host shared
@@ -769,6 +781,7 @@ impl WlClient {
             pointer_interface: sym!("wl_pointer_interface"),
             keyboard_interface: sym!("wl_keyboard_interface"),
             touch_interface: sym!("wl_touch_interface"),
+            region_interface: sym!("wl_region_interface"),
         })
     }
 }
@@ -1071,13 +1084,15 @@ pub struct WaylandWindow {
     egl: Option<WlEgl>,
     display: *mut c_void,
     host: HostWindowCell,
-    // Kept named and typed even though only `surface`/`subsurface` are read
-    // again after construction — the rest are still owned proxies for the
-    // life of this one-window-per-process runtime (the same scope
+    // Kept named and typed even though only `surface`/`subsurface`/`compositor`
+    // are read again after construction — the rest are still owned proxies for
+    // the life of this one-window-per-process runtime (the same scope
     // `window.rs`'s `HostWindow` has), and naming them documents the object
     // graph a future teardown or diagnostic would need, rather than letting
     // it go unrecorded because nothing currently reads it back.
-    #[allow(dead_code)]
+    //
+    // `compositor` itself is read again, in `set_engine_stacking`, to build
+    // the opaque region sent in the same commit as the restack.
     compositor: *mut c_void,
     #[allow(dead_code)]
     subcompositor: *mut c_void,
@@ -2780,28 +2795,90 @@ impl WaylandWindow {
         }
         self.host.0.queue_commit();
         if !above {
-            // **Say "nothing here is opaque" ourselves, in the same commit as
-            // the restack.**
+            // **Say what is actually opaque ourselves, in the same commit as
+            // the restack -- not "nothing", the whole surface minus the
+            // canvas.**
             //
-            // Cordial already asks GDK for this through
-            // `set_opaque_region(None)`, and the game still went black in an
-            // experience with every other explanation eliminated -- GTK
-            // painting (every descendant forced transparent), the CSS class
-            // (instrumented identical), a stale region (fixed), frame
+            // Cordial already asks GDK for the canvas-shaped punch-out through
+            // `HostWindow::refresh_opaque_region`, and the game still went
+            // black in an experience with every other explanation eliminated
+            // -- GTK painting (every descendant forced transparent), the CSS
+            // class (instrumented identical), a stale region (fixed), frame
             // starvation (200ms of pumping). What none of those could rule out
             // is GDK recomputing its own region and committing it after ours,
             // because that happens inside GTK where this code cannot see.
             //
-            // Sending it on the wire here removes the question. The request is
-            // double-buffered like everything else, so landing it immediately
-            // before the commit below means the compositor applies an empty
-            // opaque region and the `place_below` together, with no window in
-            // which the parent claims to be opaque over a lowered canvas.
+            // This used to send a blanket empty region here to remove the
+            // question, which does remove it -- at the cost of telling the
+            // compositor the header bar and every other pixel of the parent
+            // are *also* possibly transparent, for as long as nothing
+            // afterwards corrects it. GTK keeps painting the header bar
+            // solidly regardless (`headerbar` is deliberately left out of the
+            // `cordial-canvas-below` CSS class), so the visible result was a
+            // header bar the compositor was free to blend with whatever is
+            // behind the window -- reported as the title bar turning
+            // translucent the instant a text box took focus, and it stayed
+            // that way because nothing re-triggers a geometry sync while the
+            // box remains focused and the window sits still.
             //
+            // `HostWindow::opaque_region_rects` computes the exact same
+            // corner-safe, canvas-subtracted shape `refresh_opaque_region`
+            // asks GDK for, as plain rectangles, precisely so this raw send
+            // does not have to choose between "trust GDK's timing" and "claim
+            // nothing everywhere". An empty list (no canvas rectangle yet, no
+            // window size) still means "claim nothing", the same fallback
+            // `refresh_opaque_region` itself uses.
+            //
+            // SAFETY: `parent_surface` and `compositor` are GTK's own proxies,
+            // live for the process's lifetime. `create_region`'s signature is
+            // "n" -- one new-id, returned as the proxy. `add`'s is "iiii" --
+            // four `int32`s, the rectangle. `set_opaque_region`'s is "?o" --
+            // one nullable object. `destroy` takes no arguments and, combined
+            // with `WL_MARSHAL_FLAG_DESTROY`, also frees the local proxy.
+            let rects = self.host.0.opaque_region_rects();
+            let region = if rects.is_empty() {
+                std::ptr::null_mut()
+            } else {
+                // SAFETY: `compositor` is GTK's own bound proxy, live for the
+                // process's lifetime. `create_region`'s signature is "n" -- one
+                // new-id and no other argument -- so the returned pointer is
+                // the new region proxy.
+                let region = unsafe {
+                    (self.wl.marshal_flags)(
+                        self.compositor,
+                        WL_COMPOSITOR_CREATE_REGION,
+                        self.wl.region_interface,
+                        1,
+                        0,
+                        std::ptr::null_mut::<c_void>(),
+                    )
+                };
+                if !region.is_null() {
+                    for (x, y, w, h) in rects {
+                        // SAFETY: `region` was just created above and is not
+                        // shared with anything else yet. `add`'s signature is
+                        // "iiii" -- four `int32`s, the rectangle.
+                        unsafe {
+                            (self.wl.marshal_flags)(
+                                region,
+                                WL_REGION_ADD,
+                                std::ptr::null(),
+                                1,
+                                0,
+                                x,
+                                y,
+                                w,
+                                h,
+                            );
+                        }
+                    }
+                }
+                region
+            };
             // SAFETY: `parent_surface` is GTK's toplevel `wl_surface`, live for
             // the process's lifetime. `set_opaque_region`'s signature is "?o" --
-            // one nullable object -- and a null region is the protocol's own
-            // spelling of "empty".
+            // one nullable object, and `region` is either that new proxy or
+            // null, both valid spellings of the argument.
             unsafe {
                 (self.wl.marshal_flags)(
                     self.parent_surface,
@@ -2809,8 +2886,24 @@ impl WaylandWindow {
                     std::ptr::null(),
                     1,
                     0,
-                    std::ptr::null_mut::<c_void>(),
+                    region,
                 );
+            }
+            if !region.is_null() {
+                // SAFETY: `region` is a live proxy this function alone created
+                // and is about to stop using. `destroy` takes no arguments,
+                // and `WL_MARSHAL_FLAG_DESTROY` frees the local proxy in the
+                // same call as sending the request, so it is not touched again.
+                unsafe {
+                    (self.wl.marshal_flags)(
+                        region,
+                        WL_REGION_DESTROY,
+                        std::ptr::null(),
+                        1,
+                        WL_MARSHAL_FLAG_DESTROY,
+                        std::ptr::null_mut::<c_void>(),
+                    );
+                }
             }
         }
         // SAFETY: `self.parent_surface` is GTK's toplevel `wl_surface`, live

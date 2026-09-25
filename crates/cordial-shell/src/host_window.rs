@@ -1635,21 +1635,63 @@ impl HostWindow {
     /// lower. That is luck, and it is why this looked state-dependent.
     fn refresh_opaque_region(&self) {
         let Some(surface) = self.window.surface() else { return };
+        match self.compute_opaque_region() {
+            // Nothing computable yet (no surface size, no canvas rectangle) --
+            // leave whatever was set before rather than guessing.
+            None => {}
+            // Explicitly nothing opaque -- an unsized window, or one too small
+            // to inset by the corner radius. See `compute_opaque_region`.
+            Some(None) => {
+                #[allow(deprecated)]
+                surface.set_opaque_region(None);
+            }
+            Some(Some(region)) => {
+                // Deprecated since GDK 4.16, which computes its own from the
+                // render tree -- and its own answer is "the whole surface",
+                // because the drawing area being transparent is not something
+                // it can see through to a subsurface with.
+                #[allow(deprecated)]
+                surface.set_opaque_region(Some(&region));
+            }
+        }
+    }
+
+    /// The region [`Self::refresh_opaque_region`] would ask the compositor to
+    /// treat as opaque, computed but not yet sent.
+    ///
+    /// Split out so [`Self::opaque_region_rects`] can hand the exact same
+    /// shape to `android::wayland::WaylandWindow::set_engine_stacking`, which
+    /// sends it over the raw wire in the same commit that lowers the canvas
+    /// -- see that method's own comment for why waiting on this call's GDK
+    /// commit is not good enough there.
+    ///
+    /// `None` means "nothing to say, leave the existing region alone" (no
+    /// surface yet, no canvas rectangle, or a `cairo::Region` operation
+    /// failed). `Some(None)` means "say so explicitly: nothing is opaque" (an
+    /// unsized window, or one too small to inset by the corner radius).
+    /// `Some(Some(region))` is the ordinary answer: the window, corner-safe,
+    /// with the canvas rectangle subtracted out.
+    fn compute_opaque_region(&self) -> Option<Option<gtk::cairo::Region>> {
+        let surface = self.window.surface()?;
         let (sw, sh) = (surface.width(), surface.height());
         if sw <= 0 || sh <= 0 {
-            return;
+            return None;
         }
 
-        // Nothing is opaque while the canvas is lowered: the toplevel is
-        // transparent over it so the subsurface can show through, and claiming
-        // otherwise is what hid it.
-        if self.canvas_see_through.get() {
-            #[allow(deprecated)]
-            surface.set_opaque_region(None);
-            return;
-        }
-
-        let Some((x, y, w, h)) = self.canvas_rect.get() else { return };
+        // The canvas rectangle is not opaque while it is lowered, so the
+        // subsurface can show through it. This used to be answered with
+        // `None` for the *entire surface* whenever the canvas was see-through,
+        // not just the canvas rectangle -- which told the compositor the
+        // header bar and every other pixel were also possibly transparent.
+        // GTK still paints the header bar solidly (see the `headerbar` rule
+        // above, deliberately left out of `cordial-canvas-below`), so nothing
+        // there actually changed -- only what the compositor was told about
+        // it, and reported as the title bar turning translucent the moment a
+        // text box took focus. The fix is the same punch-out below regardless
+        // of that state: the whole window opaque, the canvas rectangle
+        // subtracted out of it. The subsurface only ever needed *its own
+        // rectangle* excluded to show through, not the rest of the frame.
+        let (x, y, w, h) = self.canvas_rect.get()?;
 
         // The window, not the surface. A GTK surface carries the client-side
         // decoration shadow -- a translucent margin around a floating window --
@@ -1684,9 +1726,7 @@ impl HostWindow {
                     "[shell] no window size to build an opaque region from (window {ww}x{wh}, surface {sw}x{sh}); claiming nothing until it has one"
                 );
             }
-            #[allow(deprecated)]
-            surface.set_opaque_region(None);
-            return;
+            return Some(None);
         };
         if self.opaque_unsized.replace(false) {
             eprintln!("[shell] window size is back ({ww}x{wh}); opaque region rebuilt");
@@ -1695,9 +1735,7 @@ impl HostWindow {
         // The corners are left out; see `corner_safe_rects`.
         let rects = corner_safe_rects(ox, oy, ow, oh, WINDOW_CORNER_RADIUS);
         let Some((fx, fy, fw, fh)) = rects.first().copied() else {
-            #[allow(deprecated)]
-            surface.set_opaque_region(None);
-            return;
+            return Some(None);
         };
         let opaque =
             gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(fx, fy, fw, fh));
@@ -1706,18 +1744,31 @@ impl HostWindow {
                 .union_rectangle(&gtk::cairo::RectangleInt::new(*rx, *ry, *rw, *rh))
                 .is_err()
             {
-                return;
+                return None;
             }
         }
         if opaque.subtract_rectangle(&gtk::cairo::RectangleInt::new(x, y, w, h)).is_err() {
-            return;
+            return None;
         }
-        // Deprecated since GDK 4.16, which computes its own from the render
-        // tree -- and its own answer is "the whole surface", because the
-        // drawing area being transparent is not something it can see through
-        // to a subsurface with.
-        #[allow(deprecated)]
-        surface.set_opaque_region(Some(&opaque));
+        Some(Some(opaque))
+    }
+
+    /// [`Self::compute_opaque_region`]'s answer as plain surface-coordinate
+    /// rectangles, for `android::wayland::WaylandWindow::set_engine_stacking`
+    /// to send over the raw wire.
+    ///
+    /// Collapses the "leave it alone" and "explicitly nothing" cases together
+    /// -- both mean "claim nothing opaque" to a caller that, unlike
+    /// [`Self::refresh_opaque_region`], must send *something* in this commit
+    /// and cannot defer to a later one.
+    pub fn opaque_region_rects(&self) -> Vec<(i32, i32, i32, i32)> {
+        let Some(region) = self.compute_opaque_region().flatten() else { return Vec::new() };
+        (0..region.num_rectangles())
+            .map(|i| {
+                let r = region.rectangle(i);
+                (r.x(), r.y(), r.width(), r.height())
+            })
+            .collect()
     }
 
     /// Whether the compositor currently considers this window focused.
