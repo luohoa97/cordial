@@ -510,6 +510,55 @@ pass under the new names -- 156/156 in `cordial-runtime`, 332/332 in
 `cordial-shell`, 0 failures workspace-wide, run twice (once at `-j4`, once at
 `-j2` after a memory advisory) with the same result both times.
 
+## The X-axis ordinals above were themselves backwards, corrected 2026-09-26
+
+The entry above resolved *which slot* carries `xAlignment` and applied it, but
+what it applied was `Left=0, Center=1, Right=2` -- alphabetical order, not
+Roblox's. Nothing here had ever caught it because every box this project has
+ever focused reports `0` (`Left`), which is the one ordinal the reindex below
+never moved.
+
+A maintainer report -- game-defined text boxes rendering "on the wrong side,
+from the right when it's supposed to be from the left" -- prompted checking
+the ordinals against Roblox's own published enum reference rather than
+against this project's own prior comment, which is what should have happened
+in the first place. Two independent current sources agree and give the same
+numbers: `create.roblox.com/docs/reference/engine/enums/TextXAlignment` and
+`robloxapi.github.io/ref/enum/TextXAlignment.html` both give
+`Left=0, Right=1, Center=2`. `TextYAlignment` (`Top=0, Center=1, Bottom=2`) is
+unaffected -- the same two sources confirm it matches what was already coded.
+Nothing in mocktail's constructor speaks to this either way: it settles which
+*slot* is which by declared argument order, not what each ordinal *means*,
+and that half of the reasoning above still stands.
+
+Fixed in `host_window.rs::gtk_xalign` (the single-line `gtk::Text` editor) and
+in a new `gtk_xalign`-shaped `gtk_justification` extracted from what had been
+an inline match on the same wrong ordinals in `set_multiline_overlay` (the
+multi-line `gtk::TextView` editor added since the entry above was written --
+it inherited the mistake rather than introducing a new one). Both are unit
+tested against the corrected ordinals; the old test for `gtk_xalign` asserted
+the wrong numbers just as confidently as the new one asserts the right ones,
+which is the reminder that a test proving a match arm matches itself is not
+evidence about which ordinal the arm should name -- only Roblox's own
+documentation is.
+
+**Still not measured against a live `Right`- or `Center`-styled box.** Five
+launch attempts against the signed-in `CordialTest` profile in a nested,
+headless sway (the setup `tools/text-input-e2e.py` and the multiline entry
+above both use successfully) all hit the pre-existing signed-in startup
+freeze instead of reaching a joinable state: `presents` stuck at 0 or 1 while
+`accepted` kept climbing, and a `gdb` backtrace on the fourth attempt showed
+the main thread spinning in `looper::pump` -> `epoll_wait` at over 100% CPU --
+the "pump still running, nothing presented" signature this file's own tooling
+section already names as a real hang rather than the idle throttle, not
+anything this change introduced. That bug already gates 1.0 on its own and is
+not re-investigated here. So: the chat box and any game-defined box remain
+the two surfaces most likely to exercise `Right`/`Center`, and remain
+unreached. The next session with a working signed-in launch should read
+`xAlign` off a real chat box or a restyled experience `TextBox` and confirm it
+against a `grim` composited screenshot, the same way the entry above did for
+the rectangle.
+
 ## Open: a camera sensitivity driven negative and persisted, 2026-08-30
 
 Reported on Discord: *"my camera on cordial lwk just fried itself and went to a

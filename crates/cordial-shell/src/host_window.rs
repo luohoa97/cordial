@@ -359,11 +359,13 @@ pub struct TextOverlay<'a> {
     /// itself. Such an editor is not sitting on the box, so it has to carry its
     /// own chrome to be legible -- see the CSS class below.
     pub fallback: bool,
-    /// Roblox's `Enum.TextXAlignment`: `Left` = 0, `Center` = 1, `Right` = 2.
+    /// Roblox's `Enum.TextXAlignment`: `Left` = 0, `Right` = 1, `Center` = 2.
     /// These are Roblox's own published scripting-API ordinals -- not
     /// something read out of a binary -- and they line up with what
     /// `native/android_classes.cpp`'s `CordialTextBoxInfo::x_alignment`
-    /// carries. See [`gtk_xalign`] for where they turn into a GTK property.
+    /// carries. See [`gtk_xalign`] for where they turn into a GTK property,
+    /// and that function's own doc for why this is `Right`/`Center` and not
+    /// the `Center`/`Right` this project assumed before 2026-09-26.
     pub x_alignment: i32,
     /// Roblox's `Enum.TextYAlignment`: `Top` = 0, `Center` = 1, `Bottom` = 2.
     /// See [`vertical_placement`] -- `gtk::Text` has no equivalent property of
@@ -395,27 +397,56 @@ pub struct TextOverlay<'a> {
 /// is flush left, `1.0` flush right, `0.5` centred -- the same three points a
 /// `TextXAlignment` names, just spelled as a fraction instead of an enum.
 ///
-/// **Confirmed, not inferred.** Every box this project has focused before
-/// today read `xAlignment=Left` here, and nothing anywhere applied it -- a
-/// TextBox actually styled `Center` or `Right` would draw the engine's own
-/// text centred or flush right and Cordial's editor flush left underneath it,
-/// which is one plausible reading of "the text box isn't centred". Which slot
-/// carries the value, and that it is `xAlignment` and not `font` (the two
-/// were genuinely ambiguous from Cordial's own two-box capture -- both read
-/// `0` on both boxes), is settled by mocktail's `NativeTextBoxInfo`
-/// constructor, `src/jnivm/jnivm.cc:4016-4024` (Apache-2.0): its varargs
-/// reader lists the six int arguments in declared order as `xAlignment,
-/// yAlignment, textColor, font, textInputType, returnKeyType`, which is a
-/// fact about Roblox's platform API rather than about mocktail's own
-/// implementation. The ordinals themselves are Roblox's published
-/// `Enum.TextXAlignment`, not read out of mocktail at all.
+/// **The ordinal order was wrong here until 2026-09-26, and this is the
+/// function it actually reached a pixel through.** Which slot carries the
+/// value, and that it is `xAlignment` and not `font` (the two were genuinely
+/// ambiguous from Cordial's own two-box capture -- both read `0` on both
+/// boxes), is settled by mocktail's `NativeTextBoxInfo` constructor,
+/// `src/jnivm/jnivm.cc:4016-4024` (Apache-2.0): its varargs reader lists the
+/// six int arguments in declared order as `xAlignment, yAlignment, textColor,
+/// font, textInputType, returnKeyType`, which is a fact about Roblox's
+/// platform API rather than about mocktail's own implementation. But *which
+/// ordinal means which alignment* is a different question mocktail's field
+/// order says nothing about, and this file answered it by assuming
+/// alphabetical order -- `Left, Center, Right` -- rather than checking.
+/// Roblox's own published enum reference
+/// (`create.roblox.com/docs/reference/engine/enums/TextXAlignment` and
+/// `robloxapi.github.io/ref/enum/TextXAlignment.html`, cross-checked against
+/// each other) gives `Left=0, Right=1, Center=2`: the enum was reindexed at
+/// some point in Roblox's history, swapping `Right` and `Center`, and the
+/// alphabetical guess landed on the pre-reindex order. Every box this project
+/// has ever focused reads `xAlignment=Left` (`0`), which is unaffected by the
+/// swap either way -- so nothing here had ever drawn a `Right` or `Center`
+/// box to notice, and the maintainer's report of a game-defined box aligned
+/// "from the right when it's supposed to be from the left" is consistent with
+/// this: a `Right`-styled box (`1`) drew centred under the old mapping, and
+/// (on a narrower box, or read at a glance) a wrongly-centred short line can
+/// read as sitting off to the right of where a left-aligned line would start.
 fn gtk_xalign(x_alignment: i32) -> f32 {
     match x_alignment {
-        2 => 1.0,
-        1 => 0.5,
+        1 => 1.0,
+        2 => 0.5,
         // `0` (Left) and anything this build has never seen: Roblox's own
         // default, and the one value this project has actually observed.
         _ => 0.0,
+    }
+}
+
+/// [`gtk_xalign`]'s counterpart for [`HostWindow::editor_multiline`]:
+/// `gtk::TextView` has no `Editable::set_alignment`, only
+/// `set_justification`, so the three points need a second mapping onto a
+/// different enum rather than a fraction. Same ordinals, same 2026-09-26
+/// correction, same reasoning -- see that function's doc comment -- kept as
+/// its own named function rather than inlined at the one call site so a
+/// future edit to one mapping cannot silently leave the other on the old
+/// ordinals, which is exactly how the multi-line branch would otherwise have
+/// kept drawing `Right` centred and `Center` flush right after the
+/// single-line fix.
+fn gtk_justification(x_alignment: i32) -> gtk::Justification {
+    match x_alignment {
+        1 => gtk::Justification::Right,
+        2 => gtk::Justification::Center,
+        _ => gtk::Justification::Left,
     }
 }
 
@@ -1395,11 +1426,7 @@ impl HostWindow {
             tag.set_style(gtk::pango::Style::Normal);
         }
 
-        self.editor_multiline.set_justification(match overlay.x_alignment {
-            2 => gtk::Justification::Right,
-            1 => gtk::Justification::Center,
-            _ => gtk::Justification::Left,
-        });
+        self.editor_multiline.set_justification(gtk_justification(overlay.x_alignment));
         self.editor_multiline.set_wrap_mode(if overlay.text_wrapped {
             gtk::WrapMode::WordChar
         } else {
@@ -2163,17 +2190,40 @@ mod tests {
 
     /// Roblox's three `TextXAlignment` ordinals, both ways: the value this
     /// project has actually measured (`Left`, on every box so far) must not
-    /// move, and `Center`/`Right` must land on the fractions `Editable`
-    /// documents -- `0.5` and `1.0` -- rather than on whatever the match arm
+    /// move, and `Right`/`Center` must land on the fractions `Editable`
+    /// documents -- `1.0` and `0.5` -- rather than on whatever the match arm
     /// order happens to produce.
+    ///
+    /// **`1`/`2` swapped here on 2026-09-26.** This test asserted
+    /// `gtk_xalign(1) == 0.5` (Center) and `gtk_xalign(2) == 1.0` (Right)
+    /// until then, which is Roblox's enum in alphabetical rather than actual
+    /// order -- see `gtk_xalign`'s own doc comment for the two published
+    /// references this is corrected against. Nothing caught the old values
+    /// being wrong because they were exactly as internally consistent as the
+    /// right ones: a test asserting a match arm against itself proves the
+    /// arm was copied correctly, not that the ordinal it names is the right
+    /// one, and only Roblox's own documentation says which is which.
     #[test]
     fn xalign_maps_every_ordinal_and_defaults_left() {
         assert_eq!(gtk_xalign(0), 0.0, "Left, the only value ever measured");
-        assert_eq!(gtk_xalign(1), 0.5, "Center");
-        assert_eq!(gtk_xalign(2), 1.0, "Right");
+        assert_eq!(gtk_xalign(1), 1.0, "Right");
+        assert_eq!(gtk_xalign(2), 0.5, "Center");
         // A build that renumbers the enum, or a slot this project has the
         // wrong one for, must draw left rather than somewhere arbitrary.
         assert_eq!(gtk_xalign(99), 0.0);
+    }
+
+    /// [`gtk_justification`] must agree with [`gtk_xalign`] ordinal-for-ordinal
+    /// -- a box that draws its single-line editor flush right must draw its
+    /// multi-line one the same way, and the two mappings living in separate
+    /// functions (`gtk::Text` and `gtk::TextView` share no alignment API) is
+    /// exactly how they could drift apart silently if only one were fixed.
+    #[test]
+    fn justification_maps_every_ordinal_and_defaults_left() {
+        assert_eq!(gtk_justification(0), gtk::Justification::Left);
+        assert_eq!(gtk_justification(1), gtk::Justification::Right);
+        assert_eq!(gtk_justification(2), gtk::Justification::Center);
+        assert_eq!(gtk_justification(99), gtk::Justification::Left);
     }
 
     /// `vertical_placement`'s `Center` arm is the load-bearing one: it is the

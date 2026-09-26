@@ -172,10 +172,16 @@ struct CordialTextBoxInfo {
     // from here. mocktail's constructor settles it by naming slot 13
     // `textWrapped` -- see the struct's doc comment.
     int multiline;
-    // Roblox's `Enum.TextXAlignment`/`Enum.TextYAlignment`: `Left`/`Top` = 0,
-    // `Center` = 1, `Right`/`Bottom` = 2. Confirmed via mocktail's
-    // `NativeTextBoxInfo` constructor field order -- see the struct's own doc
-    // comment above.
+    // Which slot is which is confirmed via mocktail's `NativeTextBoxInfo`
+    // constructor field order -- see the struct's own doc comment above --
+    // but the ordinal-to-name mapping mocktail's order says nothing about.
+    // `Enum.TextYAlignment` is `Top` = 0, `Center` = 1, `Bottom` = 2.
+    // `Enum.TextXAlignment` is `Left` = 0, `Right` = 1, `Center` = 2 --
+    // *not* the alphabetical `Left`/`Center`/`Right` this comment claimed
+    // until 2026-09-26, which nothing here had ever checked against a real
+    // `Right`- or `Center`-styled box (every capture so far reads `0`).
+    // See `RawTextBoxInfo::x_alignment` in
+    // `crates/cordial-linker-sys/src/lib.rs` for the sources.
     int x_alignment, y_alignment;
     int text_color;
     // Slots 9-11, named from the same constructor order as the two alignments.

@@ -2483,10 +2483,23 @@ pub mod game_activity {
         /// leaves 5 as the only candidate this project's own captures could
         /// not rule out. See `CordialTextBoxInfo` for both halves.
         pub multiline: i32,
-        /// Roblox's `Enum.TextXAlignment`: `Left` = 0, `Center` = 1,
-        /// `Right` = 2 -- Roblox's own published scripting-API ordinals.
-        /// Confirmed as slot 6 by mocktail's constructor field order; see this
-        /// struct's own doc comment.
+        /// Roblox's `Enum.TextXAlignment`: `Left` = 0, `Right` = 1,
+        /// `Center` = 2. Confirmed as slot 6 by mocktail's constructor field
+        /// order; see this struct's own doc comment.
+        ///
+        /// **The ordinal-to-name mapping was wrong here until 2026-09-26.**
+        /// This comment used to read `Left = 0, Center = 1, Right = 2` --
+        /// alphabetical order, not Roblox's -- and nothing in this project had
+        /// ever caught it: every real box captured so far reports `0`
+        /// (`create.roblox.com/docs/reference/engine/enums/TextXAlignment`
+        /// and `robloxapi.github.io/ref/enum/TextXAlignment.html`, checked
+        /// against each other, both give `Left=0, Right=1, Center=2` -- the
+        /// enum was reindexed at some point in Roblox's history, swapping
+        /// `Right` and `Center`, and this struct's comment had the pre-reindex
+        /// order). Fixed alongside `gtk_xalign` in
+        /// `crates/cordial-shell/src/host_window.rs`, which is where the wrong
+        /// ordinal actually reached a pixel: it drew `Right`-styled boxes
+        /// centred and `Center`-styled boxes flush right.
         pub x_alignment: i32,
         /// Roblox's `Enum.TextYAlignment`: `Top` = 0, `Center` = 1,
         /// `Bottom` = 2. Confirmed as slot 7 alongside `x_alignment`.
