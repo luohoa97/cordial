@@ -1744,3 +1744,157 @@ is not playable online and that is the honest result.
 **Account safety.** Every one of these sessions ended in a 304 "missing or
 corrupted files" disconnect from one IP. Test only with throwaway accounts on
 an IP no real account uses (AGENTS.md); do not main this build.
+
+### 2026-10-01: 304 reason corrected, posix_fallocate/ZFS fixed, six levers ruled out
+
+Refines (does not overturn) the "where this port stops" entry above with the
+reason code, a genuine standalone bug fix, and a measured test matrix. Run on
+the same recipe; reliable boot, signed-in via cookie, NDS joined each time.
+
+**The 304 reason code was mislabelled.** In the 2.738.1397 binary the
+disconnect-reason jump table (`sub_6965AE3`, table base `0xd22f84`) maps
+`0x130` (304) -> `DisconnectAndroidAnticheatKick`, `0x131` (305) ->
+`DisconnectAndroidEmulatorKick`, `0x132` (306) -> `DisconnectAndroidRootedKick`.
+Earlier notes/handoffs called 304 the emulator kick; it is the **anticheat**
+kick. Every device-identity / emulator-spoof attempt was aimed one code off.
+
+**`posix_fallocate` fails on ZFS -- fixed.** FreeBSD `posix_fallocate()` returns
+`EINVAL` on ZFS (verified directly: `posix_fallocate`->EINVAL, `ftruncate` to the
+same size->OK on `~/.cache`). The engine imports `posix_fallocate@LIBC` and uses
+it to size every mmap-backed store (LocalStorage, rbx-storage, the
+`ota_rbxm_decompressed_cache` / `DataModelPatch` buffers). Unshimmed it failed
+630 times/join with garbage stale errnos ("Operation timed out", "No error: 0",
+...), leaving caches short and flooding `RbxStorage found file with invalid
+hash` (6695/join). Shim in `native/freebsd_libc_compat.c`
+(`cordial_posix_fallocate`, registered in `bionic/mod.rs`) falls back to
+`ftruncate` on EINVAL/EOPNOTSUPP/ENOTSUP/ENODEV. **Measured: `Failed to
+fallocate` 630 -> 0**, invalid-hash noise 6695 -> ~1049 (the remainder is benign
+directory-walk logging, not corruption). A real bug regardless of the 304.
+
+**The 304 is server-enforced with no client-reachable lever. Six measured, all
+still 304 at ~60.1-60.3 s after `Connection accepted`:**
+
+1. posix_fallocate/ZFS fixed (630->0 fallocate errors) -- unchanged.
+2. `CORDIAL_FAKE_PROC` Android-ising `/proc/self/maps` + `/proc/self/mounts` --
+   unchanged.
+3. Process cmdline spoofed to `com.roblox.client` via `synth_proc_content`
+   (`/proc/{self,0}/cmdline`) -- unchanged.
+4. In-memory patch making the client **ignore** the 304 disconnect (RakNet
+   packet-0x15 dispatch at RVA `0x57255f4`, `jne`->`jmp`, `unsafe-experiments`
+   `CORDIAL_IGNORE_KICK`): the client sailed **past 60 s to 80 s elapsed_l2b**,
+   then the server had **stopped replicating** -> `AckTimeout`, Error **277**
+   ("Cannot contact server"), frozen world. Proves the server drops the peer at
+   60 s; ignoring the notification client-side buys only a frozen session.
+5. Raising `RLIMIT_NOFILE` -- **breaks boot**: the engine `select()`s on fds and
+   any fd >= FD_SETSIZE (1024) corrupts the stack. Do not raise it without first
+   moving the engine's `select()` sites to poll/kqueue. (Comment left in
+   `load.rs` main so it is not re-added.)
+6. Headless (`--headless`, cage `WLR_BACKENDS=headless`): **boots to Home**
+   (Vulkan surface up) but the client's Wayland connection to cage dies at ~3 s
+   ("failed to read Wayland events: Broken pipe") -- a separate headless
+   stability bug -- so a full headless join was not completed.
+
+Plus: **zero** device-integrity / attestation JNI activity anywhere in a join
+(`getDeviceIntegrityAvailable` / `getGetIntegrityToken` /
+`getDeviceAttestationToken` never fire). The server's verdict uses no
+client-visible integrity call; it observes the connection and drops it at a
+fixed 60 s grace. `SessionL2ValidationHelper` kicks exactly 60 s after the last
+`onSessionChange` (sc_count freezes ~mid-load), via 20 s heartbeats.
+
+**Function labels from the prior IDA handoff are mostly logging/registration
+stubs, not the verdict.** `sub_6965AE3` is the reason->string mapper;
+`sub_1E22285` is the giant DFFlag registration table; `sub_1D87DD6`
+(`deviceIntegrityAvailable`) is a one-shot telemetry logger; the throw at
+`0x233f954` is gated by a "flags loaded" byte at `cmpb $0,0x7b8b9c9(%rip)`
+(useful for the boot race, not the kick). The real integrity verdict is in the
+obfuscated replication/telemetry path. The 2.738 base is `JNI_OnLoad -
+0x222f92a` (not the 2.721 `0x22addd7` still hard-coded in some experiments).
+
+**Honest state:** the fallocate/ZFS fix ships (genuine bug). The 304 is not
+reachable from any environment-shaping or disconnect-handling lever -- proven
+six ways -- so beating it needs either real Play Integrity attestation (no
+keybox here) or replicating Sober's runtime patch, whose worth is gated on
+first confirming Sober itself survives past 60 s (different machine). This
+matches the prior entry's conclusion, now with the reason code corrected and the
+client-side surface measured to exhaustion.
+
+### 2026-10-01 (cont.): RLIMIT_NOFILE raise is safe (earlier revert was wrong), headless diagnosed
+
+**Correction to the entry above.** The claim that raising `RLIMIT_NOFILE`
+"breaks boot via select()/FD_SETSIZE" was wrong -- the death that prompted it
+was the flag/TaskScheduler boot race, not the fd raise. Re-tested with a
+moderate cap: the X11 path boots to Home reliably with soft NOFILE at 8192, no
+crash, and EMFILE on cache/temp ops drops (~5 -> 2). The engine's readiness
+polling is epoll-shim (kqueue), so high fds are not fed to select(). `load.rs`
+main() now raises soft NOFILE to `min(8192, hard)` before `parse()`, overridable
+with `CORDIAL_NOFILE`. Keep the cap modest: at `CORDIAL_NOFILE=65536` the client
+dies at 0.5 s (something -- GTK/GLib fd arrays, most likely -- sizes by the
+limit), so the raise is non-monotonic and 8192 is the sweet spot.
+
+**Headless (`--headless`) diagnosed, not yet stable.** Root cause of the ~3 s
+death was **EMFILE**: `GLib-ERROR: Creating pipes for GWakeup: Too many open
+files` aborts the process (exit 133). The cage + Wayland + GLib + GTK + engine
+tree needs far more fds than the X11 path. With the NOFILE raise the fatal
+GLib-ERROR becomes non-fatal GTK warnings and the client reaches **app ready:
+Home / RootSwitchNavigator** headless (Vulkan surface on cage's software path,
+`WLR_BACKENDS=headless`). It then still dies with `failed to read Wayland
+events: Broken pipe` shortly after Home -- a separate Wayland-present issue under
+a headless output (no real display target), independent of the fd limit. So
+headless now *boots* but a full headless join is still blocked on that present
+path. And it would 304 at 60 s like every other join regardless.
+
+### 2026-10-01 (cont.): headless join COMPLETED via Xvfb + X11 (cage path bypassed)
+
+The cage/`--headless` path is multi-bug (EMFILE fixed by the NOFILE raise, then a
+SIGSEGV during Wayland setup, timing-dependent). **Bypassed it entirely**: the
+X11 backend is rock-stable, so run it on a virtual framebuffer. `pkg install
+xorg-vfbserver`, `Xvfb :99 -screen 0 1280x720x24 &`, then launch cordial-run with
+`DISPLAY=:99 CORDIAL_X11=1` and the normal recipe. Result: booted to Home, signed
+in, **searched and joined Natural Disaster Survival, in the lobby with other real
+players, game rendering** -- a complete headless join, driven entirely over the
+devctl socket (screenshot proves it). This is the practical way to run this port
+headless/unattended on a box whose GPU is held by a running X session. The 304
+still fires ~60 s after `Connection accepted` exactly as on the visible display;
+headless changes nothing about the kick, as expected.
+
+### 2026-10-01 (cont.): root cause of the 304 pinned to Play Integrity attestation
+
+Traced the device-integrity path to its origin.
+`Java_..._JNIAccountProtocol_getDeviceIntegrityAvailableMethodName` (0x241db38)
+returns a runtime global at `0x7154fc0` that defaults to the **empty string**: the
+integrity method names are registered by the Android app's Java side at startup
+(a native setter the app calls), and the Java implementations live in the app
+too. Cordial has no Java app, so the names are never registered, the engine never
+learns which method to call, and it therefore **never engages the integrity
+subsystem at all** -- which is exactly why a full-join trace shows zero
+integrity/attestation JNI activity. The 304 is not a *failed* attestation; it is
+the server acting on a client that produced *no* attestation.
+
+Wiring it up would not help: the token that subsystem yields is a Google-signed
+Play Integrity token. A cordial-fabricated token fails the server's signature
+check (you cannot forge Google's signature without a real hardware-backed
+keybox), so it would turn 304 into a RemoteAttestation* disconnect, not a pass.
+This is the bedrock reason every client-side lever in the entries above left the
+kick unmoved, and why a non-attested client (Sober on Linux) must *patch the
+check out of the client* rather than satisfy it. The only two ways past the 304
+are therefore a genuine Play Integrity keybox or replicating Sober's in-memory
+patch; neither is a truthful port and neither is reachable from this box. This
+completes and closes the investigation the 2026-09-26 entry opened.
+
+### 2026-10-01 (cont.): FastFlag-override path also ruled out (8th lever)
+
+Tested disabling the integrity subsystem via Cordial's FastFlag override
+(`CORDIAL_FLAGS` / `<profile>/flags.json`): `AddIntegrityToReplicatorTelemetry`,
+`IntegrityCheckedProcessorDisableAllAdditions`, and guessed
+`DebugDisableIntegrityChecks`, in both `FFlag`/`DFFlag` forms. Booted, joined
+NDS, **still 304 at 60.14 s** after Connection accepted. The flag names did not
+appear in the engine's applied-flag dump. Two reasons this path is structurally
+dead, not just a bad guess: (1) Roblox's anticheat/integrity flags are `DFFlag`
+(dynamic), and `client_settings::apply_overrides`' own note records that Roblox's
+settings reloader reasserts the server's `DF*` document within ~1.6-2.3 s, so any
+local override is reverted long before the 60 s kick; (2) those flags are
+server-authoritative by design precisely so a client cannot switch anticheat off
+locally. This closes the last client-side "disable it" avenue. Eight levers now
+measured against the 304 (storage, /proc maps+mounts, cmdline, disconnect-ignore,
+fd-limit, headless, and FastFlag override) — all leave it at a fixed ~60 s
+server drop.

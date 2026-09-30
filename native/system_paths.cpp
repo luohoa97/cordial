@@ -283,6 +283,17 @@ static const char* synth_proc_content(const char* path) {
     if (std::getenv("CORDIAL_FAKE_PROC") == nullptr) {
         return nullptr;
     }
+    // The process cmdline. On Android a Roblox process's cmdline is its package
+    // name, "com.roblox.client"; cordial's real cmdline is "cordial-run ...",
+    // and the engine reads /proc/<pid>/cmdline (seen in CORDIAL_TRACE_PATHS as
+    // /proc/0/cmdline and /proc/self/cmdline). An anti-tamper that checks "is my
+    // process the Roblox package?" fails on the cordial name. Serve the package
+    // name instead. (Single arg, no trailing NUL: the reader uses the byte count
+    // fread returns, then takes the basename — no '/', so it sees the package.)
+    if (std::strcmp(path, "/proc/self/cmdline") == 0 ||
+        std::strcmp(path, "/proc/0/cmdline") == 0) {
+        return "com.roblox.client";
+    }
     if (std::strcmp(path, "/proc/self/mounts") == 0 ||
         std::strcmp(path, "/proc/mounts") == 0) {
         return

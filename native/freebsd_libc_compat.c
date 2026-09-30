@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <pthread_np.h>
+#include <sys/stat.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -20,6 +21,49 @@
 // glibc's locale-aware MB_CUR_MAX accessor. bionic exports it too; FreeBSD does
 // not, but its MB_CUR_MAX macro yields the same value for the current locale.
 size_t __ctype_get_mb_cur_max(void) { return MB_CUR_MAX; }
+
+// ── posix_fallocate on ZFS ──────────────────────────────────────────────────
+// FreeBSD's posix_fallocate() returns EINVAL on ZFS (and EOPNOTSUPP/ENODEV on
+// some other filesystems): those filesystems have no block-preallocation
+// primitive. The engine calls posix_fallocate to size every mmap-backed store
+// it keeps — LocalStorage, the rbx-storage content cache, and the
+// ota_rbxm_decompressed_cache / DataModelPatch buffers that hold decompressed
+// place content. On a ZFS home (the default FreeBSD layout) every one of those
+// calls fails, the file is never grown, the mmap-backed store is left empty or
+// short, and the engine's own integrity scan then finds thousands of cache
+// files whose contents do not match their content-hash names ("found file with
+// invalid hash"). The server turns that corrupt-content state into
+// DisconnectAndroidAnticheatKick — reason 304, surfaced to the user as "Roblox
+// has detected missing or corrupted files" — roughly 60s into the session.
+//
+// ftruncate() has no such filesystem restriction: on ZFS it sizes the file
+// sparsely and ZFS allocates blocks on write, which is exactly how the engine
+// touches these files (mmap then store). ftruncate satisfies the only property
+// posix_fallocate is being used for here — that the file be at least
+// offset+len bytes so the following mmap covers it. We fall back to it only
+// when preallocation is genuinely unsupported; a real ENOSPC/EBADF/EFBIG is
+// returned unchanged so the engine still sees true failures. posix_fallocate
+// reports through its return value, never errno, so the engine's logged
+// "errno (...)" for these was always a stale value from an unrelated call.
+int cordial_posix_fallocate(int fd, off_t offset, off_t len) {
+    int rc = posix_fallocate(fd, offset, len);
+    if (rc == 0)
+        return 0;
+    if (rc == EINVAL || rc == EOPNOTSUPP || rc == ENOTSUP || rc == ENODEV) {
+        if (offset < 0 || len <= 0)
+            return rc; // preserve libc's argument validation
+        off_t need = offset + len;
+        if (need < offset)
+            return EFBIG; // offset+len overflowed
+        struct stat st;
+        if (fstat(fd, &st) != 0)
+            return errno;
+        if (st.st_size < need && ftruncate(fd, need) != 0)
+            return errno;
+        return 0;
+    }
+    return rc;
+}
 
 // ── bionic pthread_mutex via a pointer-keyed side-table ─────────────────────
 // bionic's pthread_mutex_t (a few bytes) and FreeBSD's (a pointer to an opaque

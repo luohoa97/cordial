@@ -1521,6 +1521,41 @@ enum DiskMoment {
 }
 
 fn main() -> ExitCode {
+    // Raise RLIMIT_NOFILE to a moderate cap. The default 1024 soft limit
+    // inherited from a login shell is exhausted by the engine's cache/socket
+    // fds on the X11 path (occasional EMFILE) and, worse, kills the headless
+    // (cage/Wayland/GLib) path outright: GLib fatally aborts with "Creating
+    // pipes for GWakeup: Too many open files" during bring-up. The engine's
+    // readiness polling is routed to epoll-shim (kqueue), not select(), so fds
+    // >= FD_SETSIZE are fine; the cap stays modest anyway so nothing that does
+    // size an array by the limit blows up. Env override: CORDIAL_NOFILE.
+    unsafe {
+        #[repr(C)]
+        struct Rlimit {
+            cur: u64,
+            max: u64,
+        }
+        extern "C" {
+            fn getrlimit(resource: i32, rlp: *mut Rlimit) -> i32;
+            fn setrlimit(resource: i32, rlp: *const Rlimit) -> i32;
+        }
+        const RLIMIT_NOFILE: i32 = 8; // FreeBSD <sys/resource.h>
+        let want_soft: u64 = std::env::var("CORDIAL_NOFILE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8192);
+        let mut rl = Rlimit { cur: 0, max: 0 };
+        if getrlimit(RLIMIT_NOFILE, &mut rl) == 0 {
+            let target = want_soft.min(rl.max);
+            if rl.cur < target {
+                let put = Rlimit {
+                    cur: target,
+                    max: rl.max,
+                };
+                let _ = setrlimit(RLIMIT_NOFILE, &put);
+            }
+        }
+    }
     // **Before `parse()`, and that is not stylistic.** `--profile` latches the
     // active profile directory as a side effect of being parsed, and the whole
     // point of `--headless` is that the compositor must already be this
@@ -2065,14 +2100,71 @@ fn main() -> ExitCode {
             #[cfg(feature = "unsafe-experiments")]
             if std::env::var_os("CORDIAL_SET_FLAGS_LOADED").is_some() {
                 if let Some(jni) = lib.symbol("JNI_OnLoad") {
-                    let base = (jni as usize).wrapping_sub(0x22addd7);
+                    // 2.738.1397 offsets: JNI_OnLoad is at 0x222f92a (not the
+                    // 2.721 0x22addd7), and the TaskScheduler "flags loaded"
+                    // gate byte the engine compares with zero at 0x233f67c
+                    // (`cmpb $0,0x7b8b9c9(%rip); je <throw>`) lives at VA
+                    // 0x7b8b9c9. The flag-parse path sets it to 1 legitimately;
+                    // pre-setting it before initializeNativeCode spawns the app
+                    // thread satisfies the gate without racing.
+                    let base = (jni as usize).wrapping_sub(0x222f92a);
                     // SAFETY: single byte write to a known engine global the
                     // engine only ever compares against zero.
                     unsafe {
-                        let slot = (base + 0x75a8250) as *mut u8;
+                        let slot = (base + 0x7b8b9c9) as *mut u8;
                         let old = *slot;
                         *slot = 1;
-                        println!("  [flags-loaded] byte@0x75a8250: {old} -> 1 (TaskScheduler gate pre-satisfied)");
+                        println!("  [flags-loaded] byte@0x7b8b9c9: {old} -> 1 (TaskScheduler gate pre-satisfied)");
+                    }
+                }
+            }
+
+            // EXPERIMENT (CORDIAL_IGNORE_KICK=1): make the client ignore the
+            // RakNet ID_DISCONNECTION_NOTIFICATION (packet type 0x15) so a
+            // server-sent disconnect — including reason 304
+            // DisconnectAndroidAnticheatKick, which arrives ~60s after join —
+            // never reaches the teardown handler. This is the decisive test of
+            // whether the anticheat kick can be survived client-side: if the
+            // session keeps replicating past 60s the in-memory route is viable;
+            // if the world freezes, the server has already dropped the peer and
+            // ignoring the notification buys nothing. 2.738 dispatch at RVA
+            // 0x57255f4 is `cmpl $0x15,%eax; jne 0x5725911` (0f 85 17 03 00 00);
+            // rewriting the jne to an unconditional `jmp 0x5725911` (e9 18 03 00
+            // 00 90) skips the `call 0x57228d6` disconnect handler. base =
+            // JNI_OnLoad - 0x222f92a. Writes engine code, so `unsafe-experiments`
+            // only.
+            #[cfg(feature = "unsafe-experiments")]
+            if std::env::var_os("CORDIAL_IGNORE_KICK").is_some() {
+                if let Some(jni) = lib.symbol("JNI_OnLoad") {
+                    let base = (jni as usize).wrapping_sub(0x222f92a);
+                    let site = base + 0x57255f4;
+                    let patch: [u8; 6] = [0xe9, 0x18, 0x03, 0x00, 0x00, 0x90];
+                    extern "C" {
+                        fn mprotect(addr: *mut core::ffi::c_void, len: usize, prot: i32) -> i32;
+                    }
+                    const PROT_READ: i32 = 1;
+                    const PROT_WRITE: i32 = 2;
+                    const PROT_EXEC: i32 = 4;
+                    // SAFETY: single-threaded bring-up here; the game threads that
+                    // execute this dispatch have not started, so the page is not
+                    // being run while it is briefly writable. W^X-safe: never
+                    // W and X at once.
+                    unsafe {
+                        let page = 0x1000usize;
+                        let start = site & !(page - 1);
+                        let len = ((site + patch.len() + page - 1) & !(page - 1)) - start;
+                        let old = std::slice::from_raw_parts(site as *const u8, patch.len()).to_vec();
+                        if old[0] == 0x0f && old[1] == 0x85 {
+                            if mprotect(start as *mut _, len, PROT_READ | PROT_WRITE) == 0 {
+                                std::ptr::copy_nonoverlapping(patch.as_ptr(), site as *mut u8, patch.len());
+                                mprotect(start as *mut _, len, PROT_READ | PROT_EXEC);
+                                println!("  [ignore-kick] disconnect dispatch @ {site:#x}: {old:02x?} -> {patch:02x?}");
+                            } else {
+                                println!("  [ignore-kick] mprotect failed at {start:#x}");
+                            }
+                        } else {
+                            println!("  [ignore-kick] unexpected bytes {old:02x?} at {site:#x}; not patching");
+                        }
                     }
                 }
             }

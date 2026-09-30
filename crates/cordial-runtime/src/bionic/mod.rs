@@ -93,6 +93,7 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             fn __FD_CLR_chk();
             fn __FD_ISSET_chk();
             fn __ctype_get_mb_cur_max();
+            fn cordial_posix_fallocate();
             fn bionic_syscall();
             fn bionic_pthread_mutex_init();
             fn bionic_pthread_mutex_lock();
@@ -127,6 +128,10 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
         }
         v.extend_from_slice(&[
             f!("__ctype_get_mb_cur_max", __ctype_get_mb_cur_max),
+            // FreeBSD posix_fallocate fails (EINVAL) on ZFS, which breaks every
+            // mmap-backed content cache and gets the session kicked as "corrupted
+            // files" (reason 304). The shim falls back to ftruncate on ZFS.
+            f!("posix_fallocate", cordial_posix_fallocate),
             f!("syscall", bionic_syscall),
             f!("pthread_mutex_init", bionic_pthread_mutex_init),
             f!("pthread_mutex_lock", bionic_pthread_mutex_lock),
