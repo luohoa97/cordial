@@ -56,6 +56,11 @@
 //!   `VK_PRESENT_MODE_MAILBOX_KHR` instead when a setting asks for it. See
 //!   that function for the measurement and for why overriding what the engine
 //!   asked for is defensible here and would not be for most calls.
+//! * `vkAcquireNextImageKHR` — `VK_SUBOPTIMAL_KHR` is a successful acquire
+//!   with a valid image index. On the reproduced Wayland fullscreen resize,
+//!   passing that status through was followed by a `VK_NULL_HANDLE` present
+//!   barrier. [`vk_acquire_next_image_khr`] preserves the acquired index while
+//!   reporting that successful acquire as `VK_SUCCESS`.
 //!
 //! Everything else — every `vkCmd*`, the whole per-frame surface — is
 //! untouched: once a real `VkInstance` exists, forwarding
@@ -488,6 +493,14 @@ extern "C" fn vk_get_instance_proc_addr(instance: *mut c_void, name: *const c_ch
             );
             vk_create_swapchain_khr as *const () as *mut c_void
         }
+        // Roblox compatibility wrapper; see [`vk_acquire_next_image_khr`].
+        b"vkAcquireNextImageKHR" => {
+            HOST_ACQUIRE_NEXT_IMAGE.store(
+                unsafe { (h.get_instance_proc_addr)(instance, name) } as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            vk_acquire_next_image_khr as *const () as *mut c_void
+        }
         // Counted, not altered — same reasoning as `vkGetPhysicalDeviceFormatProperties`
         // above: a shader-compile count next to the TM1/TM2 choice is the
         // cheapest available evidence on whether "TextureManager2" and "how many
@@ -507,9 +520,9 @@ extern "C" fn vk_get_instance_proc_addr(instance: *mut c_void, name: *const c_ch
         }
         // `vkGetPhysicalDeviceSurfaceCapabilitiesKHR`'s result is patched, not
         // just forwarded — see [`vk_get_physical_device_surface_capabilities_khr`]
-        // for the failure this fixes. Measured, not guessed: instrumenting this
-        // call (and `vkCreateSwapchainKHR`/`vkAcquireNextImageKHR`, since
-        // reverted — the finding is what matters, not the scaffolding) showed
+        // for the failure this fixes. Measured, not guessed: temporary tracing
+        // of this call together with `vkCreateSwapchainKHR` and
+        // `vkAcquireNextImageKHR` showed
         // `currentExtent` coming back as `4294967295x4294967295` on Wayland and
         // a real `1280x720` on X11 for the identical query, and zero calls to
         // `vkCreateSwapchainKHR` ever following it on Wayland, against one
@@ -554,12 +567,55 @@ extern "C" fn vk_get_device_proc_addr(device: *mut c_void, name: *const c_char) 
                 .store(host(device, name) as usize, std::sync::atomic::Ordering::Relaxed);
             vk_create_swapchain_khr as *const () as *mut c_void
         }
+        b"vkAcquireNextImageKHR" => {
+            HOST_ACQUIRE_NEXT_IMAGE
+                .store(host(device, name) as usize, std::sync::atomic::Ordering::Relaxed);
+            vk_acquire_next_image_khr as *const () as *mut c_void
+        }
         b"vkCreateShaderModule" => {
             HOST_CREATE_SHADER_MODULE
                 .store(host(device, name) as usize, std::sync::atomic::Ordering::Relaxed);
             vk_create_shader_module as *const () as *mut c_void
         }
         _ => host(device, name),
+    }
+}
+
+/// The real `vkAcquireNextImageKHR`, interposed for one Roblox compatibility
+/// quirk. The driver call and image index are otherwise untouched.
+static HOST_ACQUIRE_NEXT_IMAGE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+extern "C" fn vk_acquire_next_image_khr(
+    device: *mut c_void,
+    swapchain: u64,
+    timeout: u64,
+    semaphore: u64,
+    fence: u64,
+    image_index: *mut u32,
+) -> i32 {
+    let f = HOST_ACQUIRE_NEXT_IMAGE.load(std::sync::atomic::Ordering::Relaxed);
+    if f == 0 {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    type Fn_ = extern "C" fn(*mut c_void, u64, u64, u64, u64, *mut u32) -> i32;
+    // SAFETY: resolved from the host loader for exactly vkAcquireNextImageKHR.
+    let f: Fn_ = unsafe { std::mem::transmute(f) };
+    let rc = f(device, swapchain, timeout, semaphore, fence, image_index);
+
+    // In the reproduced Wayland fullscreen failure the host returned
+    // VK_SUBOPTIMAL_KHR with a valid image index; passing that status through
+    // was immediately followed by a PRESENT_SRC_KHR barrier with
+    // VK_NULL_HANDLE. Report only this successful status as VK_SUCCESS while
+    // preserving the driver's image index. Real errors still pass through.
+    normalize_acquire_result(rc)
+}
+
+fn normalize_acquire_result(rc: i32) -> i32 {
+    if rc == VK_SUBOPTIMAL_KHR {
+        VK_SUCCESS
+    } else {
+        rc
     }
 }
 
@@ -719,17 +775,9 @@ pub fn last_extent() -> (u32, u32) {
 /// report_unregistered` gives: one line would be indistinguishable from a
 /// transient at a resize, and one per frame would bury the run.
 ///
-/// **Checked against issue #35's Steam Deck SIGSEGV, and ruled out as this
-/// file's doing.** The reporter's log has `vkAcquireNextImageKHR` returning
-/// `VK_SUBOPTIMAL_KHR` immediately before the crash, but `VK_SUBOPTIMAL_KHR`
-/// is a success code — the image is still usable — and this function's own
-/// logic above confirms it: the return value from `vkQueuePresentKHR` is
-/// read only to decide what to print, never to change `rc`, which the caller
-/// returns to the engine exactly as the driver gave it. `vkAcquireNextImageKHR`
-/// itself is not interposed anywhere in this file at all (there is no
-/// `vk_acquire_next_image_khr` here), so that call reaches the host driver
-/// completely unmodified. Neither fact leaves room for this file to be
-/// turning a benign resize signal into the crash.
+/// `vkQueuePresentKHR` itself remains observational. `vkAcquireNextImageKHR`
+/// has a separate compatibility normalization; see
+/// [`vk_acquire_next_image_khr`].
 fn report_present_result(rc: i32) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SUBOPTIMAL: AtomicU64 = AtomicU64::new(0);
@@ -1130,16 +1178,10 @@ static HOST_CREATE_SWAPCHAIN: std::sync::atomic::AtomicUsize =
 /// forgets, and a capture against a stale swapchain handle is a driver crash
 /// rather than a wrong picture.
 ///
-/// **Checked against issue #39's SIGSEGV on the first swapchain recreation of
-/// a fullscreen-exit transition, and not confirmed as this file's doing.**
-/// This function and [`vk_create_swapchain_inner`] change exactly two scalar
-/// fields of the caller's `VkSwapchainCreateInfoKHR` — `presentMode` and,
-/// rarely, `minImageCount` — and forward `oldSwapchain` unexamined; the actual
-/// handling of an outgoing swapchain's in-flight images is a matter between
-/// the engine and the host driver that never passes through Rust code at all,
-/// because neither `vkAcquireNextImageKHR` nor `vkDestroySwapchainKHR` is
-/// interposed anywhere in this file. There is consequently no lever here to
-/// have mishandled a stale image or a torn-down swapchain.
+/// Issue #39 was isolated to `vkAcquireNextImageKHR` status handling rather
+/// than this create wrapper; see [`vk_acquire_next_image_khr`] and `docs/NEXT.md`.
+/// `vkDestroySwapchainKHR` remains uninterposed, and `oldSwapchain` is still
+/// forwarded unchanged here.
 ///
 /// `tools/sober-corpus`'s issue #2180 (`Crashes after SceneManager first
 /// resize when using Vulkan`) is independent evidence for a wider version of
@@ -1922,6 +1964,20 @@ mod tests {
             flag.map(|(s, v)| (s.to_string(), v.to_string())),
         )
         .0
+    }
+
+    #[test]
+    fn suboptimal_acquire_is_the_only_result_normalized_for_roblox() {
+        assert_eq!(normalize_acquire_result(VK_SUBOPTIMAL_KHR), VK_SUCCESS);
+        assert_eq!(normalize_acquire_result(VK_SUCCESS), VK_SUCCESS);
+        assert_eq!(
+            normalize_acquire_result(VK_ERROR_OUT_OF_DATE_KHR),
+            VK_ERROR_OUT_OF_DATE_KHR
+        );
+        assert_eq!(
+            normalize_acquire_result(VK_ERROR_INITIALIZATION_FAILED),
+            VK_ERROR_INITIALIZATION_FAILED
+        );
     }
 
     /// **The default is MAILBOX, and it is latency that decides it.**
