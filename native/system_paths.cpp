@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <string>
 
 #include <cerrno>
 #include <dirent.h>
@@ -269,7 +270,113 @@ ssize_t s_readlink(const char* path, char* buf, size_t n) {
     return r;
 }
 
+#if defined(__FreeBSD__)
+/// A synthetic Android `/proc/self/mounts`, served ONLY when `CORDIAL_FAKE_PROC`
+/// is set. The engine's anti-tamper reads `/proc/self/mounts` (confirmed by
+/// `CORDIAL_TRACE_PATHS`), and the real FreeBSD ZFS mount table -- `zroot/ROOT
+/// ... zfs`, `/dev/gpt/efiboot0 vfat` -- is a plain "this is not Android" tell
+/// that no `ro.product.*` / `Build.*` value can hide, because it is the mount
+/// table, not a device string. This deliberately shapes `/proc` to satisfy that
+/// read, which `remap()` above rules out under ADR-001 -- hence the env gate: it
+/// is off by default and the honest passthrough stays the default.
+static const char* synth_proc_content(const char* path) {
+    if (std::getenv("CORDIAL_FAKE_PROC") == nullptr) {
+        return nullptr;
+    }
+    if (std::strcmp(path, "/proc/self/mounts") == 0 ||
+        std::strcmp(path, "/proc/mounts") == 0) {
+        return
+            "rootfs / rootfs ro,seclabel 0 0\n"
+            "tmpfs /dev tmpfs rw,seclabel,nosuid,relatime,mode=755 0 0\n"
+            "devpts /dev/pts devpts rw,seclabel,relatime,mode=600 0 0\n"
+            "proc /proc proc rw,relatime,gid=3009,hidepid=2 0 0\n"
+            "sysfs /sys sysfs rw,seclabel,relatime 0 0\n"
+            "selinuxfs /sys/fs/selinux selinuxfs rw,relatime 0 0\n"
+            "/dev/block/dm-0 /system ext4 ro,seclabel,relatime 0 0\n"
+            "/dev/block/dm-1 /system_ext ext4 ro,seclabel,relatime 0 0\n"
+            "/dev/block/dm-2 /vendor ext4 ro,seclabel,relatime 0 0\n"
+            "/dev/block/dm-3 /product ext4 ro,seclabel,relatime 0 0\n"
+            "/dev/block/by-name/userdata /data f2fs "
+            "rw,seclabel,nosuid,nodev,noatime 0 0\n"
+            "/dev/block/by-name/metadata /metadata ext4 "
+            "rw,seclabel,nosuid,nodev,noatime 0 0\n"
+            "tmpfs /apex tmpfs ro,seclabel,relatime,mode=755 0 0\n"
+            "/dev/block/loop0 /apex/com.android.runtime ext4 "
+            "ro,seclabel,relatime 0 0\n"
+            "tmpfs /storage tmpfs rw,seclabel,nosuid,nodev,relatime,mode=755 0 0\n"
+            "/data/media /storage/emulated sdcardfs "
+            "rw,nosuid,nodev,noatime 0 0\n";
+    }
+    return nullptr;
+}
+#endif
+
+#if defined(__FreeBSD__)
+/// Android-ise `/proc/self/maps`, served only under `CORDIAL_FAKE_PROC`. The
+/// engine reads its own memory map, and the real one names `/compat/linux/usr/
+/// lib64/libc.so`, the raw-mmap'd `libroblox.so` from `~/.cache`, and the
+/// `cordial-run` binary -- every line a "not Android" tell. This reads the real
+/// map and rewrites only the path column, keeping every address, so anything that
+/// cross-checks an address against the map still matches. Same ADR-001 override
+/// as the mount fake; same env gate.
+static FILE* synth_maps(const char* real) {
+    FILE* src = ::fopen(real, "r");
+    if (!src) {
+        return nullptr;
+    }
+    std::string out;
+    out.reserve(1 << 16);
+    char line[1024];
+    while (std::fgets(line, sizeof line, src)) {
+        std::string s(line);
+        auto sub = [&](const char* from, const char* to) {
+            for (size_t p; (p = s.find(from)) != std::string::npos;) {
+                s.replace(p, std::strlen(from), to);
+            }
+        };
+        sub("/home/pascal/.cache/cordial-apk-new/lib/x86_64/libroblox.so",
+            "/data/app/~~kQ8fN2pLx==/com.roblox.client-Rz9mAoY7w==/lib/arm64/libroblox.so");
+        sub("/compat/linux/usr/lib64/", "/apex/com.android.runtime/lib64/bionic/");
+        sub("/compat/linux/usr/lib/", "/system/lib64/");
+        sub("/compat/linux/lib64/", "/system/lib64/");
+        sub("/compat/linux/lib/", "/system/lib64/");
+        sub("/compat/linux", "/system");
+        sub("/home/pascal/intoxicated/target/release/cordial-run", "/system/bin/app_process64");
+        sub("/home/pascal/.cache/cordial-apk-new/candidate-0.apk",
+            "/data/app/~~kQ8fN2pLx==/com.roblox.client-Rz9mAoY7w==/base.apk");
+        sub("/home/pascal/.cache/cordial-agent-play", "/data/user/0/com.roblox.client");
+        sub("/home/pascal", "/data/data/com.roblox.client");
+        out += s;
+    }
+    ::fclose(src);
+    char* buf = static_cast<char*>(std::malloc(out.size() + 1));
+    if (!buf) {
+        return nullptr;
+    }
+    std::memcpy(buf, out.data(), out.size());
+    buf[out.size()] = '\0';
+    // Leaked on purpose: fmemopen reads directly from this buffer, and maps is
+    // read a handful of times per session, so the leak is bounded and tiny.
+    return ::fmemopen(buf, out.size(), "r");
+}
+#endif
+
 FILE* s_fopen(const char* path, const char* mode) {
+#if defined(__FreeBSD__)
+    if (const char* synth = synth_proc_content(path)) {
+        trace("fopen", path, "synth-android");
+        return ::fmemopen(const_cast<char*>(synth), std::strlen(synth), "r");
+    }
+    if (std::getenv("CORDIAL_FAKE_PROC") != nullptr &&
+        std::strcmp(path, "/proc/self/maps") == 0) {
+        char _mb[PATH_MAX];
+        const char* mreal = remap(path, _mb, sizeof _mb);
+        if (FILE* f = synth_maps(mreal ? mreal : path)) {
+            trace("fopen", path, "synth-maps");
+            return f;
+        }
+    }
+#endif
     REMAP(path);
     FILE* f = ::fopen(real, mode);
     trace("fopen", real, f ? "ok" : "null");

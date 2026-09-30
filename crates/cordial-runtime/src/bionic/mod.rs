@@ -545,12 +545,26 @@ const PROPERTIES: &[(&str, &str)] = &[
     // refused Vulkan outright ("Android version is too old to activate Vulkan").
     ("ro.build.version.sdk", "33"),
     ("ro.build.version.release", "13"),
-    ("ro.product.model", "Cordial"),
-    ("ro.product.manufacturer", "Cordial"),
-    ("ro.product.brand", "cordial"),
-    ("ro.product.device", "linux"),
-    ("ro.product.name", "cordial"),
-    ("ro.hardware", "cordial"),
+    // Galaxy S21 (SM-G991B), kept identical to the Java `android.os.Build` fields
+    // in `android_classes.cpp` and `DeviceStaticParams`. The emulator check reads
+    // the device identity across all three surfaces; a mismatch between them (e.g.
+    // Build.MANUFACTURER=samsung while ro.product.manufacturer=Cordial) is itself a
+    // tell, so every surface must agree.
+    ("ro.product.model", "SM-G991B"),
+    ("ro.product.manufacturer", "samsung"),
+    ("ro.product.brand", "samsung"),
+    ("ro.product.device", "o1s"),
+    ("ro.product.name", "o1sxxx"),
+    ("ro.hardware", "exynos2100"),
+    ("ro.product.board", "exynos2100"),
+    ("ro.soc.manufacturer", "Samsung"),
+    ("ro.soc.model", "exynos2100"),
+    (
+        "ro.build.fingerprint",
+        "samsung/o1sxxx/o1s:13/TP1A.220624.014/G991BXXU5DVK1:user/release-keys",
+    ),
+    ("ro.build.tags", "release-keys"),
+    ("ro.build.type", "user"),
     // **`ro.soc.manufacturer` is deliberately not here, and this comment is the
     // answer to issue #12 rather than a note that nobody got round to it.**
     //

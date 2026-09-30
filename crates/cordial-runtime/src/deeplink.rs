@@ -774,6 +774,14 @@ static ARMED: std::sync::Mutex<Option<(linker::Library, JoinUrl)>> = std::sync::
 /// Set by the engine's own `APP_READY`, read by the looper thread.
 static APP_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Retry bookkeeping for `CORDIAL_DEEPLINK_RETRY`. The cold-start publish can
+/// land before sign-in completes, in which case the app shell ignores it and the
+/// join is lost. Because that failure produces no launch, re-publishing cannot
+/// double a join, so we retry with a backoff until it takes.
+static DEEPLINK_RETRIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static DEEPLINK_LAST_RETRY: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+
 /// The engine's thread calls this from inside its own notification callback, so
 /// it does nothing but raise a flag. Every JNI call this module makes is made
 /// from the looper thread, which is where [`tick`] runs.
@@ -797,7 +805,7 @@ pub fn tick() {
         return;
     }
     let taken = ARMED.lock().expect("no other thread panics holding this").take();
-    let Some((lib, _url)) = taken else { return };
+    let Some((lib, url)) = taken else { return };
 
     let launched = lib
         .symbol("Java_com_roblox_universalapp_messagebus_MessageBus_getLastRaw")
@@ -808,18 +816,66 @@ pub fn tick() {
     if std::env::var_os("CORDIAL_DEEPLINK_PROBE").is_some() {
         println!("[deeplink] (app ready) {GAME_LAUNCH} is: {launched:?}");
     }
-    match (launched, cold_start_flag(lib)) {
-        (Some(_), _) => println!(
+
+    if launched.is_some() {
+        println!(
             "[deeplink] the app shell asked to launch an experience; the link reached the engine"
-        ),
-        (None, Some(true)) => println!(
+        );
+        return;
+    }
+
+    // Nothing launched. The cold-start publish can land before sign-in completes,
+    // in which case the app shell ignores it and the link is lost — the flaky-join
+    // race. With `CORDIAL_DEEPLINK_RETRY`, re-publish with a ~1s backoff until the
+    // now-signed-in shell accepts it. Safe: no launch means there is no join to
+    // duplicate, which is the exact case the "never re-deliver" rule guards. The
+    // default (report once, give up) is unchanged.
+    if std::env::var_os("CORDIAL_DEEPLINK_RETRY").is_some() {
+        const MAX_RETRIES: u32 = 40;
+        let n = DEEPLINK_RETRIES.load(std::sync::atomic::Ordering::Relaxed);
+        if n < MAX_RETRIES {
+            let now = std::time::Instant::now();
+            let due = {
+                let mut last = DEEPLINK_LAST_RETRY
+                    .lock()
+                    .expect("no other thread panics holding this");
+                match *last {
+                    Some(t)
+                        if now.duration_since(t) < std::time::Duration::from_millis(1000) =>
+                    {
+                        false
+                    }
+                    _ => {
+                        *last = Some(now);
+                        true
+                    }
+                }
+            };
+            if due {
+                publish_url(lib, &url, "post-app-ready retry");
+                DEEPLINK_RETRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                println!(
+                    "[deeplink] re-published the link after app-ready (retry {}/{MAX_RETRIES}); \
+                     waiting for the signed-in app shell to accept it",
+                    n + 1
+                );
+            }
+            // Keep it armed for the next looper pass.
+            *ARMED.lock().expect("no other thread panics holding this") = Some((lib, url));
+            return;
+        }
+    }
+
+    if let Some(true) = cold_start_flag(lib) {
+        println!(
             "[deeplink] the engine registered a deep link, but has not asked to launch an \
              experience"
-        ),
-        (None, _) => println!(
+        );
+    } else {
+        println!(
             "[deeplink] the app shell is up and nothing asked to launch an experience — this \
              link did not reach an experience. Signing in is required before a join can proceed"
-        ),
+        );
     }
 }
 

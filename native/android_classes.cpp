@@ -459,11 +459,14 @@ public:
         // the session, so it is the single most load-bearing place to be honest
         // about what Cordial is. Claiming to be a particular phone would invite
         // device-specific workarounds that do not apply here.
-        p->osVersion       = str("15");
-        p->deviceName      = str("Cordial");
-        p->manufacturer    = str("Cordial");
-        p->deviceSku       = str("cordial");
-        p->socModel        = str("cordial");
+        // Galaxy S21 (SM-G991B), kept identical to android.os.Build.* and the ro.*
+        // properties. The emulator check cross-reads the device identity across all
+        // three surfaces; any disagreement between them is a tell, so they must match.
+        p->osVersion       = str("13");
+        p->deviceName      = str("SM-G991B");
+        p->manufacturer    = str("samsung");
+        p->deviceSku       = str("SM-G991B");
+        p->socModel        = str("exynos2100");
         p->appBuildVariant = str("release");
         // Left as the client's own version until Cordial reads it from the APK
         // manifest; a wrong value here shows up in telemetry and support threads.
@@ -1310,6 +1313,84 @@ public:
 
 jint BuildVersion::SDK_INT = 33;
 
+/// `android.os.Build` — the device-identity static fields.
+///
+/// From the JNI trace of a real join, the engine reads these off the Java
+/// `Build` class and Cordial answered **none** of them:
+///
+///     Constructed Unresolved symbol, Class=`android/os/Build`,
+///       StaticField=`MANUFACTURER|MODEL|BOARD|BOOTLOADER|BRAND|DEVICE|
+///                    FINGERPRINT|HARDWARE`, Signature=`Ljava/lang/String;`
+///
+/// An unanswered static field returns null/empty, and a device whose
+/// `Build.FINGERPRINT`, `MODEL` and `MANUFACTURER` are empty is the single
+/// loudest "this is an emulator" signal there is. This is a **separate path**
+/// from `__system_property_get` (the `ro.*` values in `bionic`) and from
+/// `DeviceStaticParams`: the engine's emulator/integrity check reads the Java
+/// `Build.*` fields, which nothing here had populated, because nothing told us
+/// it read them until the JNI trace did. Values are a real Samsung Galaxy S21
+/// (SM-G991B, Android 13), coherent with `Build$VERSION.SDK_INT = 33`.
+class Build : public jnivm::Object {
+public:
+    static std::shared_ptr<String> MANUFACTURER, MODEL, BOARD, BOOTLOADER, BRAND,
+        DEVICE, FINGERPRINT, HARDWARE, PRODUCT, TAGS, TYPE, ID, DISPLAY, HOST, USER;
+
+    static void Register(ENV* env) {
+        MANUFACTURER = str("samsung");
+        MODEL        = str("SM-G991B");
+        BOARD        = str("exynos2100");
+        BOOTLOADER   = str("G991BXXU5DVK1");
+        BRAND        = str("samsung");
+        DEVICE       = str("o1s");
+        FINGERPRINT  = str("samsung/o1sxxx/o1s:13/TP1A.220624.014/"
+                           "G991BXXU5DVK1:user/release-keys");
+        HARDWARE     = str("exynos2100");
+        PRODUCT      = str("o1sxxx");
+        TAGS         = str("release-keys");
+        TYPE         = str("user");
+        ID           = str("TP1A.220624.014");
+        DISPLAY      = str("TP1A.220624.014.G991BXXU5DVK1");
+        HOST         = str("SWDG6707");
+        USER         = str("dpi");
+
+        env->GetClass<Build>("android/os/Build");
+        auto c = env->GetClass("android/os/Build");
+        c->Hook(env, "MANUFACTURER", &Build::MANUFACTURER);
+        c->Hook(env, "MODEL", &Build::MODEL);
+        c->Hook(env, "BOARD", &Build::BOARD);
+        c->Hook(env, "BOOTLOADER", &Build::BOOTLOADER);
+        c->Hook(env, "BRAND", &Build::BRAND);
+        c->Hook(env, "DEVICE", &Build::DEVICE);
+        c->Hook(env, "FINGERPRINT", &Build::FINGERPRINT);
+        c->Hook(env, "HARDWARE", &Build::HARDWARE);
+        c->Hook(env, "PRODUCT", &Build::PRODUCT);
+        c->Hook(env, "TAGS", &Build::TAGS);
+        c->Hook(env, "TYPE", &Build::TYPE);
+        c->Hook(env, "ID", &Build::ID);
+        c->Hook(env, "DISPLAY", &Build::DISPLAY);
+        c->Hook(env, "HOST", &Build::HOST);
+        c->Hook(env, "USER", &Build::USER);
+    }
+};
+std::shared_ptr<String> Build::MANUFACTURER, Build::MODEL, Build::BOARD,
+    Build::BOOTLOADER, Build::BRAND, Build::DEVICE, Build::FINGERPRINT,
+    Build::HARDWARE, Build::PRODUCT, Build::TAGS, Build::TYPE, Build::ID,
+    Build::DISPLAY, Build::HOST, Build::USER;
+
+/// `android.os.Debug.isDebuggerConnected()` — read by the anti-tamper path and
+/// left unanswered (default false-ish, but an unresolved static method is a gap
+/// the check can read either way). A genuine device answers `false`.
+class Debug : public jnivm::Object {
+public:
+    static jboolean isDebuggerConnected(ENV*, Class*) { return JNI_FALSE; }
+
+    static void Register(ENV* env) {
+        env->GetClass<Debug>("android/os/Debug");
+        auto c = env->GetClass("android/os/Debug");
+        c->Hook(env, "isDebuggerConnected", &Debug::isDebuggerConnected);
+    }
+};
+
 } // namespace cordial
 
 // Defined in accessibility.cpp — kept in its own file rather than added to
@@ -1871,6 +1952,8 @@ extern "C" void cordial_register_android_classes(void* env_ptr) {
     cordial::VideoCodecCapability::Register(env);
     cordial::MediaCodecInfoUtils::Register(env);
     cordial::BuildVersion::Register(env);
+    cordial::Build::Register(env);
+    cordial::Debug::Register(env);
     cordial::register_accessibility_classes(env);
     cordial::register_cookie_classes(env);
     cordial::register_audio_classes(env);
