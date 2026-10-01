@@ -1988,3 +1988,43 @@ not a certainty.
 onFlagsFailed is decoupled from it); the device/initialize endpoint is POST+auth
 (cordial's `browser_tracker.rs` uses GET→404), though the tracker is ruled out
 (mocktail fails it too and survives).
+
+### 2026-10-01 (cont.): the settings-ordering fix is circular; the Main-thread race is deterministic
+
+Followed the breakthrough (mocktail flow builds RbxStorage) trying to stabilise
+it. Mapped the full space on 2.738:
+
+| config | boots | RbxStorage | 304 |
+|---|---|---|---|
+| EARLY settings + gate (`CORDIAL_EARLY_SETTINGS=1 CORDIAL_SET_FLAGS_LOADED=1`) + apis-base | stable | **no** | at 60s |
+| LATE settings + gate (`CORDIAL_LATE_SETTINGS=1 CORDIAL_SET_FLAGS_LOADED=1`) | **builds it** | **yes** | crashes before join |
+| settings-then-globals (deliver after initializeNativeCode, before globals, wait for gate) | crash | n/a | TaskScheduler assert fires *during* initializeNativeCode, before the post-init block runs |
+
+**The problem is circular.** The engine's app/Main thread and TaskScheduler
+spawn *inside* `initializeNativeCode`; the TaskScheduler asserts "flags not
+loaded" there. Delivering settings EARLY satisfies that (stable) but the natural
+`flagLoaded` event never fires, so RbxStorage is never built. Not pre-delivering
+(LATE) lets the engine's own fetch fire `flagLoaded` → RbxStorage, but the
+TaskScheduler asserts unless the gate byte is pre-patched — and pre-patching lets
+the Main thread run on not-yet-constructed objects (§50), which cored reliably
+with rip in `.eh_frame_hdr` (a vtable call through an uninitialised object). A
+post-`initializeNativeCode` delivery is structurally too late.
+
+**The crash is deterministic, not a winnable race.** 8/8 LATE+gate launches died
+at ~2s; only lldb's slowdown shifted it (got past the Vulkan swapchain, then lost
+the process). So it can't be caught by retry — it needs the proper §50 fix:
+serialise the bring-up so the Main thread does not touch uninitialised state.
+The `CORDIAL_HIJACK_MARSHALLER` path (run GameGlobalInit inline on the engine's
+marshaller thread) is the intended mechanism but carries a 2.721 FM-handle offset
+(`0x7081868`) stale for 2.738 — the same RE the gate byte needed, plus the
+AppBridge singleton offset, plus confirming it covers the post-Home object. That
+is the concrete remaining work, and it is a multi-session effort the repo's own
+§16-50 did not finish.
+
+**Net for the 304 this pass:** moved it from "unidentified" to "reproduce the
+working client's content-store build (done) → stabilise one deterministic
+bring-up race (the remaining work) → test whether a built store stops the
+corrupted-files 304 (the open §14 question)." Still gated, ultimately, on either
+that internal fix or — for the Play-Integrity-protected games (318/319) — a real
+attested device, which mocktail's own maintainer confirms no Linux/FreeBSD client
+can provide.
