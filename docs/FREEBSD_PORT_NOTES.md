@@ -2753,3 +2753,26 @@ which requires the crypto-path RE above. That is the single remaining avenue.
 - 4 real fixes shipped (early base-url, syscall /proc synth, /sys+net/unix synth, uname).
 - Packet capture (survey encrypted) + radare2 RE of all readable anti-cheat paths done.
 - Sole remaining avenue: multi-session RakNet-survey crypto RE, precisely located here.
+
+### 2026-10-01 (cont.): ACCOUNT CONFOUND ELIMINATED — mocktail on the SAME throwaway account survives; cordial dies. 304 is 100% cordial's runtime.
+
+The one confound never directly controlled: cordial used the throwaway FreeBsdLove
+account; mocktail used a real account. Resolved it by swapping mocktail's
+auth/roblox.cookie to the FreeBsdLove throwaway and running mocktail on it.
+- mocktail logged in as FreeBsdLove (confirmed in UI + `Players.FreeBsdLove` in log),
+  joined The Strongest Battlegrounds, play session 85.2s.
+- **At 214s elapsed (129s past join, well past the ~60s window): ZERO disconnects,
+  zero 304, still replicating, process alive.**
+
+So on the IDENTICAL account (FreeBsdLove) and the same game, **mocktail survives and
+cordial dies at 60s.** The account is definitively NOT the cause. Combined with the
+earlier same-binary test (cordial dies on mocktail's exact 2.736 libroblox),
+**everything external to cordial's runtime is now eliminated**: not version, not
+account, not device/GPU/identity, not the game, not Play-Integrity attestation. The
+60s/304 is 100% a property of Cordial's host runtime (AOSP bionic loader + jnivm +
+ABI shims) vs mocktail's (Linuxulator's Linux ABI), on the same binary and account.
+
+This closes the "is it even internal/client-side?" question airtight (it is), and
+confirms the remaining work is exactly the located crypto-survey RE: find the field
+Cordial's runtime fills differently from a Linux ABI and shim it. (mocktail's real
+cookie restored after the test.)
