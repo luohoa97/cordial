@@ -2776,3 +2776,30 @@ This closes the "is it even internal/client-side?" question airtight (it is), an
 confirms the remaining work is exactly the located crypto-survey RE: find the field
 Cordial's runtime fills differently from a Linux ABI and shim it. (mocktail's real
 cookie restored after the test.)
+
+### 2026-10-01 (cont.): leading mechanistic hypothesis for the proven client-runtime cause — loader/GOT anti-hook
+
+With the 304 now PROVEN to be cordial's host runtime (same binary + same account:
+mocktail survives, cordial dies), the mechanism must be something cordial's runtime
+does differently from Linuxulator's for the identical binary. The sharpest candidate,
+which fits a *loader* difference exactly:
+
+**Import/GOT redirection.** Cordial's linker resolves libroblox.so's imported libc
+symbols to Cordial's OWN shim functions (in the cordial-run address space), because
+that is how it runs an Android binary on FreeBSD. mocktail under Linuxulator resolves
+those imports into a real bionic/libc.so mapping. An anti-tamper/anti-hook check that
+reads its own import table (GOT/PLT) and verifies each entry points into a legitimate
+libc mapping — a standard technique — would see Cordial's imports pointing at
+cordial-run (which the synth maps label app_process64), NOT a libc.so, and flag it;
+mocktail's imports point at a real libc and pass. This is consistent with: delay to
+60s (periodic self-check), "modified client" semantics, server-side reporting, no
+client-side error, and specifically a *loader* difference (the one thing that is
+cordial-runtime-specific and identical binary otherwise). It is also hard to fix
+without a libc.so-shaped mapping covering the shim addresses — the FreeBSD-vs-Linux
+loader gap that Linuxulator closes for free.
+
+**Status:** this is a hypothesis, not yet confirmed — confirming it needs the
+crypto-survey RE (read the survey to see a hook/integrity field) OR finding the
+import-integrity check in the obfuscated .text. It is the focused next RE target and
+the best current explanation for the proven client-runtime cause. All config/behaviour/
+account/version/device paths remain exhausted; 4 fixes shipped; the kick is unfixed.
