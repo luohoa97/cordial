@@ -1547,10 +1547,21 @@ public:
         p->appBuildVariant = S("release");
         p->appVersion = S("");
         p->country = S("US");
-        p->deviceName = S("Cordial");
-        p->deviceSku = S("cordial");
-        p->manufacturer = S("Cordial");
-        p->socModel = S("cordial");
+        // EXPERIMENT (CORDIAL_DEVICE_STRINGS): the surviving client (mocktail)
+        // reports deviceName "Windows 11 PC"; Cordial reported "Cordial". The
+        // pc-windows-11 profile never changed these (they were hardcoded). Testing
+        // whether the server allowlists/validates the device strings by matching
+        // mocktail's exactly. Default keeps the honest Cordial names.
+        {
+            const char* dn = getenv("CORDIAL_DEVICE_NAME");
+            const char* mf = getenv("CORDIAL_MANUFACTURER");
+            const char* sm = getenv("CORDIAL_SOC_MODEL");
+            const char* sk = getenv("CORDIAL_DEVICE_SKU");
+            p->deviceName = S(dn && *dn ? dn : "Cordial");
+            p->deviceSku = S(sk && *sk ? sk : "cordial");
+            p->manufacturer = S(mf && *mf ? mf : "Cordial");
+            p->socModel = S(sm && *sm ? sm : "cordial");
+        }
         // The API *level*, not the release name. The engine echoes this field
         // straight into `[FLog::Graphics] Android API <n>` and gates on it: at
         // 15 it refused Vulkan with "Android version is too old". 33 is what the
