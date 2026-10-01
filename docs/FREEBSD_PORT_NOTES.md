@@ -2339,3 +2339,30 @@ SENDS the game server in the 60s window (send-side instrumentation / the antiche
 report the client transmits, which is what a server-side kick actually reads).
 Given /proc is now ruled out, (C) — a transmitted anticheat/integrity report the
 server validates — rises to the most likely remaining cause.
+
+### 2026-10-01 (cont.): verbose crypto/integrity/security capture — NO client-side error; pure server decision
+
+Ran a join with DFLogSessionCrypto=7, DFLogIntegrityCheckedProcessor=7,
+FLogNetwork=7, FLogNetworkStatsReport=7, DFLogSecurity=7, FLogPhysicsSender=6
+(flags confirmed applied: NetworkStatsReport fired 5290x vs 0 at default). In the
+full session to the 304 (session 52.0s, kick 119.0s):
+**zero SessionCrypto/RbxOpen/encrypt failures, zero IntegrityChecked "untrusted",
+zero signature/security errors.** Replication is fully alive (5290 stats reports,
+PhysicsSender running). So Cordial has NO client-side security/crypto/integrity
+error — it does everything correctly from its own perspective, and the server kicks
+it anyway. The 304 is a pure server-side decision with nothing wrong client-side
+that the client itself can see.
+
+Combined with /proc being ruled out, this narrows the cause to data the server
+VALIDATES that Cordial transmits "correctly" but that encodes a server-detectable
+difference — most plausibly either (A) asset checksums from the broken content
+store (the literal "corrupted files" match), or a transmitted device/hardware
+descriptor. Note device *profile* (pc vs android) was already ruled out, so if it
+is a descriptor it is a finer field than the form-factor.
+
+Cumulative ruled-out: version, device profile, account, attestation, asset-403s,
+session report, early base-url, mocktail ordering, /proc env (fopen+syscall),
+client-side crypto/integrity/security (verbose). Remaining deep paths: (A) restore
+the RbxStorage build (regressed 0/3) and test the store<->304 link directly;
+(C) diff the device/hardware descriptor and replicated data Cordial transmits vs
+mocktail on the same binary. Both require multi-step work (bisect / send-side RE).
