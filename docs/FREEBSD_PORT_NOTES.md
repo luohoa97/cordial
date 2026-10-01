@@ -2662,3 +2662,33 @@ the AndroidAnticheat report builder; (3) identify the one field/probe that encod
 native-FreeBSD where mocktail's (Linuxulator) encodes Linux; (4) shim it in
 Cordial's ABI layer and re-test the 60s join. Everything up to that point — the
 full observable surface — has been done and recorded here.
+
+### 2026-10-01 (cont.): RE with radare2 — located the onRemoteSysStats / DisconnectOnRemoteSysStats anti-cheat mechanism
+
+Installed radare2 (pkg) and did real RE on the stripped/obfuscated binary. Located
+`AntiCheat-AfterJoin` (str 0x4f8aae) referenced by fcn.050df8be (6227 bytes), which
+builds an anti-cheat telemetry/stats report. Its string/field references:
+`AntiCheat-AfterJoin`, `SecurityViolation`, `GameId`, `UserIdLastTwoDig`,
+`OtherPlayerIsSelf`, `PlayersOnChildAddedDuplicateKick`, and the US14116 feature:
+`[FLog::US14116] onRemoteSysStats: %s`, `[FLog::US14116] Sending display stats:
+%lld | %s | %s`, plus a flag **`DisconnectOnRemoteSysStats`** (str 0x39e2c1, used
+by fcn @ 0x430f6a3) and a reference resolution string "1920x1200".
+
+**The mechanism**: the server sends `onRemoteSysStats`; the client replies with
+display stats (a %lld and two std::strings, r13/r12 = [obj+0x10] std::string data at
+0x50dfb64-0x50dfb8f); `DisconnectOnRemoteSysStats` gates a disconnect on the result.
+This is a concrete, named server-driven system-stats probe that disconnects on
+mismatch — the best-fitting specific candidate found for the 60s/304.
+
+**Tested live**: FLogUS14116=7 produced no log lines and the 304 fired anyway, so
+either the US14116 LOG is build-gated or the feature path differs — but the FEATURE
+(onRemoteSysStats + DisconnectOnRemoteSysStats) can still run without that FLog
+channel. Not yet ruled in or out as the active 304.
+
+**Concrete next RE step** (tractable, scoped): statically trace the two display-stat
+std::strings (r13/r12) back to their source in fcn.050df8be to see what display/
+system values cordial puts in them, and check whether one encodes FreeBSD where a
+real/Linux client encodes Android (the "1920x1200" reference and the display-stat
+%s values are the place to look). If a field is FreeBSD-specific, shim its source.
+This is the first genuine foothold INTO the anti-cheat report (vs. the encrypted
+handshake), because this telemetry path is in cleartext engine code, not the crypto.
