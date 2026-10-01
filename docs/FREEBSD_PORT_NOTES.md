@@ -2507,3 +2507,32 @@ checksum the server validates, and is blocked by the unsolved bring-up-race — 
 store builds only in a crashing flow). Both are deep RE/engineering, not single
 tests. Shipped 3 gated, non-regressive fixes that close real evasion gaps (early
 base-url, syscall-layer /proc synth, /sys+net/unix synth).
+
+### 2026-10-01 (cont.): no checksum exchange observed — content-store theory ruled out observationally; final characterisation
+
+Enabled DFLogLargeReplicatorTrace=7, DFLogNetAssetChecksum=7,
+DFLogRbxmFileManager=7, DFLogAssetProvider=7, FLogDataModelPatchConfigurer=7,
+DFLogInstanceChecksum=7 and joined to the 304 (session 52.0s, kick 117.2s).
+**Zero checksum compares, zero NetAsset activity, zero instance-integrity failures
+before the kick** — the only "corrupted files" lines are the disconnect itself. So
+there is no observable NetAsset/content checksum exchange the client could be
+failing; the content-store theory is not supported by observation (and the store
+being partial does not produce any logged checksum mismatch).
+
+**Final characterisation of the 60s/304.** Across the whole session, with every
+relevant channel maxed, the 304 arrives with NO preceding client-side anti-cheat,
+checksum, crypto, integrity, or security activity of any kind. It is a silent
+server-side decision at the ~60s grace, based on data transmitted at JOIN, that the
+client produces without error but the server distinguishes from a legitimate
+client. Everything a FreeBSD-native client can present locally has been matched to
+the surviving client (mocktail, same binary) and the kick is unchanged.
+
+**What is left, concretely, is below the observable surface:** the exact join-time
+byte(s) that differ between a native-FreeBSD client and a Linux(ulator) one. Pinning
+it requires either capturing and diffing the (RakNet/RNA, partly encrypted) join
+handshake cordial vs mocktail, or deobfuscating the Android anti-cheat's native
+report builder — both packet/RE efforts beyond config/synth/flag testing. The
+prerequisite remains Linux-vs-FreeBSD parity at the transmitted-data level, which is
+what Linuxulator supplies mocktail and the goal forbids faking. Internal and in
+principle fixable by that RE; not reachable by the testable surface, which is now
+exhausted.
