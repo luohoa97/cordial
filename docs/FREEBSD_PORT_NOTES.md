@@ -1939,3 +1939,52 @@ a working jnivm-based client (mocktail) passes and cordial does not, and the
 client-side difference is unidentified even with mocktail's source. The one
 repo-endorsed untested lead is §17: cordial segfaults on the *normal* late-settings
 ordering mocktail uses (recorded on 2.730, never re-tested). Testing that next.
+
+### 2026-10-01 (cont.): BREAKTHROUGH — mocktail's flow built RbxStorage on cordial for the first time; blocked by stale 2.738 bring-up offsets
+
+The 304 landscape, pinned by research including mocktail's own maintainer
+(`komaruworld/mocktail`, open source, FreeBSD-capable):
+- **Play Integrity (errors 318 ARA / 319 network-integrity) is unbypassable.**
+  The maintainer, on issues #86/#36: *"I can't bypass Play Integrity"*, *"Sober
+  has the same problem"*, *"can't be done on Linux since it doesn't even work on
+  Android devices."* It is **per-game and per-build, toggled by Roblox**, kicks
+  within seconds, and no non-genuine-device client (mocktail, Sober, cordial)
+  passes it. Missing prerequisite there is a real hardware-attested device.
+- **Our 304 is NOT that.** 304 = AndroidAnticheatKick, message "missing or
+  corrupted files", fires at a consistent **60s** (not seconds), and this repo's
+  §13 measured mocktail *passing* it where cordial does not. So 304 is a general
+  check a jnivm client can pass.
+
+**The breakthrough.** The 304 message is literally "corrupted files", and §13's
+one hard mocktail/cordial difference is that mocktail reaches `RbxStorage::init
+[INIT] user: flagLoaded` (builds its content store) and cordial never does.
+Reproduced mocktail's actual flow on 2.738 — **late client settings + patch the
+flags-loaded gate byte** (0x7b8b9c9, the corrected 2.738 offset) — and cordial
+reached **`RbxStorage::init [INIT] user: flagLoaded` for the first time ever.**
+(`CORDIAL_LATE_SETTINGS=1 CORDIAL_SET_FLAGS_LOADED=1`, unsafe-experiments build.)
+
+**The blocker.** It segfaults ~ms after, in the engine's Main thread. Core dump
+(base 0x358e13b40000): rip lands in `.eh_frame_hdr` — a **vtable/function-pointer
+call through an uninitialised object**, which `load.rs`'s own comment already
+names: *"the AppBridge singleton at 0x70b3c20, whose absence null-derefs
+nativeAppBridgeV2StartAppWithParams."* This is §50's Main-thread-vs-continuation
+race: `nativeGameGlobalInit` fires at a fixed point instead of after the settings
+task (real Android brings up the TaskScheduler only after `GetClientSettingsTask
+onPostExecute`). The marshaller-hijack machinery that would sequence this
+(`CORDIAL_HIJACK_MARSHALLER`, FM handle `0x7081868`, AppBridge `0x70b3c20`) still
+carries **2.721 offsets**, stale for 2.738 exactly like the gate byte was.
+
+**Concrete next step** (the realistically-remaining path): RE the 2.738 offsets
+for the FM-thread handle and the AppBridge singleton (as was done for the gate
+byte), so `nativeGameGlobalInit` can run inline / be sequenced after settings
+without leaving the AppBridge singleton null. That stabilises the mocktail flow,
+which is the first client state that builds the content store — and the only way
+to test whether a built store stops the "corrupted files" 304 on 2.738. §14
+weakened the storage↔304 link on 2.734 (anti-cheat then off), so this is a test,
+not a certainty.
+
+**Also banked this pass:** `nativeSetBaseUrl`'s 2nd arg is the API base
+(`apis.roblox.com`), which drives `onFlagsFailed` 2→0 (but 304 persists, so
+onFlagsFailed is decoupled from it); the device/initialize endpoint is POST+auth
+(cordial's `browser_tracker.rs` uses GET→404), though the tracker is ruled out
+(mocktail fails it too and survives).
