@@ -2833,3 +2833,33 @@ change (multi-session), and is the FreeBSD-vs-Linux loader gap Linuxulator close
 Alternatively the mechanism is not the GOT at all and remains in the encrypted survey.
 
 Fixes shipped: 5 (early base-url, syscall /proc synth, /sys+net synth, uname, rx-text).
+
+### 2026-10-01 (cont.): loader-GOT hypothesis thoroughly exhausted — soname is ALREADY libc.so, yet kicks
+
+Final checks on the loader-GOT path:
+- Cordial registers its libc shims under soname **"libc.so"** already (boot log:
+  "libc.so cordial=155 host=238 stub=19"). Of libroblox's libc imports, 238 resolve
+  to the REAL FreeBSD libc.so.7 and only 155 to Cordial shims (the ABI overrides that
+  MUST differ to run on FreeBSD). symtab.rs:249 maps Class::Generic -> "libc.so".
+- So a SYMBOL-NAME-based anti-hook check ("is import X a symbol of the libc.so
+  soinfo?") would already PASS — yet the 304 fires. That strongly argues the
+  mechanism is NOT a simple GOT/symbol anti-hook check.
+- The only variant left (an ADDRESS-RANGE check: is GOT[X]'s address inside libc.so's
+  mapped range?) would require the 155 shims to live inside a mapping the link_map
+  calls libc.so — but they are functions compiled into cordial-run (the main exe), so
+  that needs them extracted into a real libc.so-named shared object, which conflicts
+  with them being in the main executable and is a deep architectural linker change.
+- Maps-relabel (GOT->cordial-run shown as libc.so in /proc/self/maps) already failed,
+  and rwx->r-x already failed. So every tractable loader-GOT fix is tested and fails.
+
+**Loader-GOT verdict:** premise confirmed (155 ABI-override imports point into
+cordial-run), but it is very likely NOT the 304 mechanism (soname already libc.so /
+symbol check would pass), and the one untested variant (shims in a real libc.so
+mapping) is architectural and conflicts with the shims being necessary FreeBSD ABI
+overrides in the main executable. Path exhausted for practical purposes.
+
+**Remaining avenue:** the encrypted-survey RE (hook the pre-encryption survey/crypto
+builder in the obfuscated engine to read the plaintext and find the differing field).
+Genuinely multi-session. Everything else — behaviour, config, account, version,
+device, environment, readable anti-cheat code, and now the loader-GOT path — is
+exhausted. 5 real fixes shipped (incl. rx-text W^X hardening this turn).
