@@ -330,12 +330,12 @@ static const char* synth_proc_content(const char* path) {
 /// map and rewrites only the path column, keeping every address, so anything that
 /// cross-checks an address against the map still matches. Same ADR-001 override
 /// as the mount fake; same env gate.
-static FILE* synth_maps(const char* real) {
+static std::string build_synth_maps(const char* real) {
+    std::string out;
     FILE* src = ::fopen(real, "r");
     if (!src) {
-        return nullptr;
+        return out;
     }
-    std::string out;
     out.reserve(1 << 16);
     char line[1024];
     while (std::fgets(line, sizeof line, src)) {
@@ -360,6 +360,14 @@ static FILE* synth_maps(const char* real) {
         out += s;
     }
     ::fclose(src);
+    return out;
+}
+
+static FILE* synth_maps(const char* real) {
+    std::string out = build_synth_maps(real);
+    if (out.empty()) {
+        return nullptr;
+    }
     char* buf = static_cast<char*>(std::malloc(out.size() + 1));
     if (!buf) {
         return nullptr;
@@ -369,6 +377,33 @@ static FILE* synth_maps(const char* real) {
     // Leaked on purpose: fmemopen reads directly from this buffer, and maps is
     // read a handful of times per session, so the leak is bounded and tiny.
     return ::fmemopen(buf, out.size(), "r");
+}
+
+/// A seekable, readable fd holding `data` -- for serving the synthetic `/proc`
+/// content through the raw `open()` path, not just `fopen()`. The engine's
+/// anti-tamper reads `/proc/self/{maps,mounts,cmdline}` and `s_fopen` already
+/// Android-ises those, but a reader that calls `open()`+`read()` bypasses the
+/// stdio layer entirely and used to get the real FreeBSD procfs -- every "not
+/// Android" tell intact. An anonymous temp file (created, then unlinked, so it
+/// never appears in the tree) gives a real fd the reader can `read()`/`lseek()`.
+static int fd_from_bytes(const char* data, size_t len) {
+    char tmpl[] = "/tmp/cordial_synthproc_XXXXXX";
+    int fd = ::mkstemp(tmpl);
+    if (fd < 0) {
+        return -1;
+    }
+    ::unlink(tmpl);
+    size_t off = 0;
+    while (off < len) {
+        ssize_t w = ::write(fd, data + off, len - off);
+        if (w <= 0) {
+            ::close(fd);
+            return -1;
+        }
+        off += static_cast<size_t>(w);
+    }
+    ::lseek(fd, 0, SEEK_SET);
+    return fd;
 }
 #endif
 
@@ -424,6 +459,33 @@ int s_open(const char* path, int flags, ...) {
         return -1;
     }
     flags = host_flags;
+    // Serve the same synthetic /proc content `s_fopen` does, but through the raw
+    // `open()` path: an anti-tamper that reads /proc/self/{maps,mounts,cmdline}
+    // with open()+read() instead of fopen() otherwise gets the real FreeBSD
+    // procfs here (full of /compat/linux, ~/.cache, cordial-run tells). Only the
+    // read path is synthesised; a writing/creating open falls through.
+    if ((flags & (O_WRONLY | O_RDWR | O_CREAT)) == 0) {
+        if (const char* synth = synth_proc_content(path)) {
+            int sfd = fd_from_bytes(synth, std::strlen(synth));
+            if (sfd >= 0) {
+                trace_i("open", path, sfd);
+                return sfd;
+            }
+        }
+        if (std::getenv("CORDIAL_FAKE_PROC") != nullptr &&
+            std::strcmp(path, "/proc/self/maps") == 0) {
+            char _mb[PATH_MAX];
+            const char* mreal = remap(path, _mb, sizeof _mb);
+            std::string m = build_synth_maps(mreal ? mreal : path);
+            if (!m.empty()) {
+                int sfd = fd_from_bytes(m.data(), m.size());
+                if (sfd >= 0) {
+                    trace_i("open", path, sfd);
+                    return sfd;
+                }
+            }
+        }
+    }
 #endif
     REMAP(path);
     int r = ::open(real, flags, mode);

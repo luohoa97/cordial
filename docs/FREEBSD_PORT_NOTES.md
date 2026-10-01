@@ -2315,3 +2315,27 @@ early base-url, full mocktail ordering, CORDIAL_FAKE_PROC. Still-open distinct
 sub-paths: (A) bisect/restore the store build (regressed 0/3) then test 304;
 (B2) syscall-level /proc intercept; (C) what the client SENDS the game server in
 the 60s window (needs decrypted-traffic or send-side instrumentation).
+
+### 2026-10-01 (cont.): syscall-level /proc synth (B2) implemented — closes the gap, does NOT fix the 304
+
+Implemented the (B2) fix: `s_open` now serves the same Android `/proc` synthesis
+`s_fopen` does (via an anonymous unlinked temp-file fd — `fd_from_bytes`), covering
+`/proc/self/{maps,mounts,cmdline}` read through raw `open()`+`read()`, which
+previously bypassed the fopen hook and got the real FreeBSD procfs. Refactored
+`synth_maps` to share `build_synth_maps`. Builds clean.
+
+Tested `CORDIAL_FAKE_PROC=1` + join (Blade Ball): **304 at 118.94s, session 55.8s
+= ~63s. Unchanged.** So with Cordial's `/proc/self/{maps,mounts,cmdline}` now
+Android-shaped at BOTH the stdio and syscall layers, the kick still fires. The
+"modified client" 304 is therefore **not gated on the client's /proc environment**.
+/proc-based tamper detection is ruled out as the 304 cause (kept the fix anyway —
+it closes a real evasion gap).
+
+Ruled out this session (cumulative): version, device profile, account, attestation,
+asset-403s, session report, early base-url, mocktail ordering, /proc environment
+(fopen + syscall). Remaining distinct sub-paths: (A) the RbxStorage build
+regression (0/3 vs §46's 12/12) then the store<->304 test; (C) what the client
+SENDS the game server in the 60s window (send-side instrumentation / the anticheat
+report the client transmits, which is what a server-side kick actually reads).
+Given /proc is now ruled out, (C) — a transmitted anticheat/integrity report the
+server validates — rises to the most likely remaining cause.
