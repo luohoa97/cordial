@@ -2606,3 +2606,31 @@ the weight of evidence after 19+ matched hypotheses is that the surviving client
 advantage is its Linux kernel ABI, which native FreeBSD does not provide and the
 goal forbids faking. 4 real fixes shipped along the way (base-url, /proc syscall
 synth, /sys+net synth, uname).
+
+### 2026-10-01 (cont.): RE path started — packet capture confirms the device survey is ENCRYPTED; next step is engine-internal crypto instrumentation
+
+Pursued the reverse-engineering path concretely rather than deferring it. Captured
+cordial's full join traffic to the game-server range (tcpdump -i re0 'udp and net
+128.116.0.0/16', 24135 packets, device survey sent in the first ~20s of session).
+Findings:
+- Early client->server packets are STUN (port 3478, magic 0x2112a442) for NAT
+  traversal of the RNA transport — not game data.
+- Game data rides 1437-byte MTU packets that are ENCRYPTED: grepping the whole
+  capture for any cleartext client identifier (Cordial, Windows 11 PC, FreeBSD,
+  Linux, manufacturer, deviceName, browsertrackerid, android, x86_64/amd64) yields
+  nothing but a single `RBXcr` header. The device/anti-cheat survey the server
+  validates is inside the encrypted stream.
+So external packet capture cannot read the differing field — confirming the earlier
+inference. The differing byte is in the encrypted RakNet/RNA replication, keyed by a
+session key derived inside the engine.
+
+**Therefore the only way to see what Cordial transmits differently is to instrument
+the engine before it encrypts** — hook the survey-builder or the crypto input inside
+libroblox.so and log the plaintext. That requires locating those functions in the
+obfuscated 118 MB binary (string-xref + disassembly of the SessionCrypto /
+RbxOpenRequest2 path and the AndroidAnticheat report builder) and hooking them via
+the linker. That is a genuine multi-session binary-RE effort, now scoped precisely:
+the target is the pre-encryption survey/anti-cheat-report builder, and the win
+condition is seeing one field that encodes native-FreeBSD where mocktail's encodes
+Linux. The testable/observable surface outside that RE is exhausted (20+ hypotheses,
+client state fully matched to the surviving client, kick unchanged).
