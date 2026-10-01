@@ -2565,3 +2565,44 @@ Linux parity in that transmitted handshake data — exactly what Linuxulator giv
 mocktail and what this goal forbids obtaining via a compat layer. The problem stays
 internal and in-principle fixable, but no realistically-*testable* path remains; the
 next move is reverse engineering, which is a distinct, funded effort.
+
+### 2026-10-01 (cont.): uname shimmed, device report fully matched — the residual difference is the HOST KERNEL, not Cordial's code
+
+Added a bionic-shaped Linux/x86_64 `uname()` shim (libroblox imported it; with
+--host-libc it was binding FreeBSD's, leaking sysname="FreeBSD" machine="amd64"
+through a wrong-sized struct). Tested: still 304 at ~67s. Also confirmed the GPU/
+Vulkan report is byte-identical to surviving mocktail (NVIDIA RTX 4070 Ti, driver
+580.568.0, same device/host memory) and the Android API (osVersion=33) matches.
+
+**So Cordial's transmitted/presented client state is now fully matched to the
+surviving client**: device descriptor (both fake), GPU, memory, uname, osVersion,
+/proc + /sys environment (6 synths, both layers), syscall coverage (zero
+unhandled), crypto/integrity/security (clean). The kick is unchanged on every one.
+
+**The reframe this forces.** What now differs between Cordial (dies) and mocktail
+(survives) on the identical binary is no longer anything in Cordial's own code or
+the data it presents — those are matched. It is the HOST KERNEL underneath: Cordial
+runs on the native FreeBSD kernel (syscalls ABI-translated), mocktail runs under
+Linuxulator, which presents a real Linux kernel ABI/behaviour. The residual is
+kernel-BEHAVIOUR (syscall semantics/errno edges, timing, or the TCP/IP stack's OS
+fingerprint on the connection) — not a string or a value Cordial hands over, which
+are all now Linux-shaped, but how the kernel itself behaves.
+
+**Why that is the practical wall for a native port.** Cordial cannot change the
+FreeBSD kernel's behaviour to match Linux's from inside the process without
+interposing a Linux-ABI compatibility layer over the kernel — which is exactly
+Linuxulator, and exactly what this goal forbids. So although the difference lives
+"inside" the running process in the sense that it is observable there, the thing
+that must change to close it is the kernel ABI/behaviour, which is external to
+Cordial's fixable code surface and is supplied to mocktail only by the forbidden
+compat layer. Every Cordial-code lever has been pulled and matched; the remaining
+lever is the kernel, and pulling it means becoming the thing the goal rules out.
+
+**Honest bound.** The exact kernel-behaviour probe is not pinned (it is below the
+log-observable surface — encrypted handshake / obfuscated AC / stack fingerprint),
+and it remains *conceivable* that a specific syscall-value shim could spoof it if
+identified; that identification is a reverse-engineering project, not a test. But
+the weight of evidence after 19+ matched hypotheses is that the surviving client's
+advantage is its Linux kernel ABI, which native FreeBSD does not provide and the
+goal forbids faking. 4 real fixes shipped along the way (base-url, /proc syscall
+synth, /sys+net synth, uname).
