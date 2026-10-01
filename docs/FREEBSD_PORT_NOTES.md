@@ -2028,3 +2028,42 @@ corrupted-files 304 (the open §14 question)." Still gated, ultimately, on eithe
 that internal fix or — for the Play-Integrity-protected games (318/319) — a real
 attested device, which mocktail's own maintainer confirms no Linux/FreeBSD client
 can provide.
+
+### 2026-10-01 (cont.): mocktail's own source read; its exact flags do NOT fix the 304 either
+
+Pulled mocktail's open source (`komaruworld/mocktail`, main) and read the parts
+that could carry a 304 fix:
+- `src/runtime/game_session_coordinator.cc` — a pure state machine
+  (join/surface/pause/leave). **No heartbeat, keep-alive, integrity, or 60s
+  logic.** mocktail does nothing special in-session to survive.
+- `src/services/client_settings_service.cc` `SafeDefaultsJson()` — the only
+  overrides it injects, all flag-fetch/cache/QoS/network tuning:
+  `FFlagEnableVersionCheckFromClientSettingsCDN`,
+  `DFFlagFetchAndWriteFlagsAfterSuccessfulCachedFlagsLoad`,
+  `DFFlagWriteFlagCacheAfterDynamicFetch/FlagFetch/FlagFetch2`,
+  `DFFlagEnableAppPlatformQoSEmergencyOnStartup3/OnFlagReload3/4`,
+  `FFlagAndroidEnableQoS`, `FFlagEnableNetworkStatusObserving`,
+  `DFFlagDontReportAccumulatedStatsInHttpClientDestroy2`,
+  `FFlagEnableJNIAppbridgeStartMilestone` — all False except the stats one.
+  **No integrity/session/storage flag.**
+
+**Tested mocktail's exact flag set** (via `CORDIAL_FLAGS`, EARLY settings,
+apis-base): booted, joined NDS, **still 304 at 60.2s.** So the 304 difference is
+not in mocktail's flags, its session code, its device profile (ruled out §14),
+its tracker (it fails that too), or its storage (correlation broken §14). After
+this repo's §16 reached "unidentified even with mocktail's source", reading that
+source again and running its exact config reproduces the same result.
+
+**Honest conclusion on the realistically-testable client-side surface:** it is
+exhausted. Every identifiable behavior of the working client has been matched and
+none moves the 304. The weight of evidence — Roblox toggling it server-side per
+build/game (§14), the mocktail maintainer stating the integrity variants are
+unbypassable and need a real attested device ("can't be done on Linux since it
+doesn't even work on Android devices"), mocktail's own 2026 integrity failures it
+cannot fix, and the general-304 difference being invisible in mocktail's source —
+points to the missing prerequisite being **a genuine hardware-attested Android
+device (Play Integrity), which no FreeBSD/Linux native port can supply**, and
+which Roblox is expanding. The one internal lead still open is stabilising the
+LATE+gate flow to build RbxStorage and test the corrupted-files theory directly;
+that is a deep multi-session bring-up-race fix (the repo's own unfinished §16-50),
+and §14 plus this flag result make it low-odds to be the cause.
