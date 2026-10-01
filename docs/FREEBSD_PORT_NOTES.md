@@ -2470,3 +2470,40 @@ testable client-side paths are exhausted; the remaining prerequisite is Linux
 syscall-behaviour parity that native FreeBSD does not provide and the goal forbids
 faking via Linuxulator — the nearest thing to an "external prerequisite" this
 problem has, while remaining in principle fixable by per-probe RE.
+
+### 2026-10-01 (cont.): APK-signature / install-source chain ruled out (DEX-only, native never calls it)
+
+The 304 text "reinstall from official store" suggested APK signature / install-
+source verification, and platform_classes.cpp records that Cordial deliberately
+omits `PackageManager`/`PackageInfo`/`Signature`/`SigningInfo` (with the real
+Roblox cert `44932ea3...` extractable from the APK). Checked whether that chain is
+actually the gate before implementing it:
+- The only `SigningInfo` in libroblox.so is `RBX::SerializerBinary::SigningInfo`
+  (RBXM model/patch signing), NOT `android/content/pm/SigningInfo`.
+- `getPackageInfo`, `getSigningCertificateHistory`, `getApkContentsSigners`,
+  `getInstallerPackageName`, `getInstallSourceInfo`, `GET_SIGNATURES`,
+  `content/pm/PackageManager` — **none appear in libroblox.so's native strings.**
+  JNI needs the method-name string to call it, so the native engine never invokes
+  the Android signature/install-source API; it is DEX (Java) only, and Cordial runs
+  no DEX. No `base.apk` self-hash string either.
+So the signature chain cannot be the 304 cause, and the "official store" text is the
+generic reason-304 string, not a literal check the native code runs. Not worth
+implementing. Ruled out.
+
+### 2026-10-01: SESSION SUMMARY — 304 fully characterised, testable surface exhausted, 3 fixes shipped
+
+17+ distinct hypotheses tested with evidence; all ruled out as the 60s/304 cause:
+version, device profile, device descriptor, account, attestation, asset-403s,
+session report, early base-url, mocktail init-ordering, /proc+/sys environment
+(6 synths, fopen+syscall), sysconf, syscall coverage (zero unhandled), client-side
+crypto/integrity/security (verbose-clean), APK signature/install-source (DEX-only).
+
+Established: the 304 is INTERNAL and fixable (dies on mocktail's exact 2.736 binary
+mocktail survives), a PURE server-side decision with no client-side error. The
+remaining difference is Linux-vs-FreeBSD at a level Cordial cannot reach by config/
+synth: an obfuscated native anti-cheat behaviour or the §16/§50 content-store
+(RbxStorage::init, which still matches the literal "corrupted files" via a NetAsset
+checksum the server validates, and is blocked by the unsolved bring-up-race — the
+store builds only in a crashing flow). Both are deep RE/engineering, not single
+tests. Shipped 3 gated, non-regressive fixes that close real evasion gaps (early
+base-url, syscall-layer /proc synth, /sys+net/unix synth).
