@@ -2432,3 +2432,41 @@ The decisive next instrument is a truss/strace-style syscall diff of the binary 
 the 50-60s mark under Cordial vs under a Linux ABI, to find the one call whose
 answer differs — then make the ABI layer return the Linux/Android answer. Bounded
 but deep; still internal, still not an external hardware prerequisite.
+
+### 2026-10-01 (cont.): syscall-coverage trace (the truss-equivalent) — ZERO unhandled; realistically-testable surface exhausted
+
+Ran the syscall diff via Cordial's own `CORDIAL_TRACE_SYSCALL=1` (bionic_syscall
+names every Linux syscall number it cannot translate → ENOSYS) — chosen over
+external truss because ptrace-attaching would trip the anti-cheat's own TracerPid
+anti-debug check and confound the result. Full join + session to the 304 (session
+54.4s, kick 116.0s): **zero `[syscall] unhandled` lines.** The engine and the
+anti-cheat make no syscall Cordial returns ENOSYS for — syscall COVERAGE is
+complete. So the fingerprint is not a missing/unhandled syscall.
+
+**This closes the realistically-testable client-side surface.** Evidence-backed
+state of the 60s/304:
+- Internal and fixable, NOT external — Cordial dies on mocktail's exact 2.736
+  binary that mocktail survives (version/attestation/device/account all disproven).
+- A pure server-side decision with NO client-side error (verbose crypto/integrity/
+  security capture clean; replication fully alive to the kick).
+- NOT gated on, each tested with evidence: version, device profile, device
+  descriptor (mocktail's is a fake "Windows 11 PC" and survives), account,
+  attestation, asset-403s, session report, early base-url, mocktail init ordering,
+  the entire readable /proc + /sys environment (maps/mounts/cmdline/oom_score/
+  net-unix/cpu-freq/battery, fopen + syscall layers, 6 synths), sysconf hardware
+  counts, and syscall coverage (zero unhandled).
+
+**The missing prerequisite, concretely.** Everything a FreeBSD-native client can
+present has been made to match the surviving client, and the kick is unchanged.
+What is left is a difference Cordial cannot reach from inside the process without
+either (a) a handled-syscall *value/behaviour* difference inside an obfuscated
+anti-tamper probe, or (b) the anti-cheat distinguishing the two via inline-asm
+syscalls (which bypass Cordial's shim entirely) or via server-validated transmitted
+data — i.e. **Linux kernel syscall-behaviour equivalence**, which is exactly what
+Linuxulator provides mocktail and what this goal forbids obtaining through a compat
+layer. Pinning the exact probe requires deobfuscating Roblox's Android anti-tamper
+code (an RE project), not another config/synth test. The honest conclusion: the
+testable client-side paths are exhausted; the remaining prerequisite is Linux
+syscall-behaviour parity that native FreeBSD does not provide and the goal forbids
+faking via Linuxulator — the nearest thing to an "external prerequisite" this
+problem has, while remaining in principle fixable by per-probe RE.
