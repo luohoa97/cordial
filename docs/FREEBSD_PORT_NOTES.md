@@ -2889,3 +2889,33 @@ factor eliminated by test; readable anti-cheat code + loader-GOT path RE-exhaust
 uname, rx-text W^X). The cause is one field in the encrypted security survey that
 Cordial's runtime fills differently from a Linux ABI — reachable only by the located
 survey RE.
+
+### 2026-10-01 (cont.): MachineId lead + why every transmitted anti-cheat value is unreadable in-session
+
+Found another strong candidate: **MachineId** (MachineIdUploader, RobloxMachineIdHeader,
+ForceCloseOnMachineIdBanned, /v2/settings/secured-settings/<MachineId>) — a device
+fingerprint the client computes and sends in an HTTP header, which the server acts on.
+cordial and mocktail share hardware, so it should match unless cordial derives it from a
+FreeBSD-specific / Java-Settings source it can't match.
+
+**But it is not readable in-session**, and this is the general blocker for ALL the
+transmitted anti-cheat values:
+- MachineId rides an HTTPS header set by curl that is **statically linked inside
+  libroblox** (0 curl imports — cannot be hooked via Cordial's symbol shims), and is
+  TLS-encrypted on the wire.
+- The join security survey is RakNet/QUIC-encrypted on the wire.
+- securityContext / SecurityContextString are built in the obfuscated engine.
+Reading any of them requires binary-patching obfuscated/static code inside the 80MB
+stripped libroblox, or defeating TLS/QUIC — i.e. the sustained multi-session RE already
+scoped. There is no in-session-tractable way to read what Cordial transmits; every
+channel is encrypted, static, or obfuscated.
+
+**Final honest boundary.** The 304 is proven 100% Cordial-runtime (same binary+account
+A/B). Every in-session-testable path is exhausted: behaviour, config, account, version,
+device, environment, readable anti-cheat code, loader-GOT, packet capture, live GOT/
+memory inspection. 5 real fixes shipped. The cause is one value in Cordial's transmitted
+anti-cheat data (MachineId / securityContext / survey) that its FreeBSD runtime fills
+differently than a Linux ABI — and reading or diffing that value is gated behind
+deep binary RE (static-curl patching / crypto), which is the funded multi-session next
+effort, not an in-session test. Top targets, in order: MachineId computation+value,
+then the securityContext survey builder.
