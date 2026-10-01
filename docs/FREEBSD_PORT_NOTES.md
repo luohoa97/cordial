@@ -2946,3 +2946,32 @@ memory inspection, and concrete RE attempts on all three transmitted anti-cheat 
 5 real hardening fixes shipped. The sole remaining avenue is sustained multi-session RE
 (read the encrypted MachineId/securityContext/survey from inside the obfuscated engine),
 which is slow (minutes/op on 80MB) and a funded next effort, not an in-session test.
+
+### 2026-10-01 (cont.): live-memory scan found /proc/self/status un-synthed (now synthed, 6th fix); FreeBSD strings in process memory
+
+Executed the "read the plaintext from live memory" technique (read /proc/<pid>/mem over
+all rw regions, grepped, ~1 GB scanned). Findings:
+- **The engine reads /proc/self/status** (path "/compat/linux/proc/self/status" present
+  in memory) and the binary parses `State:` and `Threads:` from it (strings "State: ",
+  "Threads8/16/..."); anti-tamper reads `TracerPid` here. It was NEVER synthed — FreeBSD's
+  linprocfs is absent so the engine got nothing. **Synthed /proc/self/status** (Linux
+  format, TracerPid:0, State:R, Threads:42, real pid/ppid). Tested: still 304 at ~65s.
+  Kept (6th fix) — the engine genuinely parses this file and null was wrong.
+- MachineId / SecurityContextString appear in memory only as FFlag NAMES in the
+  clientsettings JSON (values not stored there) — confirms they are config keys, values
+  computed+sent encrypted.
+- HTTP header names in memory: `X-Roblox-SVID-JWT`, `Roblox-Proxied-IP` (plaintext before
+  TLS) — the client sends a JWT/SVID header; its value is a candidate but is built by the
+  statically-linked curl path.
+- **"FreeBSD"/"amd64" strings ARE present in process memory** (39+ hits): host libc.so.7
+  (`/usr/src/lib/csu/amd64/crti.S`, "FreeBSD clang version 19") and cordial-run's linker
+  build-id ("LLD 19.1.7 (FreeBSD ...)"). These are OUTSIDE libroblox (in cordial-run and
+  host libc), so they only matter if the anti-cheat scans ALL process memory rather than
+  just its own module — a possible but less-common mechanism, and hard to scrub (host libc
+  carries them inherently; --host-libc is required).
+
+Every /proc and /sys file the engine reads is now synthed (maps, mounts, cmdline,
+oom_score, net/unix, status, /sys cpu/battery) and the 304 persists on all — strong
+evidence the gate is NOT a readable file. Remaining: the encrypted survey values
+(MachineId/securityContext/SVID-JWT, unreadable without crypto/static-curl RE) or a
+full-process-memory FreeBSD-string scan (broad, host-libc-inherent). 6 fixes shipped.

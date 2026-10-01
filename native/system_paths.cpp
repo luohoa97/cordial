@@ -342,6 +342,57 @@ static const char* synth_proc_content(const char* path) {
             "/dev/socket/zygote\n"
             "0000000000000000: 00000003 00000000 00000000 0001 03 31840\n";
     }
+    // /proc/self/status. The engine parses `State:` and `Threads:` from it (binary
+    // carries "State: ", "Threads8", "Threads16", ...) and anti-tamper reads
+    // `TracerPid:` here to detect a debugger. FreeBSD's /compat/linux/proc/self/
+    // status is absent/wrong (confirmed: the engine builds this path and gets
+    // nothing), so a reader sees no State/Threads/TracerPid. Serve a Linux/Android
+    // status with TracerPid:0 (not traced), State:R, a plausible thread count, and
+    // the real pids. Static buffer filled once.
+    if (std::strcmp(path, "/proc/self/status") == 0 ||
+        (std::strncmp(path, "/proc/", 6) == 0 &&
+         std::strcmp(path + std::strlen(path) - 7, "/status") == 0)) {
+        static char status_buf[2048];
+        static bool status_filled = false;
+        if (!status_filled) {
+            long pid = static_cast<long>(getpid());
+            long ppid = static_cast<long>(getppid());
+            std::snprintf(status_buf, sizeof status_buf,
+                "Name:\tcom.roblox.client\n"
+                "Umask:\t0077\n"
+                "State:\tR (running)\n"
+                "Tgid:\t%ld\n"
+                "Ngid:\t0\n"
+                "Pid:\t%ld\n"
+                "PPid:\t%ld\n"
+                "TracerPid:\t0\n"
+                "Uid:\t10234\t10234\t10234\t10234\n"
+                "Gid:\t10234\t10234\t10234\t10234\n"
+                "FDSize:\t512\n"
+                "Groups:\t3003 9997 20234 50234\n"
+                "VmPeak:\t 3200000 kB\n"
+                "VmSize:\t 2800000 kB\n"
+                "VmRSS:\t  520000 kB\n"
+                "Threads:\t42\n"
+                "SigQ:\t0/12000\n"
+                "SigPnd:\t0000000000000000\n"
+                "SigBlk:\t0000000000000000\n"
+                "SigIgn:\t0000000000000000\n"
+                "SigCgt:\t0000000000000000\n"
+                "CapInh:\t0000000000000000\n"
+                "CapPrm:\t0000000000000000\n"
+                "CapEff:\t0000000000000000\n"
+                "CapBnd:\t0000000000000000\n"
+                "Seccomp:\t0\n"
+                "Cpus_allowed:\tffff\n"
+                "Cpus_allowed_list:\t0-15\n"
+                "Mems_allowed:\t1\n"
+                "Mems_allowed_list:\t0\n",
+                pid, pid, ppid);
+            status_filled = true;
+        }
+        return status_buf;
+    }
     return nullptr;
 }
 #endif
