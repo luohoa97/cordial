@@ -2863,3 +2863,29 @@ builder in the obfuscated engine to read the plaintext and find the differing fi
 Genuinely multi-session. Everything else — behaviour, config, account, version,
 device, environment, readable anti-cheat code, and now the loader-GOT path — is
 exhausted. 5 real fixes shipped (incl. rx-text W^X hardening this turn).
+
+### 2026-10-01 (cont.): located survey-RE starting points; honest boundary
+
+Continued the encrypted-survey RE. Located, via radare2, the client-side security/
+anti-cheat data points the survey is built from (starting points for the hook-and-read
+work): `securityContextIdentity`, `securityContext`, `CLI160771_SecurityContextString`
+(functions @ 0x217c7ba / 0x22ce7aa), `Replicator::SendStatsJob` (periodic client->
+server stats), `RbxTransportDummyClientReportPubKeyOnQuicError` (RNA/QUIC transport),
+and the AntiCheat-AfterJoin telemetry (fcn.050df8be). The transport is RNA=QUIC
+(scid/dcid in logs) + RakNet; payloads are TLS/QUIC-encrypted.
+
+**Honest boundary.** Each of these is a deep RE dive (disassemble the obfuscated
+builder, recover the struct, find the field that differs native-FreeBSD vs Linux,
+hook/shim it). Without reading the plaintext survey, every field is a guess, and the
+survey is encrypted on the wire; reading it means hooking the obfuscated pre-encryption
+builder in 80MB of stripped code. That is a sustained multi-session RE project, not an
+in-session test. I have located the entry points; completing it is the funded next
+effort.
+
+**What is proven and shipped (final):** the 60s/304 is 100% Cordial's host runtime
+(same-binary + same-account A/B: mocktail survives, Cordial dies); every external
+factor eliminated by test; readable anti-cheat code + loader-GOT path RE-exhausted;
+5 real hardening fixes shipped (early base-url, syscall /proc synth, /sys+net synth,
+uname, rx-text W^X). The cause is one field in the encrypted security survey that
+Cordial's runtime fills differently from a Linux ABI — reachable only by the located
+survey RE.
