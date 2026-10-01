@@ -4203,6 +4203,54 @@ fn main() -> ExitCode {
                                             }
                                         }
 
+                                        // mocktail calls `native_set_base_url`
+                                        // BEFORE the app bridge — its documented
+                                        // EngineStartupContext order is
+                                        // settings -> post-settings -> dirs ->
+                                        // set_base_url -> storage -> app_bridge.
+                                        // Cordial's only nativeSetBaseUrl call
+                                        // lived in the late block, after the
+                                        // bridge AND after the device/policy/
+                                        // tracker services (browser-tracker-api,
+                                        // guac-v2/app-policy, v1/turn,
+                                        // product-experimentation) had already
+                                        // fired at 0.28-0.78 s against an empty
+                                        // apis host, logging `https:///...`
+                                        // InvalidUrl. On the identical 2.736
+                                        // binary mocktail resolves all of those
+                                        // and Cordial logs ten empty-host
+                                        // failures; the measured difference is
+                                        // this call's timing. Calling it here,
+                                        // before the bridge, is the one-line
+                                        // match. `CORDIAL_EARLY_BASE_URL=off`
+                                        // disables it; the late call stays.
+                                        // Off by default: measured to be a no-op
+                                        // for the empty-host apis calls (they use
+                                        // a base `nativeSetBaseUrl` does not set;
+                                        // they are downstream of the flagLoaded
+                                        // init that never fires — §16 — not of
+                                        // this call). Kept, gated, because it is
+                                        // the correct mocktail-order position and
+                                        // costs nothing. `CORDIAL_EARLY_BASE_URL=1`.
+                                        if std::env::var("CORDIAL_EARLY_BASE_URL")
+                                            .map_or(false, |v| v != "off")
+                                        {
+                                            if let Ok(v) = std::env::var("CORDIAL_SET_BASE_URL") {
+                                                let (a, b) = v
+                                                    .split_once(',')
+                                                    .unwrap_or((v.as_str(), v.as_str()));
+                                                let (a, b): (&'static str, &'static str) =
+                                                    (a.to_string().leak(), b.to_string().leak());
+                                                match lib.symbol("Java_com_roblox_engine_jni_NativeSettingsInterface_nativeSetBaseUrl") {
+                                                    None => println!("  [baseurl] early nativeSetBaseUrl: not exported"),
+                                                    Some(f) => match linker::game_activity::call_static_strings(f, "com/roblox/engine/jni/NativeSettingsInterface", &[a, b]) {
+                                                        Ok(()) => println!("  [baseurl] early nativeSetBaseUrl({a:?}, {b:?}) ok (pre-bridge)"),
+                                                        Err(e) => println!("  [baseurl] early nativeSetBaseUrl failed: {e}"),
+                                                    },
+                                                }
+                                            }
+                                        }
+
                                         // The app bridge proper. ActivitySplash —
                                         // the only launcher Activity — defaults
                                         // to ActivityNativeMain, not the AGDK

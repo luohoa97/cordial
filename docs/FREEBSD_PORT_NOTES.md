@@ -2104,3 +2104,127 @@ unsolved client-side bring-up problem, not on an external prerequisite.** Fixing
 it needs either resolving §16 (make cordial's flag-load construct the content
 store without the gate patch) or surviving the §50 crash (CFI-less, object
 unidentified). That is the concrete remaining work.
+
+### 2026-10-01 (cont.): matched-game test + the version confound (pivotal)
+
+Reproduced the 304 cleanly and ran the comparison the prior entries kept
+deferring, with mocktail actually running on this box (not just its source read).
+
+**Matched same-game reproduction.** cordial on *The Strongest Battlegrounds*
+(place 10449761463) — the exact game mocktail survives 889s — dies at **exactly
+60.4s** (play session 68.6s -> 304 at 129.0s). Re-run with
+`CORDIAL_DEVICE_PROFILE=pc-windows-11`: play session 58.3s -> 304 at 118.7s =
+**60.37s**. Both on the same game, same throwaway account.
+
+**Ruled out this session, with evidence (304 actively firing on 2.738):**
+- **Device profile** — pc-windows-11 AND android-tablet both die at ~60.4s on the
+  same game. §14's "not why" now holds under a *valid* control (the 304 reproduces
+  this time; in §14 it did not). The server fingerprints the real client, not the
+  User-Agent. Mocktail's pc-windows-11 identity is NOT why it survives.
+- **Asset 403s** — mocktail's surviving logs hit 41-91 `AssetDelivery403` /
+  "not authorized to access Asset" and survive thousands of seconds. The empty
+  throwaway account's asset 403s are benign.
+- **Session report** — both clients log `Sent play session success`; it is an
+  exit event, not a liveness signal. (Correcting the init_params.cpp comment:
+  cordial DOES send it now.)
+- **Device attestation** — mocktail's repo has zero getDeviceAttestationToken /
+  NativeMetaInterface code (GitHub search) yet survives; cordial implements neither
+  either. Not the general-304 gate.
+- **RbxStorage / ClientRunInfo / flags** — this session cordial has partial
+  RbxStorage (7806 ops, OTA manifests Found/Read), prints ClientRunInfo, resolves
+  87/140 flags, and STILL gets 304. The storage<->304 correlation (§13) is now
+  effectively dead: storage present, 304 present. (Note: the full
+  `RbxStorage::init [flagLoaded] MultiCache` still does not fire — cordial calls
+  nativeAppBridgeV2Init at 0.226s BEFORE nativePostClientSettingsLoadedInit3 at
+  0.845s; mocktail's order is the reverse (post at 0.433 -> RbxStorage::init at
+  0.439 -> bridge at 0.780). But §45.4/§46 already found reordering "works and
+  does not help".)
+- **Empty-host apis URLs** — cordial fires 10 requests to `https:///...` (empty
+  host: browser-tracker-api/device/initialize, guac-v2/app-policy x retries,
+  v1/turn/all-regions, product-experimentation, v1/batch); mocktail fires 0.
+  Traced to the same init-ordering gap. product-experimentation self-heals to
+  apis.roblox.com at 1.2s; guac never does. Real bug, but the anticheat-relevant
+  ones are locally-defaulted (guac) or webview-dependent (browser-tracker, 500
+  without webview context per §13.1), so not an obvious 304 gate.
+
+**THE VERSION CONFOUND (not previously controlled).** mocktail's launcher log:
+`[native-updater] kept Roblox 2.736.1408 (2998); Roblox 2.738.1397 (3092) was
+rejected: signature fmod-output-select matched 0 candidate locations ... the
+active Roblox payload is out of date and joining an experience can be refused.`
+mocktail CANNOT run 2.738 (its binary patcher can't find its sites) and is frozen
+on **2.736.1408**; it has zero 2.738 engine logs. cordial runs **2.738.1397**.
+So every "mocktail survives / cordial dies" comparison is confounded by build
+version, and §14 already saw the 304 vanish across a build change (2.730->2.734).
+The untested decisive question: does cordial survive on mocktail's exact 2.736
+binary? Both libroblox.so are on disk (2.736 = payloads/2998, 2.738 = payloads/3092).
+
+### 2026-10-01 (cont.): VERSION CONFOUND RULED OUT — the 304 is internal/fixable, not external
+
+Ran the decisive version test: **cordial on mocktail's exact 2.736.1408 libroblox.so**
+(extracted from payloads/2998 base.apk; cordial boots it fine — core path is
+symbol-based). Joined The Strongest Battlegrounds:
+- **cordial-2.736: play session 51.4s -> 304 at 111.75s = 60.3s kick.**
+- mocktail-2.736 (same binary): survives 889s.
+
+**Same binary, same game, same account, same box: cordial dies, mocktail survives.**
+So the 304 is NOT the build version, NOT the game, NOT the account, NOT the device
+profile. It is purely cordial's host runtime (AOSP bionic loader + jnivm + native
+shims) vs mocktail's. **This overturns the prior "probably external/hardware-
+attestation, unfixable" conclusion** — it is a fixable client-runtime difference.
+
+**Clean same-binary (2.736) diff — the three isolated host-runtime gaps:**
+1. **jnivm FindClass fails for `DeviceUtils` (5x) + `ExperienceSession` (1x)** —
+   mocktail's engine resolves both (0 gaps). cordial *registers* DeviceUtils
+   (init_params.cpp:740) but the engine's FindClass still doesn't reach it (known,
+   §700-726). mocktail's jnivm exposes these to FindClass; cordial's doesn't.
+2. **10 empty-host apis requests** (`https:///guac-v2/app-policy` x10, browser-tracker,
+   turn, product-experimentation, batch) — mocktail: 0. Confirmed runtime, not version.
+3. **`RbxStorage::init [flagLoaded]` never fires** — mocktail builds the full
+   MultiCache; cordial has only partial OTA-manifest storage.
+
+Likely one root: cordial's engine init is incomplete (jnivm class resolution +
+init sequence), so device registration / store / service URLs all fall short, and
+the server's anticheat flags the under-initialized client at the 60s grace. The
+remaining work is making cordial's host runtime bring the engine up as completely
+as mocktail does on the same binary — the §16 frontier, now sharply characterized
+as jnivm-FindClass + init-completeness rather than version/storage/attestation.
+
+### 2026-10-01 (cont.): two tractable fixes tried against the three gaps — both fail, root is §16
+
+Acting on mocktail's documented EngineStartupContext order (from its
+`src/legacy/legacy_runtime.cc`: settings -> post-settings -> dirs ->
+`native_set_base_url` -> storage -> app_bridge), tried the ordering/base-url
+fixes that the gaps seemed to call for.
+
+1. **Early `nativeSetBaseUrl` (pre-bridge)** — new `CORDIAL_EARLY_BASE_URL`
+   switch in load.rs calls nativeSetBaseUrl before the app bridge (mocktail's
+   step 4), where Cordial only had a late call. Fired correctly
+   (`[baseurl] early nativeSetBaseUrl(...) ok (pre-bridge)`). **The 10 empty-host
+   failures are unchanged.** So `nativeSetBaseUrl(www, apis)` does NOT set the
+   apis-gateway host these services (guac-v2, browser-tracker, turn,
+   product-experimentation) build their URLs from. Gated off by default — no-op.
+2. **Full mocktail order** — `CORDIAL_POST_BEFORE_BRIDGE=200`
+   `CORDIAL_EARLY_DIRS=files,cache` + early base-url, reproducing
+   dirs -> post-settings -> set_base_url -> bridge exactly. Sequence confirmed in
+   the log. **`RbxStorage::init[flagLoaded]` still does not fire**, and the config
+   degrades the client to ~5 fps. Confirms §46: the store is not produced by the
+   ordering; it depends on deeper engine state Cordial does not supply.
+
+**Conclusion.** The empty-host URLs and the missing store are both *downstream of
+the engine's flagLoaded init never firing* (§16), not of the base-url call or the
+call ordering — matching mocktail's order does not make flagLoaded fire. The three
+gaps collapse to one root: Cordial's host runtime does not drive the engine's
+flag-load/flagLoaded event the way mocktail's does on the same binary, so the
+engine never runs the init that registers the device, resolves the apis gateway
+host, and builds the content store. That under-initialized client is what the
+server's anticheat kicks at the 60s grace.
+
+**Net position after this session:** the 304 is proven *internal and fixable*
+(cordial dies on mocktail's exact 2.736 binary; mocktail survives it — not
+version/attestation/identity/account/game). The remaining work is the repo's §16
+frontier, now sharply scoped to one thing: **make the engine's flagLoaded event
+fire under Cordial's runtime.** Ordering, directories, and base-url are ruled out
+as its trigger. The next technically-distinct lead is why `nativeInitClientSettings`
++ `nativePostClientSettingsLoadedInitialization3` produce `flagLoaded` under
+mocktail's jnivm/VM but not Cordial's on the identical binary — i.e. a jnivm/VM
+setup difference, not a call-sequence difference.
