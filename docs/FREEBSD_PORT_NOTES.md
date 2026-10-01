@@ -3026,3 +3026,30 @@ the gate is not a readable local tell. Every technique to READ the transmitted s
 encrypted survey that Cordial's FreeBSD runtime fills differently from a Linux ABI; reaching
 it is multi-session RE (patch the obfuscated serializer). 6 real fixes shipped. Internal,
 fixable, but only via that RE.
+
+### 2026-10-01 (cont.): send-chokepoint analysis — plaintext is only in internal/static code; serializer RE is the demonstrated-sole path
+
+Checked the serializer/encrypt hook feasibility concretely:
+- Cordial DOES provide the send chokepoint (cordial_fbsd_sendto/sendmsg/send; libroblox
+  imports sendto/sendmsg/write/writev) — but the data there is already ENCRYPTED (TLS
+  records for the HTTPS MachineId header; RakNet/QUIC crypto for the game survey).
+- SSL_write / the TLS write / the survey serializer are NOT exported (static TLS lib +
+  obfuscated engine) — not hookable via Cordial's symbol-shim mechanism.
+So the plaintext survey/MachineId exists ONLY inside libroblox before encryption, in
+internal/static functions. Reading it requires locating one of those functions in the
+80MB stripped/obfuscated binary (slow RE, minutes per op) and binary-patching a dump hook
+(Cordial can patch, but the target address must be found first). A sendto caller-capture
+gives only the low-level send loop, not the serializer (many frames up, no CFI to unwind).
+
+**This closes the loop definitively, by concrete attempt at every layer:**
+- READ the survey off the wire -> encrypted (tcpdump). [done]
+- READ it from live memory -> only flag names, no values; 0 JWTs. [done]
+- READ it at the send chokepoint -> encrypted there. [done]
+- HOOK the pre-encryption point by symbol -> SSL_write/serializer not exported. [done]
+The only remaining route is RE-locate + binary-patch the obfuscated serializer, which is a
+sustained multi-session effort (the 80MB binary makes each RE op minutes).
+
+FINAL: 304 proven 100% Cordial-runtime (A/B); every observable tell fixed (6 synths +
+loader + identity), 304 persists on each; every survey-read/hook layer attempted and
+closed. Gate = one encrypted-survey field; sole path = multi-session serializer-patch RE.
+6 real fixes shipped.
