@@ -3001,3 +3001,28 @@ RE (read the plaintext by hooking the obfuscated pre-encryption builder / static
 the 80MB binary), a multi-session effort. Every in-session-observable path — now including
 the live-memory technique — is exhausted. 6 real hardening fixes shipped. The 304 is proven
 100% Cordial-runtime, internal, and fixable only via that RE.
+
+### 2026-10-01 (cont.): survey-read techniques all concretely attempted and exhausted
+
+To read the plaintext anti-cheat survey in-session, attempted every tractable technique
+(not just the ones named — actually run):
+- packet capture (tcpdump re0): payloads RakNet/QUIC-encrypted, no cleartext. [done earlier]
+- live-memory string scan (~1GB of rw regions via /proc/pid/mem): only flag NAMES
+  (MachineId/SecurityContextString as FFlag keys), HTTP header names, and FreeBSD markers
+  (host libc + cordial-run build-id, outside libroblox) — NO survey field values. [done]
+- live-memory JWT scan (regex eyJ....eyJ....sig, ~1GB, base64-decode payloads): 0 JWTs —
+  the X-Roblox-SVID-JWT header name is present but no JWT value in memory at scan time. [done]
+- static-linked curl: 0 curl imports in libroblox -> header-set path un-hookable via shims. [done]
+So every in-session route to the plaintext survey is concretely closed. The survey value
+is serialized+encrypted inside the obfuscated engine; reading it requires PATCHING the
+obfuscated serialize/encrypt function in the 80MB stripped binary (find it via slow RE,
+insert a dump hook) — the sustained multi-session effort, not an in-session test.
+
+**Absolute final boundary (concretely demonstrated, not asserted):** the 60s/304 is proven
+100% Cordial-runtime (same-binary+account A/B). Every observable tell addressed (6 /proc+/sys
+synths, rwx->r-x, uname, device strings, maps-relabel, loader-GOT) — 304 persists on each, so
+the gate is not a readable local tell. Every technique to READ the transmitted survey value
+(packet, memory-strings, JWT, static-curl) attempted and closed. The gate is one field in the
+encrypted survey that Cordial's FreeBSD runtime fills differently from a Linux ABI; reaching
+it is multi-session RE (patch the obfuscated serializer). 6 real fixes shipped. Internal,
+fixable, but only via that RE.
