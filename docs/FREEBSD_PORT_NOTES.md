@@ -2720,3 +2720,36 @@ FreeBSD vs Linux. That is deep crypto-path RE in 80 MB of obfuscated code — th
 genuine multi-session continuation. Everything short of it is done: 20+ hypotheses,
 full client-surface match to the surviving client, 4 shipped fixes, packet capture
 (survey confirmed encrypted), and radare2 RE of all cleartext anti-cheat code paths.
+
+### 2026-10-01 (cont.): RE complete on readable surface — session-crypto path not exercised; 304 trigger is not in readable client code
+
+Disassembled fcn.05700079 (2456 bytes), the RbxOpenRequest2 / `DFLog::SessionCrypto`
+"no session crypto" handler (RNA transport session crypto). cordial's runs log zero
+SessionCrypto activity (game data uses RakNet, confirmed by selectedTransport=RakNet),
+so this RNA crypto path is not exercised for the game stream and is not the 304.
+
+**RE conclusion (readable surface exhausted):** across the reason table (0x430f6a3),
+the AntiCheat-AfterJoin/US14116 telemetry (fcn.050df8be), and the session-crypto
+handler (fcn.05700079), NONE contains the AndroidAnticheatKick decision. Consistent
+with all behavioural evidence, the 304 is decided SERVER-side from the encrypted game
+survey; the readable client code only transports and labels it.
+
+**The precise, located remaining RE target** (multi-session, no decryption shortcut):
+hook the RakNet game-stream serialize/encrypt path (NOT the RNA RbxOpen path) to read
+the plaintext survey the client sends, identify the field that encodes native-FreeBSD
+vs Linux, and shim its source. Starting points are now located in the binary, but the
+work — find the RakNet encrypt/serialize fn among thousands in 80MB obfuscated code,
+recover the survey struct, diff fields, shim, test — is genuinely multi-session.
+
+**Why reading-blind (matching inputs without reading the survey) is circular and has
+been exhausted:** every survey input Cordial can present has been matched to the
+surviving client (device/GPU/memory/uname/osVersion/proc/sys/syscall-coverage) and the
+kick is unchanged; identifying the one unmatched input REQUIRES reading the survey,
+which requires the crypto-path RE above. That is the single remaining avenue.
+
+## FINAL SESSION STATE (2026-10-01)
+- 60s/304 NOT fixed (server-side AndroidAnticheatKick, ~65s, every config).
+- 21+ hypotheses tested & recorded; full client surface matched to surviving mocktail.
+- 4 real fixes shipped (early base-url, syscall /proc synth, /sys+net/unix synth, uname).
+- Packet capture (survey encrypted) + radare2 RE of all readable anti-cheat paths done.
+- Sole remaining avenue: multi-session RakNet-survey crypto RE, precisely located here.
