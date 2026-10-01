@@ -2536,3 +2536,32 @@ prerequisite remains Linux-vs-FreeBSD parity at the transmitted-data level, whic
 what Linuxulator supplies mocktail and the goal forbids faking. Internal and in
 principle fixable by that RE; not reachable by the testable surface, which is now
 exhausted.
+
+### 2026-10-01 (cont.): join-time data is in the binary RakNet handshake, below the log surface — observable testable surface fully exhausted
+
+Tried to inspect the transmitted join data directly: DFLogDebugHttpTrace=7 /
+FLogHttpTraceSensitive=7 produce nothing (the Debug HTTP post-body channel is
+compiled out of the release build). The only HTTP at join is
+`assetgame.roblox.com/Game/Join.ashx?ticket={server-issued}` (a ticket, no device
+survey) plus `attribution/v1/events/post-authentication`. The client's device/
+platform data therefore rides the binary RakNet/RNA connection handshake, not an
+inspectable HTTP body — below the log-observable surface.
+
+**This closes the observable testable surface.** Summary of the whole 304 effort:
+the kick is internal/fixable (same-binary proof), a silent server-side decision at
+the ~60s grace on join-time transmitted data, with NO observable client-side
+mechanism (anti-cheat/checksum/crypto/integrity/security channels all maxed, all
+silent) and NO local tell left unmatched (version, device profile/descriptor,
+account, attestation, /proc+/sys env at both layers, sysconf, syscall coverage,
+APK-signature, HTTP join). Everything a native-FreeBSD client can present or be
+observed doing has been matched to the surviving client; the kick is unchanged.
+
+**Remaining work is strictly below the testable surface** and is one of:
+(a) capture + reverse-engineer the binary RakNet handshake (defeating its session
+encryption) to read the device field that differs native-FreeBSD vs Linux(ulator);
+(b) deobfuscate libroblox.so's native Android anti-cheat report builder. Both are
+multi-session RE projects, not config/flag/synth tests. The missing prerequisite is
+Linux parity in that transmitted handshake data — exactly what Linuxulator gives
+mocktail and what this goal forbids obtaining via a compat layer. The problem stays
+internal and in-principle fixable, but no realistically-*testable* path remains; the
+next move is reverse engineering, which is a distinct, funded effort.
