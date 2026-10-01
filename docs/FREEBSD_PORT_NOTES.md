@@ -2692,3 +2692,31 @@ real/Linux client encodes Android (the "1920x1200" reference and the display-sta
 %s values are the place to look). If a field is FreeBSD-specific, shim its source.
 This is the first genuine foothold INTO the anti-cheat report (vs. the encrypted
 handshake), because this telemetry path is in cleartext engine code, not the crypto.
+
+### 2026-10-01 (cont.): RE definitive — 304 AndroidAnticheatKick is server-decided; client side is only the reason table; US14116 was a separate reason
+
+Disassembled fcn @ 0x430f6a3 (the DisconnectOnRemoteSysStats user): it is the
+**disconnect-reason string table** — it enumerates every reason
+(`AndroidAnticheatKick`, `AndroidEmulatorKick`, `AndroidRootedKick`,
+`DisconnectOnRemoteSysStats`, `DisconnectNewSecurityKeyMismatch`,
+`DisconnectBySecurityPolicy`, `NetworkSecurity`, `NetworkMisbehavior`, ... ~40 of
+them). So `DisconnectOnRemoteSysStats` is a DISTINCT reason code from the 304 I get
+(`AndroidAnticheatKick`), and the US14116 onRemoteSysStats path was a red herring for
+this kick. The client side merely maps a received reason code to its string for
+logging; it contains no decision logic for AndroidAnticheatKick.
+
+**So the RE confirms, from the binary, what the behavioural evidence already showed:**
+the 304/AndroidAnticheatKick is decided SERVER-side. The client's only inputs to that
+decision are the data it transmits in the encrypted join survey. The client-side code
+that is readable without decryption (reason table, telemetry events, US14116) does
+not contain the check — it is the server validating the encrypted survey.
+
+**RE status after radare2 pass:** the readable client surface (reason table, anti-
+cheat telemetry, US14116) is now RE-exhausted and none is the AndroidAnticheatKick
+trigger. The only remaining RE target is the pre-encryption survey/crypto path: find
+and hook the engine's RakNet/RNA encrypt function (SessionCrypto / RbxOpenRequest2
+region) to log the plaintext survey, then compare the field that encodes native-
+FreeBSD vs Linux. That is deep crypto-path RE in 80 MB of obfuscated code — the
+genuine multi-session continuation. Everything short of it is done: 20+ hypotheses,
+full client-surface match to the surviving client, 4 shipped fixes, packet capture
+(survey confirmed encrypted), and radare2 RE of all cleartext anti-cheat code paths.
