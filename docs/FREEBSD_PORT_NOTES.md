@@ -2067,3 +2067,40 @@ which Roblox is expanding. The one internal lead still open is stabilising the
 LATE+gate flow to build RbxStorage and test the corrupted-files theory directly;
 that is a deep multi-session bring-up-race fix (the repo's own unfinished §16-50),
 and §14 plus this flag result make it low-odds to be the cause.
+
+### 2026-10-01 (cont.): correction — the general 304 is NOT proven external; it's blocked by the §16/§50 frontier
+
+Correcting an overreach in the entries above: there are two distinct kicks and
+they must not be conflated.
+- **318/319 (Play Integrity / ARA)** — external, unbypassable, needs a real
+  attested device; mocktail's maintainer confirms. Per-game, Roblox-toggled.
+- **304 AndroidAnticheatKick (60s, "corrupted files") on NDS** — a *different*
+  check that mocktail *passes* (repo §13) and that §14 saw toggled off on 2.734.
+  This is **not** proven to be attestation-gated, and claiming so was wrong.
+
+**The decisive test for the general 304 — does building RbxStorage stop it? —
+could not be run**, and that is the honest blocker, not an external prerequisite:
+- RbxStorage::init `flagLoaded` builds **only** in the pure-LATE natural-fetch
+  flow (reproduced on :0, Xvfb, and Wayland — build confirmed every time).
+- That flow needs the flags-loaded gate pre-patched (else the TaskScheduler
+  asserts inside `initializeNativeCode`), and the patch lets the engine's Main
+  thread run on a not-yet-constructed object → **deterministic** segfault
+  (core dump: rip in `.eh_frame_hdr`, a vtable call through a garbage pointer).
+  Display-independent; not a winnable race (8/8 died ~2s); the crashing object
+  can't be pinned because stack unwinding on raw-mmap'd code has no CFI.
+- Every stable (EARLY) route to RbxStorage was tried and none builds it:
+  mocktail's **exact** flag set, mocktail's `FStringAppConfigurationOverrideApp
+  Policy` app-policy-as-flag override, and EARLY+gate+LATE_SETTINGS_TOO
+  re-delivery. The content store only comes from the engine's own fetch, which
+  only happens when cordial does NOT pre-deliver — the exact config that crashes.
+
+So stabilising it reduces to this repo's own unfinished **§16** ("why mocktail's
+settings delivery builds engine state cordial's does not") and **§50** (the
+Main-thread bring-up race) — a genuine research problem, extensively re-probed
+here (mocktail's open source read directly: session coordinator has no 60s logic;
+settings service only tunes flag-fetch/QoS) without being cracked. **Honest
+status: the general-304 internal path is not exhausted — it is blocked on an
+unsolved client-side bring-up problem, not on an external prerequisite.** Fixing
+it needs either resolving §16 (make cordial's flag-load construct the content
+store without the gate patch) or surviving the §50 crash (CFI-less, object
+unidentified). That is the concrete remaining work.
