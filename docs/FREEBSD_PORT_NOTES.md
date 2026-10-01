@@ -2286,3 +2286,32 @@ differences). Two distinct next branches, neither yet eliminated:
   (B) Compare what the Android anticheat actually probes between the two runtimes
       (/proc/self/maps, /proc/self/status, the loader's footprint) since that is
       what a "detected modified client" kick most directly reads.
+
+### 2026-10-01 (cont.): CORDIAL_FAKE_PROC tested against the 304 — fails
+
+Branch (B) first probe. The binary reads `/proc/self/maps`, `/proc/self/status`,
+`/proc/self/exe`, `/system/bin/app_process64` — classic "modified client"
+anticheat tells — and Cordial's real FreeBSD maps name `/compat/linux/...`,
+`~/.cache/cordial-apk-new/libroblox.so`, and the `cordial-run` binary, every line
+a non-Android giveaway. `CORDIAL_FAKE_PROC` rewrites those to Android paths
+(`/data/app/.../lib/arm64/libroblox.so`, `/system/bin/app_process64`, `/system/...`).
+My prior runs never set it.
+
+Tested `CORDIAL_FAKE_PROC=1` + join (Blade Ball, place 16044264830): **304 at
+131.75s, play session 67.7s = ~63s kick. Unchanged.** So the fopen-level
+`/proc/self/maps` Android-synthesis does not stop the kick.
+
+Caveat that keeps a sub-path open: `synth_maps` hooks `fopen` (`s_fopen`), and the
+run logged zero `synth-maps` served — the engine/anticheat may read
+`/proc/self/maps` (and status/exe) via raw `open()`/`openat()`+`read()`, bypassing
+the fopen hook entirely and getting the real FreeBSD procfs. So the maps-probe
+hypothesis is only disproven at the fopen layer; a syscall-level `/proc` intercept
+(open/openat/read of /proc/self/{maps,status,exe}) is a distinct, still-untested
+sub-path. Also unaddressed by FAKE_PROC: arch (the synthesized paths say arm64 but
+the mappings are x86_64) and memory-content integrity.
+
+Paths tested-and-failed this session now include: version swap, device profile,
+early base-url, full mocktail ordering, CORDIAL_FAKE_PROC. Still-open distinct
+sub-paths: (A) bisect/restore the store build (regressed 0/3) then test 304;
+(B2) syscall-level /proc intercept; (C) what the client SENDS the game server in
+the 60s window (needs decrypted-traffic or send-side instrumentation).
