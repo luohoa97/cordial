@@ -427,7 +427,22 @@ static std::string build_synth_maps(const char* real) {
         sub("/compat/linux/lib64/", "/system/lib64/");
         sub("/compat/linux/lib/", "/system/lib64/");
         sub("/compat/linux", "/system");
-        sub("/home/pascal/intoxicated/target/release/cordial-run", "/system/bin/app_process64");
+        // libroblox's GOT resolves its libc imports (open/read/uname/...) into
+        // cordial-run's address space (the shims) — confirmed by reading the live
+        // GOT — NOT into a libc.so. An anti-hook/GOT-integrity check that verifies
+        // imports land in a libc mapping would flag that. So label the cordial-run
+        // region as the Android libc.so, so a GOT entry pointing into it reads as
+        // "points into libc" rather than "points into the main executable".
+        // CORDIAL_MAPS_CORDIALRUN controls the label: default libc.so, "appproc"
+        // restores the old /system/bin/app_process64 as the control.
+        if (std::getenv("CORDIAL_MAPS_CORDIALRUN") &&
+            std::string(std::getenv("CORDIAL_MAPS_CORDIALRUN")) == "appproc") {
+            sub("/home/pascal/intoxicated/target/release/cordial-run",
+                "/system/bin/app_process64");
+        } else {
+            sub("/home/pascal/intoxicated/target/release/cordial-run",
+                "/apex/com.android.runtime/lib64/bionic/libc.so");
+        }
         sub("/home/pascal/.cache/cordial-apk-new/candidate-0.apk",
             "/data/app/~~kQ8fN2pLx==/com.roblox.client-Rz9mAoY7w==/base.apk");
         sub("/home/pascal/.cache/cordial-agent-play", "/data/user/0/com.roblox.client");

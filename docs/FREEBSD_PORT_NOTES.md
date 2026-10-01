@@ -2803,3 +2803,33 @@ crypto-survey RE (read the survey to see a hook/integrity field) OR finding the
 import-integrity check in the obfuscated .text. It is the focused next RE target and
 the best current explanation for the proven client-runtime cause. All config/behaviour/
 account/version/device paths remain exhausted; 4 fixes shipped; the kick is unfixed.
+
+### 2026-10-01 (cont.): loader-GOT hypothesis — PREMISE CONFIRMED by live memory, but both tractable fixes fail
+
+Pursued the loader-GOT hypothesis with live memory inspection (procstat -v + reading
+/proc/<pid>/mem). Hard evidence:
+- **libroblox's GOT resolves its libc imports into cordial-run's address space**, not
+  libc.so: read/open/fopen/uname GOT slots all point to 0x1dc7c4... (cordial-run's
+  r-x range), while the real /lib/libc.so.7 is mapped but unused by the GOT. Premise
+  CONFIRMED — cordial redirects imports to its shims; a real/Linuxulator client's GOT
+  points into a libc.so.
+- **libroblox is mapped rwx** (single region) — a W^X violation; real libs are r-x text.
+
+Tested both tractable fixes:
+1. **Relabel cordial-run as libc.so in synth /proc/self/maps** (so GOT->cordial-run
+   reads as GOT->libc) — still 304 at ~65s. So an anti-hook check (if any) does not use
+   the /proc/self/maps label; it would use the dynamic linker's link_map / real
+   addresses.
+2. **mprotect libroblox text to r-x** (new, confirmed in live maps: r-x now; eager
+   RTLD_NOW binding means nothing writes text after) — still 304 at ~66s. The W^X tell
+   is not the gate either. KEPT as a hardening fix (5th shipped fix; correct regardless).
+
+So the loader tells are real and confirmed, but neither observable fix resolves the
+304. If the mechanism is a GOT-integrity/anti-hook check, it compares GOT targets to
+the real libc.so range via the link_map — which would require Cordial's shims to live
+in a mapping the link_map calls libc.so (i.e. build the shim provider as a real
+libc.so and have libroblox's imports resolve into it). That is an architectural linker
+change (multi-session), and is the FreeBSD-vs-Linux loader gap Linuxulator closes.
+Alternatively the mechanism is not the GOT at all and remains in the encrypted survey.
+
+Fixes shipped: 5 (early base-url, syscall /proc synth, /sys+net synth, uname, rx-text).

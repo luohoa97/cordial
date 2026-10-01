@@ -1894,6 +1894,32 @@ fn main() -> ExitCode {
         code_size as f64 / (1024.0 * 1024.0)
     );
 
+    // The bionic linker here maps libroblox's segments from an initial
+    // PROT_READ|PROT_WRITE|PROT_EXEC reservation (linker_phdr.cpp) and never
+    // downgrades the text, so the code segment stays rwx (confirmed via
+    // procstat). A normally-loaded library has r-x text; an rwx executable
+    // region is a W^X violation and a classic injected/tampered-code signature
+    // an anti-tamper scan flags. dlopen used RTLD_NOW (eager binding) so the PLT
+    // is resolved and nothing writes the text afterwards. Downgrade it to r-x.
+    // `CORDIAL_RX_TEXT=off` disables (control).
+    if std::env::var("CORDIAL_RX_TEXT").map_or(true, |v| v != "off") {
+        unsafe {
+            extern "C" {
+                fn mprotect(a: *mut core::ffi::c_void, l: usize, p: i32) -> i32;
+            }
+            const PROT_READ: i32 = 1;
+            const PROT_EXEC: i32 = 4;
+            let page = 4096usize;
+            let start = code_base & !(page - 1);
+            let end = (code_base + code_size + page - 1) & !(page - 1);
+            let rc = mprotect(start as *mut _, end - start, PROT_READ | PROT_EXEC);
+            println!(
+                "  [rx-text] mprotect({start:#x}, {} bytes) -> r-x: rc={rc}",
+                end - start
+            );
+        }
+    }
+
     if android_libpath {
         // Sober's own mapping, for shape reference (flag-init.md §31):
         //   /data/app/~~<hash>/com.roblox.client-<hash>/lib/x86_64/libroblox.so
