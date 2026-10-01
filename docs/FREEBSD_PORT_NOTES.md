@@ -1898,3 +1898,44 @@ locally. This closes the last client-side "disable it" avenue. Eight levers now
 measured against the 304 (storage, /proc maps+mounts, cmdline, disconnect-ignore,
 fd-limit, headless, and FastFlag override) — all leave it at a fixed ~60 s
 server drop.
+
+### 2026-10-01 (cont.): research pass + §13-17 re-tested on 2.738
+
+Stepped outside the binary and researched the wider Linux/Roblox world, then
+re-ran this repo's own §13-17 experiments on 2.738.1397.
+
+**What the error actually is (corrected again).** 304 = AndroidAnticheatKick is
+the Android anti-cheat, which Hyperion/Byfron is NOT (that is PC-only; no
+`byfron`/`.vmp0` strings in this Android binary). The *unfixable* wall is a
+different code, 318 = Android Remote Attestation (ARA), which is per-game and
+needs real hardware crypto. NDS has no ARA, so our 304 is the general anti-cheat
+that Sober passes on NDS — i.e. a non-device client *can* pass it. The anti-cheat
+is server-toggled per build: this repo's §14 measured it vanish on 2.734 and it
+is back on 2.738.
+
+**Distinct hypotheses tested this session, all leaving 304 at ~60s:**
+- device/initialize tracker: cordial's `browser_tracker.rs` uses `GET` (404); the
+  real endpoint is `POST`, and an *authenticated* POST returns a real
+  `RBXEventTrackerV2` (repo §13.1 only tried it logged-out, got 500). Injected the
+  fresh tracker into the jar; 304 unchanged. Matches repo §16: mocktail fails the
+  tracker too (`main.cc:711`) and survives, so it is ruled out.
+- API base URL: `nativeSetBaseUrl`'s second argument is the **API base**, not a
+  copy of the first. `CORDIAL_SET_BASE_URL='https://www.roblox.com,https://apis.roblox.com'`
+  drives `onFlagsFailed` from 2 to **0** (the exact §13 mocktail/cordial
+  difference). But 304 still fires and RbxStorage still never builds — so
+  `onFlagsFailed` is decoupled from the 304, confirming §14's suspicion. (The
+  recipe should still use the apis base: it is the correct value.)
+- Join handshake is fully normal (NetworkClient:Create, replicator, schema, peer
+  id, join snapshot) then 60s of normal operation, then a clean server-sent 304
+  with `IsOutgoingDataWaiting 1`. Not a handshake failure — a server verdict.
+
+**Still-empty-host apis calls** (`guac-v2/app-policy`, `v1/turn`,
+`browser-tracker`) use a base the apis-base setter does not cover; app-policy has
+a shipped default (`content/guac/defaultConfigs/GuacDefaultPolicy-GlobalDist.json`)
+so its fetch failing is likely non-fatal.
+
+**Where this leaves the 304:** consistent with this repo's own §16 honest state —
+a working jnivm-based client (mocktail) passes and cordial does not, and the
+client-side difference is unidentified even with mocktail's source. The one
+repo-endorsed untested lead is §17: cordial segfaults on the *normal* late-settings
+ordering mocktail uses (recorded on 2.730, never re-tested). Testing that next.
