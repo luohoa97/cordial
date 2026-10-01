@@ -2366,3 +2366,38 @@ client-side crypto/integrity/security (verbose). Remaining deep paths: (A) resto
 the RbxStorage build (regressed 0/3) and test the store<->304 link directly;
 (C) diff the device/hardware descriptor and replicated data Cordial transmits vs
 mocktail on the same binary. Both require multi-step work (bisect / send-side RE).
+
+### 2026-10-01 (cont.): device descriptor ruled out — narrows to the FreeBSD-vs-Linux syscall environment
+
+Checked the transmitted device descriptor. Cordial reports `DeviceParams.deviceName/
+manufacturer/socModel = "Cordial"/"Cordial"/"cordial"` (init_params.cpp:1545-1553,
+hardcoded, NOT profile-dependent — so the pc-vs-android test never varied them).
+That looked like a transmitted non-Android tell. But the surviving client disproves
+it: **mocktail reports `[FLog::Graphics] Vulkan Android Device: Windows 11 PC`** — an
+equally-fake, non-Android device name — and survives 889s. So the anticheat does
+NOT validate these descriptor strings against a real-device database; the fake name
+is not the gate.
+
+**What that leaves.** Same binary; mocktail survives, Cordial dies; no client-side
+error; /proc Android-shaped at both layers; crypto/integrity clean; device
+descriptor fake in both. The one structural difference remaining is the runtime
+*environment the binary executes in*: **mocktail runs under Linuxulator (real Linux
+syscall ABI, Fedora userspace); Cordial makes native FreeBSD syscalls through the
+ABI-translation layer.** A server-side "modified client" kick with no client-side
+error, that one native-FreeBSD build fails and the same binary under a Linux ABI
+passes, points at the anticheat fingerprinting a Linux-vs-FreeBSD syscall/behaviour
+difference and reporting it to the server.
+
+This is consistent with WHY mocktail works at all (Linuxulator hands it a Linux
+kernel ABI) and is the crux of the native port: the goal forbids Linuxulator, so the
+remaining work is to find the *exact* probe — a syscall whose result/behaviour
+differs, a /sys or /proc path not yet synthesised, a kernel-identifying call — and
+make the native-FreeBSD ABI layer answer it the way a Linux/Android kernel would.
+That is a bounded but deep RE target (strace-style syscall diff of the binary under
+the two runtimes), not an external hardware prerequisite. It remains internal and,
+in principle, fixable without Linuxulator — just not cheaply.
+
+Final cumulative ruled-out this session: version, device profile, device descriptor,
+account, attestation, asset-403s, session report, early base-url, mocktail init
+ordering, /proc env (fopen+syscall), client-side crypto/integrity/security. The 304
+is isolated to a server-validated FreeBSD-vs-Linux environment fingerprint.
