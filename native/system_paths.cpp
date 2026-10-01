@@ -318,6 +318,30 @@ static const char* synth_proc_content(const char* path) {
             "/data/media /storage/emulated sdcardfs "
             "rw,nosuid,nodev,noatime 0 0\n";
     }
+    // The OOM score. Linux/Android answers a small integer; FreeBSD has no such
+    // node and the real read returns null -- another "not Linux" tell.
+    if (std::strcmp(path, "/proc/self/oom_score") == 0) {
+        return "0\n";
+    }
+    // The open UNIX-domain socket table. An Android anti-cheat reads this to scan
+    // for an injected cheat engine's IPC socket (Synapse/Velocity and the like
+    // bind named UNIX sockets); FreeBSD has no `/proc/net/unix`, so the real read
+    // returns null and the scan cannot run -- which reads as "cannot verify this
+    // client is clean". Serve a plausible, exploit-free Android socket table so
+    // the scan completes and finds nothing. Same env gate / ADR-001 override.
+    if (std::strcmp(path, "/proc/net/unix") == 0) {
+        return
+            "Num       RefCount Protocol Flags    Type St Inode Path\n"
+            "0000000000000000: 00000002 00000000 00010000 0001 01 2871 "
+            "/dev/socket/property_service\n"
+            "0000000000000000: 00000002 00000000 00010000 0001 01 2903 "
+            "/dev/socket/logdw\n"
+            "0000000000000000: 00000002 00000000 00010000 0001 01 2904 "
+            "/dev/socket/logdr\n"
+            "0000000000000000: 00000002 00000000 00010000 0001 01 3155 "
+            "/dev/socket/zygote\n"
+            "0000000000000000: 00000003 00000000 00000000 0001 03 31840\n";
+    }
     return nullptr;
 }
 #endif
@@ -330,6 +354,57 @@ static const char* synth_proc_content(const char* path) {
 /// map and rewrites only the path column, keeping every address, so anything that
 /// cross-checks an address against the map still matches. Same ADR-001 override
 /// as the mount fake; same env gate.
+/// Synthetic Android sysfs for the CPU-frequency and battery nodes the engine
+/// polls. FreeBSD has no `/sys`, so every one of these reads returns null — and
+/// the engine polls `scaling_cur_freq` hundreds of times a session, so what the
+/// server's device-health report sees is a "device" whose CPU frequency, core
+/// topology and battery are all unreadable: a tell no `ro.product.*` value can
+/// cover, and the mirror of the `/proc/self/mounts` case. Under Linuxulator the
+/// same binary reads a real linsysfs; native FreeBSD gets nothing. Served only
+/// under `CORDIAL_FAKE_PROC`, same env gate / ADR-001 override as the /proc fakes.
+/// Values model a 16-core x86_64 Android device (what Cordial reports elsewhere).
+static const char* synth_sys_content(const char* path) {
+    if (path == nullptr || std::getenv("CORDIAL_FAKE_PROC") == nullptr) {
+        return nullptr;
+    }
+    if (std::strncmp(path, "/sys/devices/system/cpu/", 24) == 0) {
+        if (std::strstr(path, "/cpufreq/") != nullptr) {
+            if (std::strstr(path, "time_in_state") != nullptr) {
+                return "2400000 1000\n1800000 3000\n1200000 8000\n";
+            }
+            if (std::strstr(path, "min_freq") != nullptr) {
+                return "1200000\n";
+            }
+            if (std::strstr(path, "max_freq") != nullptr) {
+                return "2400000\n";
+            }
+            if (std::strstr(path, "cur_freq") != nullptr) {
+                return "1800000\n";
+            }
+        }
+        if (std::strstr(path, "tsc_freq_khz") != nullptr) {
+            return "2400000\n";
+        }
+        if (std::strstr(path, "/cpu/online") != nullptr ||
+            std::strstr(path, "/cpu/present") != nullptr ||
+            std::strstr(path, "/cpu/possible") != nullptr) {
+            return "0-15\n";
+        }
+    }
+    if (std::strstr(path, "/sys/class/power_supply/") != nullptr) {
+        if (std::strstr(path, "capacity") != nullptr) {
+            return "87\n";
+        }
+        if (std::strstr(path, "status") != nullptr) {
+            return "Charging\n";
+        }
+        if (std::strstr(path, "present") != nullptr) {
+            return "1\n";
+        }
+    }
+    return nullptr;
+}
+
 static std::string build_synth_maps(const char* real) {
     std::string out;
     FILE* src = ::fopen(real, "r");
@@ -413,6 +488,10 @@ FILE* s_fopen(const char* path, const char* mode) {
         trace("fopen", path, "synth-android");
         return ::fmemopen(const_cast<char*>(synth), std::strlen(synth), "r");
     }
+    if (const char* ssynth = synth_sys_content(path)) {
+        trace("fopen", path, "synth-sys");
+        return ::fmemopen(const_cast<char*>(ssynth), std::strlen(ssynth), "r");
+    }
     if (std::getenv("CORDIAL_FAKE_PROC") != nullptr &&
         std::strcmp(path, "/proc/self/maps") == 0) {
         char _mb[PATH_MAX];
@@ -467,6 +546,13 @@ int s_open(const char* path, int flags, ...) {
     if ((flags & (O_WRONLY | O_RDWR | O_CREAT)) == 0) {
         if (const char* synth = synth_proc_content(path)) {
             int sfd = fd_from_bytes(synth, std::strlen(synth));
+            if (sfd >= 0) {
+                trace_i("open", path, sfd);
+                return sfd;
+            }
+        }
+        if (const char* ssynth = synth_sys_content(path)) {
+            int sfd = fd_from_bytes(ssynth, std::strlen(ssynth));
             if (sfd >= 0) {
                 trace_i("open", path, sfd);
                 return sfd;

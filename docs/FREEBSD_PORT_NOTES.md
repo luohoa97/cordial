@@ -2401,3 +2401,34 @@ Final cumulative ruled-out this session: version, device profile, device descrip
 account, attestation, asset-403s, session report, early base-url, mocktail init
 ordering, /proc env (fopen+syscall), client-side crypto/integrity/security. The 304
 is isolated to a server-validated FreeBSD-vs-Linux environment fingerprint.
+
+### 2026-10-01 (cont.): file-path environment EXHAUSTIVELY ruled out (6 synths, all fail); narrows to syscall-behaviour / join-time hardware report
+
+Traced the actual IN-GAME reads to the kick (CORDIAL_TRACE_PATHS, 152k lines) and
+synthesised every "not Android" file read found, testing the 304 after each:
+- `/sys/devices/system/cpu/*` (scaling_cur_freq polled 614x, cpuinfo_max_freq,
+  time_in_state, online/present/possible) + `/sys/class/power_supply/battery/*`
+  — synthesised to a 16-core Android device. Confirmed served (9187 synth-sys). 304.
+- `/proc/self/oom_score` (null 714x) — synthesised "0". 304.
+- `/proc/net/unix` (null — the classic anti-cheat exploit-socket scan; Synapse/
+  Velocity bind named UNIX sockets and the AC reads this table to find them) —
+  synthesised a clean, exploit-free Android socket table. 304.
+Plus the earlier /proc/self/{maps,mounts,cmdline} at both fopen and syscall layers.
+
+**All six file-path synths fail: 304 still fires at ~63-65s every time.** The
+in-game trace also shows the AC stat()-ing for known exploits by name
+(`SELIWARE`, `velocity_assets`, `gca`, `custom`) — all correctly -1 (absent), so
+that check passes. So the 304 is NOT gated on any readable /proc or /sys file.
+
+Kept the synths (gated under CORDIAL_FAKE_PROC): they close real evasion gaps even
+though none is the 304 gate.
+
+**What remains.** With every file read Android-shaped and the kick unchanged, the
+FreeBSD-vs-Linux fingerprint is not file-based — it is syscall-BEHAVIOUR level or a
+value COMPUTED at join and transmitted: e.g. `sysconf` (early log already shows
+`sysconf(11) has no FreeBSD mapping; returning -1`), `sysctl`, CPU/mem counts, or a
+syscall whose result/errno differs between the native-FreeBSD ABI layer and Linux.
+The decisive next instrument is a truss/strace-style syscall diff of the binary at
+the 50-60s mark under Cordial vs under a Linux ABI, to find the one call whose
+answer differs — then make the ABI layer return the Linux/Android answer. Bounded
+but deep; still internal, still not an external hardware prerequisite.
