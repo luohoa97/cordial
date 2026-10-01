@@ -2634,3 +2634,31 @@ the target is the pre-encryption survey/anti-cheat-report builder, and the win
 condition is seeing one field that encodes native-FreeBSD where mocktail's encodes
 Linux. The testable/observable surface outside that RE is exhausted (20+ hypotheses,
 client state fully matched to the surviving client, kick unchanged).
+
+### 2026-10-01 (cont.): RE path scoped to its practical limit — 80 MB stripped/obfuscated .text, no decompiler; completion needs Ghidra/IDA + weeks
+
+Took the binary-RE path as far as available tooling allows. libroblox.so is
+stripped (1086 exports, zero internal symbols), built obfuscated for Android 26,
+with an **80 MB `.text` section** (0x04bff72a). Located the `AndroidAnticheat`
+string (file off 0x4f4724) and the SessionCrypto strings, but the host has **no
+decompiler** — only objdump/nm (no Ghidra, IDA, radare2, or rizin; `pkg` shows none
+installed). Finding the one xref to the anti-cheat/survey builder in 80 MB of
+obfuscated code, recovering its bounds and signature without symbols, understanding
+the probe, and hooking it, is a multi-week reverse-engineering effort that requires
+a decompiler — not achievable in-session with objdump alone.
+
+**Final state of the 60s/304, honestly:**
+- NOT fixed — still ~65s on every configuration.
+- Every observable/testable path exhausted (20+ hypotheses; Cordial's entire
+  presentable client state matched to the surviving client; 4 real fixes shipped).
+- RE path STARTED and scoped: packet capture proved the deciding data is in the
+  encrypted RakNet survey; binary analysis proved completing the RE needs a
+  decompiler + weeks. That is the only remaining avenue and it is a funded,
+  tooled, multi-session project, not a continuation.
+
+**What a next effort needs, concretely:** (1) install Ghidra or IDA on a box that
+can open the 80 MB lib; (2) decompile the SessionCrypto/RbxOpenRequest2 path and
+the AndroidAnticheat report builder; (3) identify the one field/probe that encodes
+native-FreeBSD where mocktail's (Linuxulator) encodes Linux; (4) shim it in
+Cordial's ABI layer and re-test the 60s join. Everything up to that point — the
+full observable surface — has been done and recorded here.
