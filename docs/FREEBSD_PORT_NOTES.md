@@ -2252,3 +2252,37 @@ not call `RbxStorage::init`. The concrete remaining RE target is the engine code
 between the post-settings `flagLoaded` signal and `RbxStorage::init` — what
 mocktail's runtime satisfies at 0.44s that Cordial's does not. Ordering/dirs/
 base-url are ruled out as the trigger (above). Internal and fixable; deep.
+
+### 2026-10-01 (cont.): the store build has REGRESSED (0/3) vs §46's 12/12 — and an honest note on target choice
+
+Measured the current RbxStorage-build rate directly: **0 of 3 clean boots** fire
+`RbxStorage::init` (default config, EARLY_DIRS defaults to files,cache and runs).
+On mocktail's 2.736 binary through current Cordial it is also 0 (mocktail builds
+it on that same binary). §46 recorded **12/12 with files,cache**; so a Cordial-side
+change between §46's build (`0.6.0-15-g8784c1e` era) and now regressed the boot-time
+store build entirely. Concrete, bisectable lead.
+
+Trigger-window diff (Cordial-2.736 vs mocktail-2.736, same binary): mocktail's
+`nativePostClientSettingsLoadedInitialization3` (0.433s) is immediately followed by
+`RobloxChannel has been set to production`, `Setting up fast log system`, the full
+`ClientRunInfo` block, `AppPlatformQoSEmergency`, Mimalloc, then `RbxStorage::init`
+(0.439s). Cordial's post-settings (1.26s) is followed by Mimalloc, then
+`IxpStorageManager: Failed to open cache file for reading`, then the engine
+RE-FETCHES its own settings (`getFlags: success, payload 1373031` at 1.44s) and
+logs ClientRunInfo at 1.44 — and never fires `RbxStorage::init`. So Cordial's
+injected settings do not make the engine commit to the store the way mocktail's do.
+
+**Honest note on whether the store is even the right target.** The store<->304
+correlation is weak (§14) and remains UNPROVEN. 304 is `DisconnectAndroidAnticheatKick`;
+"corrupted files / reinstall from official store" is that anticheat's generic
+"illegitimate client" text. On the same binary mocktail passes this check and
+Cordial fails it, so the failing thing is some property of Cordial's *runtime
+environment* that the anticheat probes. That could be the incomplete init
+(store/URLs/FindClass) OR a lower-level probe (/proc and /system are redirected in
+Cordial per 74111f2; raw-mmap'd libroblox vs a normally-loaded one; syscall/maps
+differences). Two distinct next branches, neither yet eliminated:
+  (A) Bisect+restore the boot-time store build (§46 regression), then test 304 with
+      a build that has the store — the one decisive store<->304 test never run cleanly.
+  (B) Compare what the Android anticheat actually probes between the two runtimes
+      (/proc/self/maps, /proc/self/status, the loader's footprint) since that is
+      what a "detected modified client" kick most directly reads.
