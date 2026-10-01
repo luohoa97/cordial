@@ -685,6 +685,46 @@ int prctl(int option, ...) {
     return -1;
 }
 
+// Linux/bionic uname(2). libroblox imports `uname` (crashpad's
+// SystemSnapshotLinux::ReadKernelVersion, among others), and with `--host-libc`
+// an unprovided `uname` resolves to FreeBSD's, which answers
+// `sysname="FreeBSD" release="14.4-RELEASE..." machine="amd64"` -- a straight
+// "this kernel is not Linux/Android" tell that no Build.* string covers, read
+// through a libc call that never reaches `bionic_syscall` so it is invisible to
+// CORDIAL_TRACE_SYSCALL. Two defects in one, the same shape as the statvfs /
+// sigset_t / mallinfo divergences: (1) the VALUES name FreeBSD, and (2) bionic's
+// `struct utsname` is six 65-byte fields (SYS_NMLN=65) while FreeBSD's is six
+// 256-byte fields, so even a corrected passthrough would land every field but
+// the first at the wrong offset. Fill the bionic shape by hand with
+// Android/Linux values, consistent with `os.name="Linux"` (platform_name()).
+struct cordial_bionic_utsname {
+    char sysname[65];
+    char nodename[65];
+    char release[65];
+    char version[65];
+    char machine[65];
+    char domainname[65];
+};
+int uname(struct cordial_bionic_utsname *u) {
+    if (u == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    memset(u, 0, sizeof *u);
+    strlcpy(u->sysname, "Linux", sizeof u->sysname);
+    strlcpy(u->nodename, "localhost", sizeof u->nodename);
+    // A plausible Android/Linux kernel release and build string. The exact value
+    // is not load-bearing the way `sysname` is; what matters is that it reads as
+    // a Linux kernel, not FreeBSD. x86_64 matches what Cordial runs and what the
+    // x86_64 Roblox APK targets.
+    strlcpy(u->release, "5.10.157-android13-4-00003-gcordial", sizeof u->release);
+    strlcpy(u->version, "#1 SMP PREEMPT Thu Jan 1 00:00:00 UTC 2026",
+            sizeof u->version);
+    strlcpy(u->machine, "x86_64", sizeof u->machine);
+    strlcpy(u->domainname, "localdomain", sizeof u->domainname);
+    return 0;
+}
+
 // Linux sched_setscheduler/sched_setparam. The engine's FunctionMarshaller (and
 // other threads) ask for SCHED_FIFO at max priority. On FreeBSD that either fails
 // EPERM (unprivileged) or, if it succeeds, makes the thread real-time — and a

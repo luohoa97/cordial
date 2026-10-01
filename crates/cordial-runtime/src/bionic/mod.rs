@@ -108,6 +108,7 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             fn bionic_pthread_rwlock_unlock();
             fn bionic_pthread_rwlock_destroy();
             fn prctl();
+            fn uname();
             fn bionic_sysinfo();
             fn bionic_mmap();
             fn getauxval();
@@ -146,6 +147,10 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
             f!("pthread_rwlock_unlock", bionic_pthread_rwlock_unlock),
             f!("pthread_rwlock_destroy", bionic_pthread_rwlock_destroy),
             f!("prctl", prctl),
+            // libroblox imports `uname`; without this it binds the host FreeBSD
+            // one, which answers sysname="FreeBSD" machine="amd64" (a kernel tell)
+            // through a struct of the wrong field size. Shim answers Linux/x86_64.
+            f!("uname", uname),
             f!("sysinfo", bionic_sysinfo),
             f!("mmap", bionic_mmap),
             f!("mmap64", bionic_mmap),
