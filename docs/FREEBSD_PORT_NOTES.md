@@ -2228,3 +2228,27 @@ as its trigger. The next technically-distinct lead is why `nativeInitClientSetti
 + `nativePostClientSettingsLoadedInitialization3` produce `flagLoaded` under
 mocktail's jnivm/VM but not Cordial's on the identical binary — i.e. a jnivm/VM
 setup difference, not a call-sequence difference.
+
+### 2026-10-01 (cont.): correction — the flags-loaded PATH is reached; RbxStorage::init is not triggered from it
+
+Correcting the entry above ("flagLoaded init never firing"): Cordial DOES reach
+the flags-loaded path. Its engine logs, on the 2.736 run:
+  `[FLog::NativeDM] initialize: state:11. areFlagsLoaded:true.`  (1.36s)
+  `[FLog::NativeDM] continueAfterFlagsLoaded_:`                   (1.53s)
+So `areFlagsLoaded` is true and `continueAfterFlagsLoaded_` runs. What does NOT
+happen is `RbxStorage::init [INIT] user: flagLoaded` being triggered from it.
+
+mocktail builds the store from an EARLY flagLoaded trigger at **0.44s**, right
+after `nativePostClientSettingsLoadedInitialization3` (0.433s) — and mocktail does
+NOT log `continueAfterFlagsLoaded_`/`areFlagsLoaded` at default verbosity at all,
+i.e. its storage build comes from a different, earlier flagLoaded path than
+Cordial's late `continueAfterFlagsLoaded_` at 1.53s.
+
+So the §16 root, refined: it is not that Cordial fails to load flags (it does,
+areFlagsLoaded:true) — it is that the `flagLoaded` event that builds
+`RbxStorage` (mocktail's 0.44s one) is a different, earlier trigger than the
+`continueAfterFlagsLoaded_` path Cordial reaches at 1.53s, and Cordial's path does
+not call `RbxStorage::init`. The concrete remaining RE target is the engine code
+between the post-settings `flagLoaded` signal and `RbxStorage::init` — what
+mocktail's runtime satisfies at 0.44s that Cordial's does not. Ordering/dirs/
+base-url are ruled out as the trigger (above). Internal and fixable; deep.
