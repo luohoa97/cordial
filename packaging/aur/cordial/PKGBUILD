@@ -149,7 +149,12 @@ source=(
   # bumping $pkgver here by hand. Unset -- the ordinary case, on an AUR
   # user's own machine -- it falls back to v$pkgver, which is what a plain
   # `makepkg` or `makepkg -si` against this committed file builds.
-  "$pkgname::git+https://github.com/luohoa97/cordial.git#tag=${CORDIAL_PKGBUILD_TAG:-v$pkgver}"
+  # CORDIAL_PKGBUILD_SOURCE replaces the whole source for the same caller on
+  # anything but a tag: it points at the commit CI checked out, because a
+  # pull request built against `main`'s source tests this file against code
+  # it was not written for -- #77's Arch leg failed asking `main` for a
+  # feature only the pull request adds.
+  "$pkgname::${CORDIAL_PKGBUILD_SOURCE:-git+https://github.com/luohoa97/cordial.git#tag=${CORDIAL_PKGBUILD_TAG:-v$pkgver}}"
   # The two submodules, and mcpelauncher-linker's own two, declared here
   # rather than fetched by `git submodule update --init --recursive` in
   # prepare(). A release tag's tarball from GitHub's own archive endpoint
