@@ -40,6 +40,7 @@ extern "C" fn native_many(env: i64, obj: i64, b: i8, c: u16, s: i16, i: i32, j: 
 /// pointer, gives the same bits as the native function for 1000 argument
 /// sets; and its argument map is applied (the JNIEnv* swap).
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m3_host_entry_matches_native_with_stack_overflow_both_ways() {
     use Ty::*;
     let rt: Arc<Runtime> = Runtime::new(Options::default());
@@ -86,6 +87,7 @@ fn child(scenario: &str) -> (std::process::ExitStatus, String) {
 
 /// Not a test on its own: the body of each signal scenario, run in a child.
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m3_signal_child() {
     let Ok(scenario) = std::env::var("CORDIAL_M3_SCENARIO") else { return };
     // Creating a Jit installs dynarmic's process-wide SIGSEGV handler, after
@@ -125,6 +127,7 @@ fn m3_signal_child() {
 }
 
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m3_host_fault_after_jit_still_dies_by_sigsegv() {
     use std::os::unix::process::ExitStatusExt;
     let (st, err) = child("host");
@@ -133,6 +136,7 @@ fn m3_host_fault_after_jit_still_dies_by_sigsegv() {
 }
 
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m3_guest_wild_pointer_dies_by_sigsegv() {
     use std::os::unix::process::ExitStatusExt;
     let (st, err) = child("guest");
@@ -141,6 +145,7 @@ fn m3_guest_wild_pointer_dies_by_sigsegv() {
 }
 
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m3_stack_overflow_after_jit_is_still_named_by_rust() {
     use std::os::unix::process::ExitStatusExt;
     let (st, err) = child("overflow");

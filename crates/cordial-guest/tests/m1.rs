@@ -94,6 +94,7 @@ impl World {
 }
 
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m1_strlen_matches_native() {
     let w = world(MonitorMode::Global);
     let mut rng = Rng(0x5eed_0001);
@@ -131,6 +132,7 @@ struct FmtArgs {
 }
 
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m1_snprintf_matches_native() {
     let w = world(MonitorMode::Global);
     let fmt_ptr = guest_call(&w.rt, w.at(guest::GUEST_FMT), &[], &[]).unwrap().x0 as *const c_char;
@@ -183,6 +185,7 @@ extern "C" fn native_cmp_int(a: *const c_void, b: *const c_void) -> c_int {
 }
 
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m1_qsort_with_guest_comparator_matches_native() {
     let w = world(MonitorMode::Global);
     let mut rng = Rng(0x5eed_0003);
@@ -208,6 +211,7 @@ extern "C" fn native_cmp_len(a: *const c_void, b: *const c_void) -> c_int {
 
 /// guest -> host qsort -> guest comparator -> host strlen, twice per compare.
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m1_qsort_nested_three_levels_matches_native() {
     let w = world(MonitorMode::Global);
     let mut rng = Rng(0x5eed_0004);
@@ -245,6 +249,7 @@ const FIXED: [Ty; 17] = {
 /// before an overflowed int. The classifier matches native on 1000 cases;
 /// the design's fixed mapping, as the control, does not.
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m1_snprintf_fp_overflow_before_int_overflow() {
     let w = world(MonitorMode::Global);
     let fixed = w.rt.register("snprintf/fixed-mapping", Box::new(|c| {
@@ -289,6 +294,7 @@ fn m1_snprintf_fp_overflow_before_int_overflow() {
 /// dynarmic does not switch MXCSR back to the host's around CallSVC, so a
 /// host callee runs under the guest's FPCR as dynarmic translated it.
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m1_host_callee_runs_under_guest_rounding_mode() {
     #[allow(deprecated)]
     extern "C" fn read_mxcsr() -> u64 {
@@ -305,6 +311,7 @@ fn m1_host_callee_runs_under_guest_rounding_mode() {
 }
 
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m1_tpidr_is_the_threads_tls_block() {
     let w = world(MonitorMode::Global);
     let a = guest_call(&w.rt, w.at(guest::GUEST_TPIDR), &[], &[]).unwrap().x0;
@@ -345,16 +352,19 @@ fn llsc(mode: MonitorMode) {
 }
 
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m1_llsc_global_monitor() {
     llsc(MonitorMode::Global);
 }
 
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m1_llsc_global_monitor_inline() {
     llsc(MonitorMode::GlobalInline);
 }
 
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m1_llsc_ignore_global_monitor() {
     llsc(MonitorMode::Ignore);
 }
@@ -363,6 +373,7 @@ fn m1_llsc_ignore_global_monitor() {
 /// store would lose increments. Not run as guest code -- the point is only
 /// that 64 x N is not a total any racy counter reaches by luck.
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m1_llsc_control_racy_counter_loses_updates() {
     let mut counter = 0i64;
     let p = &mut counter as *mut i64 as usize;

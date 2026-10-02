@@ -357,6 +357,30 @@ pub(crate) unsafe fn translate_chain(rt: &Arc<Runtime>, cmd: &str, top: u64, kee
     Ok(head)
 }
 
+/// Why this machine cannot run the layout gates, here and in `guest_xr`, if
+/// it cannot: no `clang`, or one that cannot compile for a target the gates
+/// compare. The Flatpak SDK's clang is x86 only, and `cargo test --workspace`
+/// failed on it for want of a cross-compiler only these two tests use; they
+/// skip and say so instead, as they do against other Vulkan headers. Asked
+/// with an empty file, so a probe that does not compile still fails the gate.
+#[cfg(test)]
+pub(crate) fn layout_gate_cannot_compile() -> Option<String> {
+    for target in ["aarch64-linux-android26", "x86_64-linux-gnu", "i686-linux-gnu"] {
+        let out = match std::process::Command::new("clang")
+            .args([&format!("--target={target}"), "-ffreestanding", "-nostdlibinc", "-x", "c", "-c", "/dev/null", "-o", "/dev/null"])
+            .output()
+        {
+            Ok(out) => out,
+            Err(e) => return Some(format!("cannot run clang: {e}")),
+        };
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Some(format!("clang cannot compile for {target}: {}", err.lines().next().unwrap_or("").trim()));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,6 +529,10 @@ mod tests {
         if host != Some(table::HEADER_VERSION) {
             println!("layout gate skipped: headers at {} are VK_HEADER_VERSION {:?}, the table was generated from {}",
                      include_dir().display(), host, table::HEADER_VERSION);
+            return;
+        }
+        if let Some(why) = super::layout_gate_cannot_compile() {
+            println!("layout gate skipped: {why}");
             return;
         }
         let dir = std::env::temp_dir().join(format!("cordial-vk-gate-{}", std::process::id()));

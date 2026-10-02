@@ -77,6 +77,7 @@ impl World {
 
 /// One thread: write, protect, call, unprotect, rewrite, protect, call.
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn code_rewritten_in_place_runs_the_new_code() {
     let w = World::new();
     for i in 0..100u64 {
@@ -89,6 +90,7 @@ fn code_rewritten_in_place_runs_the_new_code() {
 /// One thread: write, protect, call, unmap, map again at the same address,
 /// write, protect, call.
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn code_unmapped_and_mapped_again_runs_the_new_code() {
     let w = World::new();
     for i in 0..100u64 {
@@ -153,21 +155,25 @@ fn across_threads(wait: Wait, change: Change) {
 }
 
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn code_rewritten_under_a_spinning_thread() {
     across_threads(Wait::Spin, Change::Rewrite);
 }
 
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn code_rewritten_under_a_thread_in_a_host_call() {
     across_threads(Wait::Host, Change::Rewrite);
 }
 
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn code_remapped_under_a_spinning_thread() {
     across_threads(Wait::Spin, Change::Remap);
 }
 
 #[test]
+#[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn code_remapped_under_a_thread_in_a_host_call() {
     across_threads(Wait::Host, Change::Remap);
 }

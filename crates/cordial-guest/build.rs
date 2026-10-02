@@ -9,6 +9,8 @@ fn main() {
     // the target, not the host: the aarch64 build is a cross build from an
     // x86-64 machine.
     println!("cargo:rerun-if-changed=build.rs");
+    // Set by `build_test_guest` when the arm64 test image cannot be built.
+    println!("cargo:rustc-check-cfg=cfg(cordial_guest_no_image)");
     if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("x86_64") {
         return;
     }
@@ -91,19 +93,37 @@ fn build_test_guest(manifest: &Path) {
     };
     // The image is only for this crate's tests, and a packaging build that
     // never runs them should not need an arm64-capable clang, lld and the
-    // LLVM binutils for it. So anything missing fails the tests that include
-    // the image, by name, at their compile, and leaves the library and every
-    // other build alone. CI's test job has all of it. The Flatpak SDK's clang
-    // is the case that found this: it is built for x86 only, and rejects
-    // `--target=aarch64-linux-gnu` with "No available targets are compatible".
+    // LLVM binutils for it. The Flatpak SDK's clang is the case that found
+    // this: it is built for x86 only, and rejects `--target=aarch64-linux-gnu`
+    // with "No available targets are compatible". So anything missing leaves
+    // the library alone and the tests that run the image ignored, with this
+    // warning saying why. They used to fail to compile instead, which made
+    // `cargo test --workspace` from a checkout fail for want of a tool only
+    // these tests use. CI's test job has all of it.
+    //
+    // The ignored tests still compile, so they need every `GUEST_*` name: the
+    // sources' `guest_*` identifiers, a superset of the image's symbols that
+    // includes the ones defined in inline assembly, each as 0.
     let skip = |why: String| {
-        println!("cargo:warning=cordial-guest's test image was not built ({why}); its tests will not compile");
+        println!("cargo:warning=cordial-guest's arm64 test image was not built ({why}); the tests that run it are ignored");
+        println!("cargo:rustc-cfg=cordial_guest_no_image");
         std::fs::write(&bin, b"").unwrap();
-        std::fs::write(
-            out.join("guest_syms.rs"),
-            format!("compile_error!(\"cordial-guest's test image was not built: {why}\");\n"),
-        )
-        .unwrap();
+        let mut names = std::collections::BTreeSet::new();
+        for name in ["m1", "code"] {
+            let text = std::fs::read_to_string(src.join(format!("{name}.c"))).unwrap();
+            let mut rest = text.as_str();
+            while let Some(i) = rest.find("guest_") {
+                let boundary = rest[..i].chars().next_back().map_or(true, |c| !(c.is_ascii_alphanumeric() || c == '_'));
+                let tail = &rest[i..];
+                let end = tail.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(tail.len());
+                if boundary {
+                    names.insert(tail[..end].to_uppercase());
+                }
+                rest = &tail[end..];
+            }
+        }
+        let rs: String = names.iter().map(|n| format!("#[allow(dead_code)]\npub const {n}: u64 = 0;\n")).collect();
+        std::fs::write(out.join("guest_syms.rs"), rs).unwrap();
     };
     let tools: Vec<_> = ["ld.lld", "llvm-objcopy", "llvm-nm"].iter().map(|n| (*n, tool(n))).collect();
     let missing: Vec<&str> = tools.iter().filter(|(_, p)| p.is_none()).map(|(n, _)| *n).collect();

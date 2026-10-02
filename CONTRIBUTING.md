@@ -188,9 +188,9 @@ On x86-64 the VR mode's translator, dynarmic (`third_party/dynarmic`, a
 submodule with submodules of its own, which `--recursive` fetches), also needs
 Boost's headers: `boost-devel`, `libboost-dev` or `boost`. `cargo test` builds a
 small arm64 test image for `crates/cordial-guest` and needs `lld` and `llvm`
-for it; without them only that crate's tests fail to compile, by name. The
-build compiles the loader and dynarmic with `patches/0005`--`0008` applied, in
-a copy under `target/`, and leaves the submodules untouched
+for it; without them the tests that run it are ignored, and a build warning
+says why. The build compiles the loader and dynarmic with `patches/0005`--`0008`
+applied, in a copy under `target/`, and leaves the submodules untouched
 ([`patches/README.md`](patches/README.md)).
 
 ```bash

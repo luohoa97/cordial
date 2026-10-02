@@ -1445,6 +1445,12 @@ mod tests {
     /// sizes and offsets the bridge reads are checked against these headers.
     #[test]
     fn layout_gate() {
+        // Skipped, not failed, without a clang that can target all three
+        // (`guest_vk::layout_gate_cannot_compile` says why).
+        if let Some(why) = crate::guest_vk::layout_gate_cannot_compile() {
+            println!("xr layout gate skipped: {why}");
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("cordial-xr-gate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let arm = compile_probe("aarch64-linux-android26", &dir);
