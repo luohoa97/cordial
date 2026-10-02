@@ -12,9 +12,11 @@
 //! thunks that cannot be generic (variadic, callback-taking). Nothing here
 //! knows about Roblox.
 //!
-//! The line ADR-001 draws is kept by construction (design §7): dispatch is
-//! keyed only on SVC immediates in Cordial's own stub page, never on a guest
-//! address, and nothing here writes guest code.
+//! The line ADR-001 draws is kept by construction (design §7): a handler
+//! can be attached only to a slot of Cordial's own stub page, and an SVC
+//! reaches it only from that slot, never from an engine address
+//! (`Runtime::install`, `tests/stub_page.rs`). Nothing here writes the
+//! engine's code.
 //!
 //! On any target other than x86-64 the crate is empty: dynarmic's A64
 //! frontend has no arm64 host backend, and the aarch64 build runs the engine

@@ -43,7 +43,13 @@ hands-on session is noted under "Not established" below.
    never on engine addresses; no plugin sees translator state; and the
    engine's code is never written. The engine's unmodified instructions run,
    and behaviour changes only through what a real platform answers. A change
-   that breaks one of the three reopens this record.
+   that breaks one of the three reopens this record. The first is enforced
+   rather than described: `Runtime::install` in `cordial-guest` is the only
+   way a handler is attached and accepts only the stub page's next free
+   slot, and an `svc` anywhere but at the start of its own stub is the
+   guest's syscall, as arm64 Linux treats any `svc`. `tests/stub_page.rs`,
+   the `jit` unit test and `guest_link`'s
+   `every_function_import_resolves_to_a_registered_stub` fail without it.
 
 3. **The user supplies the Quest build, and Cordial downloads none.** Settings
    → VR imports an APK file or pulls it from a connected Quest with `adb`

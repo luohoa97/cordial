@@ -436,7 +436,9 @@ does. The design stays inside it only if:
 
 - (a) dispatch is keyed only on Cordial's own stub addresses and SVC ids, never on
   engine addresses. There is no PC-keyed hook table, no breakpoint, and no
-  `InvalidateCacheRange`-and-substitute.
+  `InvalidateCacheRange`-and-substitute. Enforced in `cordial-guest`: a
+  handler can be installed only in the next free stub slot, and an `svc`
+  outside its own stub is the guest's syscall (`tests/stub_page.rs`).
 - (b) nothing exposes Jit state to plugins.
 - (c) the outline-atomics byte, the anti-tamper `svc` sites and the engine's code are
   never written. Behaviour changes only through what a real platform would answer:

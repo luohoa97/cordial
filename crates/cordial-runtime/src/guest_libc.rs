@@ -917,7 +917,7 @@ pub(crate) fn guest_openat(dirfd: i64, path: u64, flags: u32, mode: u32) -> Resu
 
 /// `guest_openat` through the native function `name` (`open` or
 /// `__open_2`, which are different functions in the native table).
-fn openat_via(name: &'static str, native: Option<usize>, dirfd: i64, path: u64, flags: u32, mode: u32)
+pub(crate) fn openat_via(name: &'static str, native: Option<usize>, dirfd: i64, path: u64, flags: u32, mode: u32)
               -> Result<Result<u64, c_int>, Fault> {
     extern "C" {
         #[link_name = "openat"]

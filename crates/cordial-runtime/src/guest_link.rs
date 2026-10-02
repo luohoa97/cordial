@@ -811,6 +811,43 @@ mod tests {
         }
     }
 
+    /// ADR-053's first condition, from the table's side: every address a
+    /// function import resolves to is one of the runtime's registered stubs,
+    /// so the guest can only ever reach a handler through Cordial's own stub
+    /// page. Run over every import the x86-64 engine has
+    /// (`docs/analysis/undefined-symbols.tsv`), every described signature,
+    /// and the OpenXR and Meta loaders' names, so each kind of answer is in it.
+    #[test]
+    fn every_function_import_resolves_to_a_registered_stub() {
+        let tsv = include_str!("../../../docs/analysis/undefined-symbols.tsv");
+        let mut names: BTreeSet<&str> = tsv.lines().filter_map(|l| l.split('\t').nth(1)).collect();
+        names.extend(FUNCS.iter().map(|(n, _, _)| *n));
+        names.extend(gl_table::GL.iter().map(|(n, _, _)| *n));
+        names.extend(["xrCreateInstance", "xrGetInstanceProcAddr", "xrInitializeLoaderKHR", "ovr_PopMessage"]);
+        let imports: Vec<(&str, Binding)> = names.iter().map(|n| (*n, Binding::Strong)).collect();
+        let (rt, t) = table_for(&imports, &["stdout"], &[]);
+        let (page, end) = rt.stub_page();
+
+        let data: BTreeSet<&str> = t.rows.iter().filter(|r| r.answer == Answer::Data).map(|r| r.symbol.as_str()).collect();
+        let mut checked = BTreeMap::<Answer, usize>::new();
+        for (lib, entries) in &t.libraries {
+            for (name, addr) in entries {
+                if data.contains(name.as_str()) {
+                    continue;
+                }
+                let a = *addr as u64;
+                assert!((page..end).contains(&a), "{lib}:{name} resolved to {a:#x}, outside the stub page");
+                assert!(rt.stub_name(a).is_some(), "{lib}:{name} resolved to {a:#x}, which is no registered stub");
+                let answer = t.rows.iter().find(|r| &r.symbol == name).map_or(Answer::Thunk, |r| r.answer);
+                *checked.entry(answer).or_default() += 1;
+            }
+        }
+        println!("function imports checked against the stub page, by answer: {checked:?}");
+        for a in [Answer::Cordial, Answer::Host, Answer::Thunk, Answer::OpenXr, Answer::Stop] {
+            assert!(checked.get(&a).copied().unwrap_or(0) > 0, "no {a:?} import was checked");
+        }
+    }
+
     /// Weak gcov hooks stay null as on Android; an omitted import and a data
     /// import with no known layout are not registered at all, which is what
     /// makes the link fail naming them.

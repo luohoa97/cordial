@@ -4,8 +4,11 @@
 //! stub in a page Cordial owns: `svc #id; ret`. dynarmic hands the immediate
 //! to `CallSVC`, which looks the id up and runs its handler with the guest's
 //! registers in reach, and the `ret` then returns to the guest caller as
-//! though the stub had been the function. `svc #0` is never a stub, so a real
-//! Linux syscall stays distinguishable for free. Unused slots hold zero
+//! though the stub had been the function. A stub is recognised by where the
+//! SVC is as well as by its immediate: only the SVC at the start of a
+//! registered slot reaches a handler, and any other -- the engine's own
+//! `svc #0`, or an `svc #n` anywhere outside the page -- is a Linux syscall,
+//! as on arm64 Linux, which ignores the immediate. Unused slots hold zero
 //! words (`udf #0`), so a jump to a stub that was never registered stops
 //! with a fault rather than doing anything. dynarmic's decoder has no UDF
 //! entry, so that fault arrives as `InterpreterFallback`, not as the
@@ -129,10 +132,11 @@ pub enum Fault {
     /// which design §1.3 expected to arrive as `UnallocatedEncoding`. Not
     /// emulated, so it stops rather than continuing with a made-up value.
     InterpreterFallback { pc: u64, count: u64 },
-    /// `svc #0`: a raw Linux syscall with arm64 numbering, on a runtime with
-    /// no handler for them (`Runtime::set_syscall_handler`).
+    /// An SVC outside the stub page -- a raw Linux syscall with arm64
+    /// numbering, whatever its immediate -- on a runtime with no handler for
+    /// them (`Runtime::set_syscall_handler`).
     Syscall { pc: u64 },
-    /// An SVC immediate with no registered stub behind it.
+    /// An SVC inside the stub page that is not a registered stub's own.
     UnknownSvc { imm: u32, pc: u64 },
     /// A thunk was asked for something it cannot do faithfully.
     Unsupported { thunk: String, why: String },
@@ -179,6 +183,11 @@ struct Entry {
     name: String,
     handler: Handler,
 }
+
+/// A slot of the stub page, by index. Made only by `Runtime::slot_at`, from
+/// an address inside the page, so every key of `Runtime::entries` is one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StubId(u32);
 
 /// One thread's stub call counts, indexed by stub id: id 0 is the raw
 /// `svc #0`, and the `RET_ID` slot, which is never counted as a call, holds
@@ -296,20 +305,13 @@ impl Runtime {
     /// Registers a handler and returns the guest address of its stub.
     pub fn register(&self, name: &str, handler: Handler) -> u64 {
         let _w = self.stub_write.lock().unwrap();
-        let id = self.next_id.load(Ordering::Relaxed);
-        assert!(id < RET_ID, "stub page full");
-        let e = Box::into_raw(Box::new(Entry { name: name.to_owned(), handler }));
-        // Published before the stub is written, so a guest that can reach
-        // the stub always finds its entry.
-        self.entries[id as usize].store(e, Ordering::Release);
-        self.next_id.store(id + 1, Ordering::Release);
-        let addr = self.stubs.addr() + id as u64 * STUB_BYTES;
-        self.stubs.protect(PROT_READ | PROT_WRITE);
-        // SAFETY: slot `id` is inside the mapping, which is writable until
-        // the protect below.
-        unsafe { write_stub(addr, id) };
-        self.stubs.protect(PROT_READ);
-        addr
+        let at = self.stub_addr(StubId(self.next_id.load(Ordering::Relaxed)));
+        let id = self.install(at, 1, Entry { name: name.to_owned(), handler })
+            .unwrap_or_else(|why| panic!("registering {name}: {why}"));
+        // SAFETY: `install` accepted slot `id`, which is inside the mapping
+        // and writable until the protect below.
+        self.write_slots(|| unsafe { write_stub(at, id.0) });
+        at
     }
 
     /// Writes guest code into consecutive stub slots and returns its
@@ -319,30 +321,85 @@ impl Runtime {
     /// since the code holds no SVC.
     pub fn register_code(&self, name: &str, words: &[u32]) -> u64 {
         let _w = self.stub_write.lock().unwrap();
-        let id = self.next_id.load(Ordering::Relaxed);
+        let at = self.stub_addr(StubId(self.next_id.load(Ordering::Relaxed)));
         let slots = (words.len() as u64 * 4).div_ceil(STUB_BYTES) as u32;
-        assert!(id + slots < RET_ID, "stub page full");
         let what = name.to_owned();
-        let e = Box::into_raw(Box::new(Entry {
+        let entry = Entry {
             name: name.to_owned(),
             handler: Box::new(move |_| Err(Fault::Unsupported {
                 thunk: what.clone(),
                 why: "guest code in the stub page was entered by SVC".into(),
             })),
-        }));
-        self.entries[id as usize].store(e, Ordering::Release);
-        self.next_id.store(id + slots, Ordering::Release);
-        let addr = self.stubs.addr() + id as u64 * STUB_BYTES;
+        };
+        self.install(at, slots, entry).unwrap_or_else(|why| panic!("registering {name}: {why}"));
+        // SAFETY: `install` accepted `slots` unused slots from `at`, and the
+        // mapping is writable until the protect below.
+        self.write_slots(|| unsafe { std::ptr::copy_nonoverlapping(words.as_ptr(), at as *mut u32, words.len()) });
+        at
+    }
+
+    /// The one place a handler is attached to anything. It is keyed by a
+    /// slot of this runtime's stub page and nothing else: `at` must be the
+    /// next unused slot, with room for `slots` of them below the `svc #RET`
+    /// stub. ADR-053 keeps the translator inside ADR-001 on the condition
+    /// that dispatch is never keyed on an engine address; this refusal is
+    /// what makes that a property of the code rather than of its callers,
+    /// since no address outside the page can become a key. Called with
+    /// `stub_write` held.
+    fn install(&self, at: u64, slots: u32, entry: Entry) -> Result<StubId, String> {
+        let next = self.next_id.load(Ordering::Relaxed);
+        let id = self.slot_at(at).ok_or_else(|| format!("{at:#x} is not a slot of the stub page"))?;
+        if id.0 != next {
+            return Err(format!("{at:#x} is slot {}, and the next unused slot is {next}", id.0));
+        }
+        if slots == 0 || u64::from(id.0) + u64::from(slots) > u64::from(RET_ID) {
+            return Err("stub page full".into());
+        }
+        // Published before the stub is written, so a guest that can reach
+        // the stub always finds its entry.
+        self.entries[id.0 as usize].store(Box::into_raw(Box::new(entry)), Ordering::Release);
+        self.next_id.store(id.0 + slots, Ordering::Release);
+        Ok(id)
+    }
+
+    fn write_slots(&self, write: impl FnOnce()) {
         self.stubs.protect(PROT_READ | PROT_WRITE);
-        // SAFETY: `slots` slots from `id` are inside the mapping and unused,
-        // and it is writable until the protect below.
-        unsafe { std::ptr::copy_nonoverlapping(words.as_ptr(), addr as *mut u32, words.len()) };
+        write();
         self.stubs.protect(PROT_READ);
-        addr
+    }
+
+    fn stub_addr(&self, id: StubId) -> u64 {
+        self.stubs.addr() + u64::from(id.0) * STUB_BYTES
+    }
+
+    /// The stub slot starting at `addr`, if it is one: inside the page, on a
+    /// slot boundary, and neither id 0 (the raw syscall, which has no slot)
+    /// nor the `svc #RET` stub. The only conversion from an address to a key
+    /// of `entries`.
+    fn slot_at(&self, addr: u64) -> Option<StubId> {
+        let off = addr.checked_sub(self.stubs.addr())?;
+        if off % STUB_BYTES != 0 || off >= STUB_SLOTS * STUB_BYTES {
+            return None;
+        }
+        let id = (off / STUB_BYTES) as u32;
+        (id != 0 && id != RET_ID).then_some(StubId(id))
+    }
+
+    /// The registered stub an `svc #imm` at `pc` is: only the SVC a stub
+    /// itself holds, at the start of its own slot. The immediate alone is
+    /// not enough, because the guest can execute an `svc` with any
+    /// immediate anywhere in its own code.
+    #[inline]
+    fn stub_for_svc(&self, pc: u64, imm: u32) -> Option<(StubId, &Entry)> {
+        let id = self.slot_at(pc)?;
+        if id.0 != imm {
+            return None;
+        }
+        Some((id, self.entry(id)?))
     }
 
     /// Installs the handler for raw `svc #0`: the guest's own Linux syscall
-    /// instruction, x8 the arm64 number, x0..x5 the arguments. The handler
+    /// instruction (any SVC outside the stub page), x8 the arm64 number, x0..x5 the arguments. The handler
     /// leaves the kernel's answer in x0 (a negative errno on failure, errno
     /// itself untouched), and execution continues at the next instruction,
     /// as it does after a real syscall. Once per runtime.
@@ -386,11 +443,7 @@ impl Runtime {
 
     /// Whether `addr` is one of this runtime's stubs, and whose.
     pub fn stub_name(&self, addr: u64) -> Option<String> {
-        let off = addr.checked_sub(self.stubs.addr())?;
-        if off % STUB_BYTES != 0 || off >= STUB_SLOTS * STUB_BYTES {
-            return None;
-        }
-        self.entry((off / STUB_BYTES) as u32).map(|e| e.name.clone())
+        self.entry(self.slot_at(addr)?).map(|e| e.name.clone())
     }
 
     /// Every stub that has been called, with how many times, most first.
@@ -405,7 +458,7 @@ impl Runtime {
             }
         };
         for id in 1..n {
-            if let Some(e) = self.entry(id) {
+            if let Some(e) = self.entry(StubId(id)) {
                 add(&e.name, id);
             }
         }
@@ -414,8 +467,8 @@ impl Runtime {
     }
 
     #[inline]
-    fn entry(&self, id: u32) -> Option<&Entry> {
-        let p = self.entries.get(id as usize)?.load(Ordering::Acquire);
+    fn entry(&self, id: StubId) -> Option<&Entry> {
+        let p = self.entries.get(id.0 as usize)?.load(Ordering::Acquire);
         // SAFETY: a non-null slot holds a leaked Box<Entry> that is never
         // replaced and is freed only when the Runtime drops.
         (!p.is_null()).then(|| unsafe { &*p })
@@ -667,24 +720,27 @@ extern "C" fn on_svc(user: *mut c_void, jit: *mut CgJit, imm: u32) {
     // SAFETY: `user` is the JitBox this Jit was built with, which outlives it.
     let jb = unsafe { &*(user as *const JitBox) };
     let _out = InCallback::new(jb);
-    if imm == RET_ID {
+    // SAFETY: inside this Jit's own callback.
+    let pc = unsafe { cg_jit_get_pc(jit) } - 4;
+    // The PC is already past the SVC; the fault reports the SVC itself.
+    if imm == RET_ID && pc == jb.rt.ret_stub() {
         // SAFETY: inside this Jit's own callback.
         unsafe { cg_jit_halt(jit, HALT_RETURNED) };
         return;
     }
-    // SAFETY: inside this Jit's own callback.
-    let pc = unsafe { cg_jit_get_pc(jit) } - 4;
-    // The PC is already past the SVC; the fault reports the SVC itself.
-    let entry: &Entry = if imm == 0 {
-        match jb.rt.syscall.get() {
-            Some(e) => e,
+    // A stub is found from where the SVC is, not from its immediate alone:
+    // an `svc #n` anywhere outside the stub page is the guest's own system
+    // call, whatever `n` is, as it is to arm64 Linux, which ignores the
+    // immediate. So no instruction the engine holds can reach a handler.
+    let (id, entry): (u32, &Entry) = match jb.rt.stub_for_svc(pc, imm) {
+        Some((id, e)) => (id.0, e),
+        None if (jb.rt.stubs.addr()..jb.rt.stubs.addr() + jb.rt.stubs.len() as u64).contains(&pc) => {
+            return jb.fault(Fault::UnknownSvc { imm, pc });
+        }
+        None => match jb.rt.syscall.get() {
+            Some(e) => (0, e),
             None => return jb.fault(Fault::Syscall { pc }),
-        }
-    } else {
-        match jb.rt.entry(imm) {
-            Some(e) => e,
-            None => return jb.fault(Fault::UnknownSvc { imm, pc }),
-        }
+        },
     };
     // Past the guard the guest would fault inside translated code, with no
     // guest PC to name; this catches the usual cause, runaway recursion
@@ -702,7 +758,7 @@ extern "C" fn on_svc(user: *mut c_void, jit: *mut CgJit, imm: u32) {
             why: "the guest stack is nearly exhausted".into(),
         });
     }
-    jb.counts.bump(imm);
+    jb.counts.bump(id);
     if TRACE.load(Ordering::Relaxed) {
         // SAFETY: plain libc call.
         // SAFETY: inside this Jit's own callback.
@@ -714,7 +770,7 @@ extern "C" fn on_svc(user: *mut c_void, jit: *mut CgJit, imm: u32) {
     SVC_RING.with(|r| {
         let mut r = r.borrow_mut();
         let n = r.1;
-        r.0[n % 64] = (imm, pc);
+        r.0[n % 64] = (id, pc);
         r.1 = n + 1;
     });
     let call = Call { jit, rt: &jb.rt, name: &entry.name };
@@ -1264,7 +1320,7 @@ fn dump_svc_ring(rt: &Runtime) {
             let name = if id == 0 {
                 "svc #0 (raw syscall)".to_string()
             } else {
-                rt.entry(id).map_or_else(|| id.to_string(), |e| e.name.clone())
+                rt.entry(StubId(id)).map_or_else(|| id.to_string(), |e| e.name.clone())
             };
             eprintln!("  svc {name} from {pc:#x}");
         }
@@ -1280,4 +1336,46 @@ pub fn thread_depth() -> usize {
 /// How many Jits this thread has built, i.e. its deepest re-entry so far.
 pub fn thread_jit_count() -> usize {
     THREAD.with(|t| t.borrow().as_ref().map_or(0, |g| g.jits.len()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn named(name: &str) -> Entry {
+        Entry { name: name.into(), handler: Box::new(|_| Ok(())) }
+    }
+
+    /// The registration half of ADR-053's first condition: nothing outside
+    /// the stub page, and nothing inside it but the next unused slot, can be
+    /// given a handler. `register` and `register_code` both go through
+    /// `install`, so this is every way a handler is attached.
+    #[test]
+    fn a_handler_is_refused_anywhere_but_the_next_stub_slot() {
+        let rt = Runtime::new(Options::default());
+        let used = rt.register("used", Box::new(|_| Ok(())));
+        let (page, end) = rt.stub_page();
+        let next = rt.stub_addr(StubId(rt.next_id.load(Ordering::Relaxed)));
+        let host_fn = a_handler_is_refused_anywhere_but_the_next_stub_slot as *const () as u64;
+        let heap = Box::new(0u64);
+        let _w = rt.stub_write.lock().unwrap();
+        for (what, at) in [
+            ("a host function", host_fn),
+            ("a heap address", &*heap as *const u64 as u64),
+            ("just below the page", page - STUB_BYTES),
+            ("slot 0, the raw syscall's id", page),
+            ("an occupied slot", used),
+            ("the middle of the next slot", next + 4),
+            ("a free slot past the next", next + STUB_BYTES),
+            ("the svc #RET stub", rt.ret_stub()),
+            ("the end of the page", end),
+        ] {
+            let r = rt.install(at, 1, named(what));
+            assert!(r.is_err(), "{what} ({at:#x}) was accepted as {r:?}");
+        }
+        assert_eq!(rt.stub_name(used).as_deref(), Some("used"), "a refusal replaced an entry");
+        let id = rt.install(next, 1, named("next")).expect("the next slot is accepted");
+        assert_eq!(rt.stub_addr(id), next);
+        assert_eq!(rt.stub_name(next).as_deref(), Some("next"));
+    }
 }
