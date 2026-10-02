@@ -165,8 +165,12 @@ the end. Seen once.
   and played a game made for VR on a Quest 3 over WiVRn, reporting it mostly
   above 60 frames/s with occasional slight stutters; that is an observation,
   with no frame log taken.
-- Pressing Play in the headset, the in-game Leave button and rejoining on
-  WiVRn are still open ([`vr/play-button.md`](../vr/play-button.md)). Haptics
+- The in-game Leave button and rejoining on WiVRn are still open
+  ([`vr/play-button.md`](../vr/play-button.md)). Pressing Play in the headset
+  is not: on a Quest 3 over WiVRn it joined in three sessions of three, each
+  `Game.launch` carrying `joinAttemptOrigin` as a Play press does rather than
+  a deep link's `referralPage: "DeepLink"` (play-button.md, "In the
+  headset"). Haptics
   over WiVRn 26.9 buzz continuously because of a bug in WiVRn's headset app,
   fixed upstream in WiVRn pull request #1131 and not yet released.
 - Pinning the Quest certificate is a trust decision for the maintainer; its

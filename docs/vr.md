@@ -7,6 +7,8 @@ Play in VR runs Roblox's Meta Quest build on your PC and shows it in your headse
 
 > [!WARNING]
 > **Experimental.** Use an alt account. This is new, and an account you care about is not something to test it with.
+>
+> This runs Roblox's Quest client on hardware it was not made for. You are responsible for your account under [Roblox's Terms of Use](https://en.help.roblox.com/hc/en-us/articles/115004647846-Roblox-Terms-of-Use) and [Meta's Quest terms](https://www.meta.com/legal/supplemental-terms-of-service/).
 
 ## What you need
 
@@ -130,7 +132,6 @@ flatpak override --user io.github.luohoa97.Cordial \
 - **Controller vibration** can buzz on and on with WiVRn 26.9. That is a bug in WiVRn's headset app, fixed in WiVRn's pull request #1131, which no release carries yet.
 - **Leaving a game** from the Roblox menu brings the menu back on Monado. The in-game Leave button has been exercised only partly.
 - **Joining a second game** after leaving one crashes when the runtime is Monado with its default in-process compositor, inside the graphics driver. It has not been tried on WiVRn, whose compositor runs in its own process.
-- **Pressing Play in the headset** has been checked only by a deep link, not by pressing the button in a headset.
 - **Frame rate in game** is below the headset's refresh rate: 44 to 65 frames a second on Monado's simulated headset. On a Quest 3 over WiVRn, in a game made for VR, it looked mostly above 60 with occasional slight stutters; that was watched, not measured.
 - **No warning when your Quest build is too old.** See [When Roblox updates](#when-roblox-updates).
 - A session that stopped with MangoHud's overlay loaded into Monado was seen once. If VR crashes with `MANGOHUD=1` set, try without it.

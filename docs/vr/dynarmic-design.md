@@ -80,7 +80,7 @@ crate from `cordial-runtime/build.rs`, built with Clang. Rust bindings exist
 
 | Class | Count | Consequence |
 |---|---|---|
-| LSE (`CAS*`, `LDADD*`, `SWP*`, `LDSET*`…) | 53 | **All 53** sit in outline-atomics helpers: `bti c; adrp x16; ldrb w16,[x16,#0xc48]; cbz w16,<LL/SC>; <LSE op>; ret`. All of them test the same byte (`lse-addrs.txt`). This is compiler-rt's `__aarch64_have_lse_atomics`, set from `getauxval(AT_HWCAP)`. The shape is observed; the flag's identity is INFERRED. *Observed at M3*: the first constructor calls `getauxval`, and with `ATOMICS` advertised the second one stops at a `casalb` in a helper of exactly this shape (§9.2). `getauxval` is an import. |
+| LSE (`CAS*`, `LDADD*`, `SWP*`, `LDSET*`…) | 53 | **All 53** sit in outline-atomics helpers: `bti c; adrp x16; ldrb w16,[x16,#0xc48]; cbz w16,<LL/SC>; <LSE op>; ret`. All of them test the same byte (found by scanning `.text` for the LSE encodings and disassembling each hit; the address list was a working file and is not kept). This is compiler-rt's `__aarch64_have_lse_atomics`, set from `getauxval(AT_HWCAP)`. The shape is observed; the flag's identity is INFERRED. *Observed at M3*: the first constructor calls `getauxval`, and with `ATOMICS` advertised the second one stops at a `casalb` in a helper of exactly this shape (§9.2). `getauxval` is an import. |
 | LDXR/LDAXR | 249 | The fallback path that dynarmic does implement. |
 | SVE encoding space | 1,247 | Contiguous blocks (`cntw`, `index`, `xar`, `zip1/2` on `z` regs). The one entry point looked at is gated by `tst w6,#0x4000` on a capability word, so this is a runtime-dispatched SVE2 path (INFERRED to be crypto). |
 | AES/PMULL/SHA1/SHA256/SHA512 | present in samples | dynarmic implements all of them. |
@@ -107,10 +107,16 @@ Keep what Cordial does natively: guest address = host address. Configure
 `fastmem_pointer = 0`, `fastmem_address_space_bits = 64`, no `page_table`, and
 `silently_mirror_fastmem` off. Pointers then cross the boundary unchanged. That is
 what makes most thunks trivial, and it is why a separate guest space (yuzu-style) is
-the wrong model here. The costs: a wild guest pointer is a host SIGSEGV, and
-dynarmic's recompile-on-fault path then calls the callbacks, which fault again. That
-is a crash with a host backtrace, never a silent corruption. Guest `mmap` must not
+the wrong model here. The cost is isolation: a guest pointer is a host pointer, so
+the guest can read and write any host memory that is mapped. Only an unmapped
+address faults, as a host SIGSEGV (dynarmic's recompile-on-fault path then calls the
+callbacks, which fault again). A stray guest write into mapped host memory -- the
+heap, a stack, Cordial's own data -- is not caught at all and can corrupt it
+silently, to fail later somewhere unrelated. Guest `mmap` must not
 use `MAP_32BIT`-style assumptions; there aren't any, since both sides are 47-bit.
+*Corrected after review*: this said a wild pointer was always "a crash with a
+host backtrace, never a silent corruption". That is true only of an unmapped
+address.
 
 **The bionic linker can keep loading these libraries, with a small change.**
 `linker_relocs.h` selects `R_GENERIC_*` by `#if defined(__aarch64__)`, and
@@ -558,8 +564,7 @@ failure, 190 stop, 23 data, 2 weak-null (629). *Corrected at M3*: the stop
 note said bionic's and glibc's `LC_*_MASK` values differ; checked against both
 headers, they are the same. What differs is `locale_t` and the behaviour.
 
-**The translator bug.** Constructor 71's successor block, at libroblox+0x1e6214c,
-ends `ands x12, x12, x13; b.eq` with x13 all ones. dynarmic's constant folding
+**The translator bug.** Constructor 71's successor block ends `ands x12, x12, x13; b.eq` with x13 all ones. dynarmic's constant folding
 turned `x & ~0` into `x` and re-pointed the `ANDS`'s `GetNZCVFromOp` at a shift,
 which asserts. `FoldAdd`/`FoldSub` already skip an op with a pseudo-op;
 `FoldAND`/`EOR`/`OR`/`NOT` did not (`patches/0007`, applied by
@@ -658,13 +663,13 @@ as `linker::set_symbol_filter`, so no bring-up call site changed.
 | # | Where | Stop | Answer |
 |---|---|---|---|
 | 1 | `JNI_OnLoad`, once `pthread_create` succeeded (the M3 path too) | dynarmic `code is too big` from inside translated code, or, as often, a SIGSEGV | not the code cache (256 MiB changed nothing): the main thread's 8 MiB guest stack had run out and was writing below it. Made visible with a 64 KiB guard page under every guest stack and a check in the SVC path that names the last 64 stub calls when SP nears the guard; the cause is 2 |
-| 2 | the same | one engine function at libroblox+0x6385ae4 calling itself about 4,000 deep | **one `JNIEnv` was shared by every thread.** The engine interposes on the env it is given (keeps `env->functions`, installs its own table), so the second thread's interposition kept the first one's table as "the original". Now each thread has its own env and its own copy of the table (`guest_jni.rs`). Found by calling the two thread-local getters the loop used, on the faulted thread: one held a `JNIEnv*` (INFERRED to be the guest's, from its address), the other a copy of a `JNINativeInterface` whose `FindClass` slot was the looping function. Checked: without guest threads (`CORDIAL_GUEST_THREADS=0`, EAGAIN) it did not happen |
+| 2 | the same | one engine function calling itself about 4,000 deep | **one `JNIEnv` was shared by every thread.** The engine interposes on the env it is given (keeps `env->functions`, installs its own table), so the second thread's interposition kept the first one's table as "the original". Now each thread has its own env and its own copy of the table (`guest_jni.rs`). Found by calling the two thread-local getters the loop used, on the faulted thread: one held a `JNIEnv*` (INFERRED to be the guest's, from its address), the other a copy of a `JNINativeInterface` whose `FindClass` slot was the looping function. Checked: without guest threads (`CORDIAL_GUEST_THREADS=0`, EAGAIN) it did not happen |
 | 3 | — | `pthread_create` wrote the handle after the thread started | glibc now writes it through the guest's pointer, before the thread runs, as bionic does. A real race; not the cause of 2, which it was first taken for |
 | 4 | worker thread | `ioctl` | the host's for `FIO*`, `TIOCGWINSZ` and `SIOCGIF*` (same numbers and layouts on both); anything else stops by number |
 | 5 | worker thread | `getnameinfo` | the host's with bionic's `NI_*` renumbered and glibc's negative `EAI_*` mapped to bionic's |
 | 6 | worker thread | `mallinfo` | ten `size_t`s returned through x8, from glibc's `mallinfo2`; `ldiv` in x0/x1 |
 | 7 | render thread | `eglGetDisplay` | EGL/GLES signatures generated from Khronos's `gl.xml`/`egl.xml` (`tools/vr/gen-guest-gl.py`, 1,055 commands, 5 left out because they take a callback), dispatched like `FUNCS` to the native table's answers -- the host's libEGL/libGLESv2 and Cordial's EGL overrides. `eglGetProcAddress` hands back a stub per name, or null for a name the table lacks |
-| 8 | engine thread | `InterpreterFallback` at libroblox+0x22ef224, `mrs x8, cntvct_el0` | emulated: the same clock and 600 MHz dynarmic gives CNTPCT/CNTFRQ, offset 0 (`jit.rs`) |
+| 8 | engine thread | `InterpreterFallback` at `mrs x8, cntvct_el0` | emulated: the same clock and 600 MHz dynarmic gives CNTPCT/CNTFRQ, offset 0 (`jit.rs`) |
 
 Answered before they were reached: `pthread_create` with the attr's stack
 size, detach state and explicit scheduling; `pthread_exit` (leaves the guest
@@ -1029,8 +1034,9 @@ Quest build 2.740.927 joined by deep link against Monado's simulated HMD
 (`docs/vr/play-button.md`). About 67 s after `launchUGCGame`, in every place
 tried, one engine thread executes `svc #0` itself rather than calling the
 `syscall()` import. With no answer that stopped the process
-(`Fault::Syscall` at libroblox+0x32b8978, `exit=134`), at 67 s on Monado and
-at 193 s in a user's WiVRn run, 62 s after that run's join.
+(`Fault::Syscall` at libroblox+0x32b8978, an offset specific to this build;
+`exit=134`), at 67 s on Monado and at 193 s in a user's WiVRn run, 62 s after
+that run's join.
 
 `Runtime::set_syscall_handler` now answers `svc #0`, and `guest_sys.rs` has
 one translator both routes share (`arm64_syscall`): arch-neutral numbers
@@ -1082,7 +1088,7 @@ A seventh (1818) was cut short at 193 s by an interrupted session, not by the
 client, and is not counted.
 
 **Control**, the previous binary, same session: on 1818 for 100 s it stopped
-at 66.8 s on `Fault::Syscall` at libroblox+0x32b8978, `exit=134`, as it had
+at 66.8 s on `Fault::Syscall` at the same site, `exit=134`, as it had
 at 67 s and 193 s in the two runs before this change. Once on 11256291667
 for 300 s it did **not** stop (`exit=0`); that binary has no counter, so
 whether the engine made the call in that run is not known. So the check does

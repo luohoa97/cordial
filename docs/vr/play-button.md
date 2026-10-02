@@ -1,9 +1,9 @@
 # Play: who answers `Game.launch`
 
-**Status:** fixed under `--app-bridge`, verified by deep link on Monado's
-simulated HMD, 2026-09-29. **Not yet confirmed by pressing Play in the
-headset.** Quest build 2.740.927, `cordial-run --guest-arm64 --app-bridge`,
-signed in.
+**Status:** fixed under `--app-bridge`. Verified by deep link on Monado's
+simulated HMD, 2026-09-29, Quest build 2.740.927, `cordial-run --guest-arm64
+--app-bridge`, signed in; and by pressing Play in a Quest 3 over WiVRn, in
+three sessions, each of which joined (see "In the headset" below).
 
 ## The symptom
 
@@ -17,19 +17,18 @@ answered.
 
 Found from the Quest APK's dex call graph (which methods invoke which, method
 names and prototypes only; no method body was read beyond its invoke targets)
-and the manifest:
+and the manifest. The classes and methods in between are obfuscated and
+renamed from build to build, so only the stable names are given here:
 
-1. `ActivityNativeMain.M2`, the same method that calls
-   `nativeAppBridgeStartLuaAppDM`, calls `jl/a.b(listener)` with an `fg/f`
-   listener. `jl/a.b` calls `JNIExperienceProtocol.getLaunchId()` and
-   `MessageBus.t(String, Callback)`: a subscription to `Game.launch` (the
-   getter returns `"Game.launch"` on this build too), made before the Lua app
-   starts.
-2. `fg/f.a(JSONObject)` -> `ActivityNativeMain.n2` -> `E2` -> `fg/o.b`, which
-   reads the payload with `JSONObject.optLong`/`optString`.
-3. -> `com/roblox/client/game/c.q` -> `c.k` -> `Activity.runOnUiThread` ->
-   `c$a.run` -> `c.e` -> `new ExperienceSession(Bundle)`.
-4. `ExperienceSession.k0` -> `new ih/h0` -> `h0.G` -> `h0.C` ->
+1. `ActivityNativeMain`, in the same method that calls
+   `nativeAppBridgeStartLuaAppDM`, subscribes a listener to the name
+   `JNIExperienceProtocol.getLaunchId()` returns through `MessageBus`: a
+   subscription to `Game.launch` (the getter returns `"Game.launch"` on this
+   build too), made before the Lua app starts.
+2. The listener reads the payload with `JSONObject.optLong`/`optString`.
+3. It is handed to the game controller, which posts it with
+   `Activity.runOnUiThread` and builds `new ExperienceSession(Bundle)`.
+4. The session's game object calls
    `NativeGLInterface.nativeAppBridgeV2StartGameWithParam(StartGameParams)I`.
    That is the only caller of that native in the dex.
 
@@ -92,15 +91,25 @@ because the deep link payload carries none, and the engine joined through a
 public server regardless. The left eye 38 s in shows Crossroads with the VR
 HUD, chat and leaderboard.
 
+## In the headset
+
+Play pressed in a Quest 3 over WiVRn (`system "Meta Quest 3 on WiVRn"`), in
+three sessions. Each published `Game.launch`, and each joined:
+
+    [ 131.63] [launch] Game.launch arrived: placeId 11256291667, carrying [joinAttemptId, joinAttemptOrigin, placeId]
+    [ 138.29] [roblox] gameLoadedCallback: place 11256291667
+
+and 103.42 s / 106.84 s for place 7406004869, 112.80 s / 123.16 s for
+11256291667 again. These were Play presses and not deep links: a Play press
+carries `joinAttemptOrigin`, where a deep link carries
+`referralPage: "DeepLink"`. These lines show a first join in each session;
+leaving by the in-game button and joining again in the headset are not shown
+by them and stay open, below.
+
 ## Still open
 
-- **The Play button itself.** That Play publishes `Game.launch` as the deep
-  link does is **INFERRED** from the symptom. The next headset run logs it:
-  `[launch] Game.launch arrived: placeId ..., carrying [...]`, then
-  `StartGameWithParam -> 1`. If the line never appears, Play goes somewhere
-  else.
 - **Leaving.** The devctl verb `leavegame` calls
-  `nativeAppBridgeV2LeaveGame` (`ih/h0.t`) from the looper, as Java does. The
+  `nativeAppBridgeV2LeaveGame` from the looper, as Java does. The
   engine leaves (`leaveUGCGame`, disconnect reason 285) and waits at stage
   `Native` with its surface controller stopped; XR frames stopped and the
   menu never came back until the session's end also called
@@ -109,8 +118,8 @@ HUD, chat and leaderboard.
   frames running at about 55 a second in 4 of 4 runs with it, frozen in 3 of 3
   without it (`CORDIAL_NO_APP_RESTART=1`, `CORDIAL_NO_GAME_LIFECYCLE=1`, and
   the build before). On Android its callers are the app view's
-  `surfaceCreated` and the app fragment's hidden-changed override (`ih/a.L2`,
-  `ih/a.N0` -> `ih/e.F`), so that Java makes it on every leave is
+  `surfaceCreated` and the app fragment's hidden-changed override, so that
+  Java makes it on every leave is
   **INFERRED**. The in-game Leave button is a different path: the engine
   returns to the Lua app itself before `gameDidLeave` (seen once over WiVRn),
   so `game_launch::left` does not restart the app; that path has not been run
@@ -119,9 +128,9 @@ HUD, chat and leaderboard.
   layers; see "Joining again" below. Still open: on Monado's default
   in-process compositor the client still dies in NVIDIA's driver after the
   engine's `xrDestroyInstance`, which is a test-rig problem, not the engine's.
-- **A stop about 60 s into a game.** A guest thread started at
-  `libroblox.so+0x2894fbc` stopped on a raw `svc #0` at `+0x32b8978`
-  (`Fault::Syscall`) about 67 s after joining, and the process aborted.
+- **A stop about 60 s into a game.** A guest thread stopped on a raw
+  `svc #0` (`Fault::Syscall`) about 67 s after joining, and the process
+  aborted.
   *Fixed*: raw syscalls are now translated; it was `openat` of
   `/proc/self/maps` and the reads after it (dynarmic-design.md §9.6).
 
