@@ -422,6 +422,7 @@ pub struct Target {
 /// The capture an OpenXR frame takes (`guest_xr`): an image the engine has
 /// just finished rendering into, read before it is released to the runtime.
 /// Same one-at-a-time request as the present path's.
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 pub fn capture_target(
     target: &Target,
     gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,

@@ -9,5 +9,14 @@ links = "cordial_guest_shim"
 [lints]
 workspace = true
 
+# Off by default, and turned on by `cordial-runtime/vr`, which every package
+# enables. Without it this crate is empty and its build script compiles
+# nothing, so a `cargo build` or `cargo test --workspace` from a checkout needs
+# neither Boost (dynarmic) nor an arm64-capable clang, lld and llvm (the test
+# image). It is a workspace member, so gating only the dependency edge would
+# still have built dynarmic for every workspace build.
+[features]
+dynarmic = []
+
 [build-dependencies]
 cmake = "0.1"

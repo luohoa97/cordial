@@ -42,24 +42,28 @@ mod ffi_util;
 pub mod flag_reapply;
 pub mod flags;
 pub mod graphics;
+// The arm64 guest's half of the runtime, behind the `vr` feature (Cargo.toml
+// says why it is off by default) and x86-64 only, as the translator is.
+// `guest_dex` is plain Rust and keeps its tests on aarch64.
+#[cfg(feature = "vr")]
 pub mod guest_dex;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 pub mod guest_audio;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 pub mod guest_jni;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 pub mod guest_libc;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 pub mod guest_link;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 pub mod guest_ovr;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 pub mod guest_sys;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 pub mod guest_vk;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 pub mod guest_xr;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 mod xr_runtime_pin;
 pub mod headless;
 pub mod identity;

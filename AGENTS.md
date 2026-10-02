@@ -370,7 +370,9 @@ cargo build --release      # Clang required; AOSP bionic does not build with GCC
 cargo test --workspace
 ```
 
-Both must pass. Run them; do not assume.
+Both must pass. Run them; do not assume. A change to the VR mode needs both
+again with `--features cordial-runtime/vr`, which is off by default and needs
+Boost's headers, and `lld` and `llvm` for its tests.
 
 **Two builds must never share one `target/`, and this is not a tidiness rule.**
 On 2026-08-24 an agent working in a `git worktree` pointed `CARGO_TARGET_DIR` at
