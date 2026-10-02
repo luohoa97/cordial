@@ -1192,8 +1192,12 @@ mod tests {
         // so opening a file with it fails as ENOTDIR rather than succeeding.
         let r = arm64_syscall(56, [root, path.as_ptr() as u64, 0o40000, 0, 0, 0], 0).unwrap().unwrap();
         assert_eq!(r, -20);
-        // With no native open linked, a path the working directory resolves
-        // stops by name rather than bypassing the path layer.
-        assert!(arm64_syscall(56, [(-100i64) as u64, c"/x".as_ptr() as u64, 0, 0, 0, 0], 0).is_err());
+        // With no native open, a path the working directory resolves stops by
+        // name rather than bypassing the path layer. Asked of `openat_via`
+        // directly: `NATIVE_OPEN` is process-wide, and any test in this binary
+        // that links a guest library sets it, which made the same assertion
+        // through `arm64_syscall` fail in CI whenever that test ran first.
+        let cwd = crate::guest_libc::openat_via("open", None, -100, c"/x".as_ptr() as u64, 0, 0);
+        assert!(cwd.is_err());
     }
 }
