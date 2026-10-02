@@ -8,8 +8,11 @@
 //! `settings::detail` states for rows, applied here: an unavailable control
 //! keeps its reason on screen.
 //!
-//! Absent rather than greyed on a host that cannot run it (anything but
-//! x86-64), because nothing the user can do would change that answer.
+//! Shown only to somebody who has headset software. With no OpenXR runtime on
+//! the machine there is nothing at all here; with one but VR not set up, only
+//! the "Set Up VR…" link; once a Quest build is imported and a runtime is
+//! chosen, the button. [`cordial_shell::vr::launcher_entry`] decides, and
+//! Settings → VR is there in every case (ADR-053).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,13 +22,14 @@ use libadwaita::gtk;
 use libadwaita::prelude::*;
 
 use crate::shell_config::ShellConfig;
-use cordial_shell::vr::Readiness;
+use cordial_shell::vr;
 
 pub struct VrEntry {
     pub widget: gtk::Widget,
-    /// Re-reads the store, the runtime and WiVRn's server. Called when
-    /// Settings closes and when the window comes back to the front, which are
-    /// the two moments any of them is likely to have changed.
+    /// Re-reads the runtimes, the store and WiVRn's server, and shows, hides
+    /// or relabels the entry to match. Called when Settings closes and when
+    /// the window comes back to the front, which are the two moments any of
+    /// them is likely to have changed.
     pub refresh: Rc<dyn Fn()>,
 }
 
@@ -63,27 +67,47 @@ pub fn build(config: Rc<RefCell<ShellConfig>>, on_play: impl Fn() + 'static) -> 
     column.append(&caption);
     column.append(&setup);
 
+    let widget: gtk::Widget = column.clone().upcast();
     let refresh: Rc<dyn Fn()> = Rc::new(move || {
-        // Without a Quest build nothing else can make the entry usable, so a
-        // launcher that has never been set up for VR stops here: no scan for
-        // OpenXR runtimes and no `flatpak info` subprocess on the GTK thread,
-        // at start-up or on each return to the front.
-        if cordial_update::quest::current().is_none() {
-            button.set_sensitive(false);
-            caption.set_label(cordial_shell::vr::NO_QUEST_BUILD);
-            return;
+        // Files only, and `/proc` for WiVRn's server: no `flatpak info`, which
+        // `Places::of_this_machine` would start, because this runs at start-up
+        // and on every return to the front, on the GTK thread. The runtime
+        // question comes first and is a handful of `stat`s; the setting is
+        // resolved only when there is a Quest build for it to matter to.
+        let places = vr::Places::from_files();
+        let setting = config.borrow().vr_openxr_runtime.clone();
+        let runtime = vr::any_runtime(setting.as_deref(), &places);
+        let quest_build = if runtime { cordial_update::quest::current() } else { None };
+        let readiness = quest_build
+            .is_some()
+            .then(|| vr::Readiness::gather_at(setting.as_deref(), &places, quest_build));
+        let found = vr::Found {
+            runtime,
+            quest_build: readiness.is_some(),
+            runtime_chosen: readiness
+                .as_ref()
+                .is_some_and(|r| !matches!(r.runtime, vr::Chosen::Missing(_))),
+        };
+        let entry = vr::launcher_entry(found);
+        column.set_visible(entry != vr::LauncherEntry::Hidden);
+        button.set_visible(entry == vr::LauncherEntry::Play);
+        caption.set_visible(entry == vr::LauncherEntry::Play);
+        setup.set_visible(entry == vr::LauncherEntry::SetUp);
+        if let (vr::LauncherEntry::Play, Some(readiness)) = (entry, &readiness) {
+            // Set up, but something can still be missing for this launch --
+            // WiVRn's server not running is the usual one -- and that is said
+            // beneath the button rather than hidden.
+            let missing = readiness.missing();
+            button.set_sensitive(missing.is_empty());
+            caption.set_label(&match missing.first() {
+                Some(first) => first.clone(),
+                None => readiness.summary(),
+            });
         }
-        let readiness = Readiness::gather(config.borrow().vr_openxr_runtime.as_deref());
-        let missing = readiness.missing();
-        button.set_sensitive(missing.is_empty());
-        caption.set_label(&match missing.first() {
-            Some(first) => first.clone(),
-            None => readiness.summary(),
-        });
     });
     refresh();
     Some(VrEntry {
-        widget: column.upcast(),
+        widget,
         refresh,
     })
 }

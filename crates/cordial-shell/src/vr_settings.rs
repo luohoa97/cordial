@@ -33,8 +33,9 @@ pub fn build_vr_page(
         .icon_name("view-dual-symbolic")
         .description(
             "Play in VR runs Roblox's Meta Quest build on this computer and shows it in your headset \
-             through an OpenXR runtime such as WiVRn. Text entry, haptics and leaving a game are not \
-             finished yet; use an alt account.",
+             through an OpenXR runtime such as WiVRn. The launcher shows Set Up VR once a runtime is \
+             installed, and Play in VR once the Quest build is imported and a runtime is chosen \
+             below. Text entry, haptics and leaving a game are not finished yet; use an alt account.",
         )
         .build();
     page.add(&build_quest_group(dialog, parent));
@@ -163,6 +164,11 @@ fn build_quest_group(
     group
 }
 
+/// The runtime row's subtitle when no OpenXR runtime is installed at all.
+const NO_RUNTIME: &str = "No OpenXR runtime found. Play in VR needs one to reach your headset: \
+     install WiVRn (or SteamVR or Monado), then reopen Settings. Until then the launcher shows no \
+     VR button.";
+
 /// The runtime choices, in combo order: the system's, each detected runtime,
 /// and a manifest the user picked if it is not one of those.
 fn choices(setting: Option<&str>, places: &vr::Places) -> Vec<(String, Option<String>)> {
@@ -228,10 +234,19 @@ fn build_runtime_group(
                 None,
                 vr::wivrn_server_running,
             );
-            combo.set_subtitle(match &readiness.runtime {
-                vr::Chosen::Missing(why) => why,
-                _ => "",
-            });
+            let setting = config.borrow().vr_openxr_runtime.clone();
+            // With nothing installed the resolver's sentence ("choose a
+            // runtime in Settings") points back at this row, so the
+            // requirement is stated instead: this is the only place a person
+            // without a runtime can find out why the launcher shows no VR.
+            if !vr::any_runtime(setting.as_deref(), &places) {
+                combo.set_subtitle(NO_RUNTIME);
+            } else {
+                combo.set_subtitle(match &readiness.runtime {
+                    vr::Chosen::Missing(why) => why,
+                    _ => "",
+                });
+            }
             server.set_visible(readiness.wivrn_server.is_some());
             server.set_subtitle(&match readiness.wivrn_server {
                 Some(true) => "Running".to_string(),

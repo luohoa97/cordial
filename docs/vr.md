@@ -10,10 +10,22 @@ Play in VR runs Roblox's Meta Quest build on your PC and shows it in your headse
 
 ## What you need
 
-- An **x86-64 PC**. The button does not appear on other computers.
+- An **x86-64 PC**. VR does not appear on other computers.
 - **Your own Quest with Roblox installed** from the Meta Horizon Store. Cordial copies Roblox from it. It never downloads a Quest build from anywhere, and it refuses an APK that Roblox did not sign.
 - An **OpenXR runtime**. [WiVRn](https://github.com/WiVRn/WiVRn) streams to a Quest over Wi-Fi or USB; SteamVR and Monado also work. Cordial uses one and does not install one.
 - For copying Roblox off the headset: a USB-C cable that carries data (a charge-only cable is the commonest reason nothing shows up) and `adb`.
+
+## Where VR appears
+
+The launcher shows VR only once you have an OpenXR runtime installed:
+
+| On your computer | Under the Roblox button |
+|---|---|
+| No OpenXR runtime | Nothing |
+| A runtime, but no Quest build imported or no runtime chosen | **Set Up VR…**, which opens Settings → VR |
+| A runtime chosen and a Quest build imported | **Play in VR** |
+
+**Settings → VR** is always there. If it says "No OpenXR runtime found", install one (WiVRn, SteamVR or Monado), then reopen Settings. The launcher checks again when you close Settings or come back to its window, so a runtime installed while it is open shows up without a restart. Why: [ADR-053](adr/ADR-053-vr-is-a-mode-of-the-android-runtime.md).
 
 ## Get Roblox off your Quest
 
@@ -74,11 +86,11 @@ flatpak run --command=wivrn-server io.github.wivrn.wivrn --no-manage-active-runt
 
 ### Choose the runtime
 
-**Settings → VR → Runtime** lists your system's active runtime, WiVRn's Flatpak, SteamVR and anything in `share/openxr/1/`, or **Another runtime** for a manifest file. The choice is given to the game for that launch only. Cordial never changes your system's active runtime.
+**Settings → VR → Runtime** lists your system's active runtime, WiVRn's Flatpak, SteamVR and anything in `share/openxr/1/`, or **Another runtime** for a manifest file. The choice is given to the game for that launch only. Cordial never changes your system's active runtime. If your system has no active runtime, choose one here, or the launcher keeps showing Set Up VR… instead of Play in VR.
 
 ### Press Play in VR
 
-It sits under the Roblox button on the launcher.
+It sits under the Roblox button on the launcher. If it is greyed out, the line beneath it says what is missing, usually that the WiVRn server is not running.
 
 <!-- /steps -->
 
@@ -100,7 +112,7 @@ Cordial cannot tell you in advance that your build is too old, and no "too old" 
 <details>
 <summary>WiVRn, adb and other runtimes under Flatpak</summary>
 
-VR in the Flatpak is meant for **WiVRn installed as a Flatpak** and needs nothing from you. Cordial's Flatpak can read WiVRn's install and reach its server, and brings its own OpenXR loader. Checked so far: it finds WiVRn, sees its server running and loads its runtime library. **A whole VR session from the Flatpak has not been run yet.**
+VR in the Flatpak is meant for **WiVRn installed as a Flatpak** and needs nothing from you. Inside the Flatpak, Cordial sees WiVRn's Flatpak and your active runtime in `~/.config/openxr`; SteamVR and runtimes installed in system directories are not visible, so on their own they do not make VR appear on the launcher. Cordial's Flatpak can read WiVRn's install and reach its server, and brings its own OpenXR loader. Checked so far: it finds WiVRn, sees its server running and loads its runtime library. **A whole VR session from the Flatpak has not been run yet.**
 
 **Getting Roblox off your Quest.** The Flatpak has no `adb`. With the headset connected and allowed, run these in a terminal, then choose **I Have the APK File** with the file it copied:
 

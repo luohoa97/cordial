@@ -69,6 +69,20 @@ impl Places {
     /// machine, with the XDG defaults the specification gives when a variable
     /// is unset.
     pub fn of_this_machine() -> Self {
+        let mut places = Self::from_files();
+        if let Some(asked) = wivrn_flatpak_location() {
+            places.wivrn_flatpak = Some(asked);
+        }
+        places
+    }
+
+    /// The same places, found without starting a process: WiVRn's Flatpak is
+    /// looked for in the two default installations on disk rather than by
+    /// asking `flatpak info`. What the launcher's main screen uses, at
+    /// start-up and on every return to the front, where a subprocess on the
+    /// GTK thread is the cost #75 was asked to avoid. A WiVRn in a custom
+    /// Flatpak installation is missed here and found by Settings → VR.
+    pub fn from_files() -> Self {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let dirs = |var: &str, default: &str| -> Vec<PathBuf> {
             let v = std::env::var(var)
@@ -90,8 +104,7 @@ impl Places {
             config_dirs: dirs("XDG_CONFIG_DIRS", "/etc/xdg"),
             data_home: under_home("XDG_DATA_HOME", ".local/share"),
             data_dirs: dirs("XDG_DATA_DIRS", "/usr/local/share:/usr/share"),
-            wivrn_flatpak: wivrn_flatpak_location()
-                .or_else(|| flatpak_install_on_disk(home.as_deref(), Path::new("/var/lib/flatpak"), WIVRN_FLATPAK)),
+            wivrn_flatpak: flatpak_install_on_disk(home.as_deref(), Path::new("/var/lib/flatpak"), WIVRN_FLATPAK),
             sandboxed: Path::new("/.flatpak-info").exists(),
             runtime_dir: std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),
             home,
@@ -99,9 +112,10 @@ impl Places {
     }
 }
 
-/// WiVRn's Flatpak location, asked once per process. The launcher refreshes
-/// the VR entry each time its window comes to the front, and a subprocess per
-/// focus change is not worth catching an install made while it was open.
+/// WiVRn's Flatpak location, asked once per process, for Settings → VR, a
+/// launch, `--doctor` and `--diagnostics`. The launcher's own entry does not
+/// ask at all: it runs on every return to the front and uses
+/// [`Places::from_files`].
 fn wivrn_flatpak_location() -> Option<PathBuf> {
     static ASKED: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     ASKED
@@ -363,6 +377,56 @@ pub fn wivrn_start_command(places: &Places) -> String {
     }
 }
 
+/// Whether any OpenXR runtime is on the machine at all: the system's active
+/// one, one installed where runtimes usually are, or a manifest the user
+/// chose that still exists. Files only, and the cheapest question first.
+pub fn any_runtime(setting: Option<&str>, places: &Places) -> bool {
+    system_active(places).is_some()
+        || setting.is_some_and(|s| s.starts_with('/') && Path::new(s).is_file())
+        || !detect(places).is_empty()
+}
+
+/// What the launcher's main screen shows for VR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LauncherEntry {
+    /// Nothing: no headset software on this machine, so no button to grey out.
+    Hidden,
+    /// Only the "Set Up VR…" link, which opens Settings → VR.
+    SetUp,
+    /// The "Play in VR" button.
+    Play,
+}
+
+/// What the launcher's choice is made from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Found {
+    /// [`any_runtime`].
+    pub runtime: bool,
+    /// A Quest build has been imported.
+    pub quest_build: bool,
+    /// The setting resolves to a usable runtime: the system's active one when
+    /// nothing is chosen, otherwise the one chosen. False when runtimes are
+    /// installed but none is active and none has been picked.
+    pub runtime_chosen: bool,
+}
+
+/// The launcher's VR entry, decided in one place. Every condition for
+/// showing it belongs here, so a check for whether VR is compiled in at all
+/// is one more line in this function rather than a second guess elsewhere.
+pub fn launcher_entry(found: Found) -> LauncherEntry {
+    launcher_entry_on(HOST_SUPPORTED, found)
+}
+
+fn launcher_entry_on(host_supported: bool, found: Found) -> LauncherEntry {
+    if !host_supported || !found.runtime {
+        LauncherEntry::Hidden
+    } else if found.quest_build && found.runtime_chosen {
+        LauncherEntry::Play
+    } else {
+        LauncherEntry::SetUp
+    }
+}
+
 /// What the VR entry says when no Quest build has been imported, which is the
 /// first thing missing on every machine that has never been set up for VR.
 pub const NO_QUEST_BUILD: &str = "Import the Quest build of Roblox from your headset in Settings → VR.";
@@ -380,9 +444,17 @@ pub struct Readiness {
 
 impl Readiness {
     pub fn gather(setting: Option<&str>) -> Self {
-        let places = Places::of_this_machine();
+        Self::gather_at(setting, &Places::of_this_machine(), cordial_update::quest::current())
+    }
+
+    /// [`gather`](Self::gather) at `places`, with the store already read.
+    pub fn gather_at(
+        setting: Option<&str>,
+        places: &Places,
+        quest_build: Option<cordial_update::store::Entry>,
+    ) -> Self {
         let (sandboxed, runtime_dir) = (places.sandboxed, places.runtime_dir.clone());
-        Self::gather_in(setting, &places, cordial_update::quest::current(), move || {
+        Self::gather_in(setting, places, quest_build, move || {
             if sandboxed {
                 wivrn_socket_present(runtime_dir.as_deref())
             } else {
@@ -728,6 +800,69 @@ mod tests {
             !process_running_in(&root, "wivrn-server"),
             "a non-numeric entry is not a process"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_launcher_entry_for_every_combination() {
+        use LauncherEntry::*;
+        for host in [true, false] {
+            for runtime in [true, false] {
+                for quest_build in [true, false] {
+                    for runtime_chosen in [true, false] {
+                        let found = Found { runtime, quest_build, runtime_chosen };
+                        let want = match (host, runtime, quest_build, runtime_chosen) {
+                            (false, ..) => Hidden,
+                            (true, false, ..) => Hidden,
+                            (true, true, true, true) => Play,
+                            (true, true, _, _) => SetUp,
+                        };
+                        assert_eq!(launcher_entry_on(host, found), want, "host={host} {found:?}");
+                    }
+                }
+            }
+        }
+        if !HOST_SUPPORTED {
+            let all = Found { runtime: true, quest_build: true, runtime_chosen: true };
+            assert_eq!(launcher_entry(all), Hidden);
+        }
+    }
+
+    #[test]
+    fn any_runtime_is_answered_from_files() {
+        let root = scratch("any");
+        let mut p = places(&root);
+        assert!(!any_runtime(None, &p));
+        // A manifest the user picked counts while it exists.
+        let picked = root.join("picked.json");
+        assert!(!any_runtime(Some(picked.to_str().unwrap()), &p));
+        manifest(&picked, "Picked", "/x.so");
+        assert!(any_runtime(Some(picked.to_str().unwrap()), &p));
+        // An id names a runtime only if detection finds it.
+        assert!(!any_runtime(Some("steamvr"), &p));
+        manifest(&root.join("usr/share/openxr/1/openxr_monado.json"), "Monado", "/x.so");
+        assert!(any_runtime(None, &p));
+        std::fs::remove_dir_all(root.join("usr")).unwrap();
+        manifest(&root.join("etc/xdg/openxr/1/active_runtime.json"), "Active", "/x.so");
+        assert!(any_runtime(None, &p));
+        std::fs::remove_dir_all(root.join("etc")).unwrap();
+        // WiVRn's Flatpak, as found on disk.
+        let fp = root.join("fp");
+        manifest(&fp.join("files/share/openxr/1/openxr_wivrn.json"), "WiVRn", "../../../lib/w.so");
+        p.wivrn_flatpak = Some(fp);
+        assert!(any_runtime(None, &p));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn inside_the_flatpak_the_users_active_runtime_shows_the_entry() {
+        let root = scratch("anysandbox");
+        let mut p = places(&root);
+        p.config_home = Some(root.join("home/.var/app/io.github.luohoa97.Cordial/config"));
+        manifest(&root.join("home/.config/openxr/1/active_runtime.json"), "WiVRn", "/x.so");
+        assert!(!any_runtime(None, &p), "outside a sandbox ~/.config is not read");
+        p.sandboxed = true;
+        assert!(any_runtime(None, &p));
         let _ = std::fs::remove_dir_all(&root);
     }
 

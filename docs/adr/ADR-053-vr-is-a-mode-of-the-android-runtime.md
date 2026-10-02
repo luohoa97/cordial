@@ -113,12 +113,43 @@ hands-on session is noted under "Not established" below.
    `quest/` exists. **INFERRED:** that no phone build writes `HasEverUsedVR`
    true; Sober's phone 2.737 profile reads false.
 
-7. **The launcher's entry is secondary.** "Play in VR" sits under the Roblox
-   button, which keeps its place and look. It is absent on a host that is not
-   x86-64, insensitive until all three prerequisites are met, and says the
-   first missing one beneath it, with a link to Settings → VR. `--diagnostics`
-   gains a VR line and `--doctor` VR checks, which are never worse than `info`
-   unless a chosen runtime has gone.
+7. **The launcher's entry is secondary, and absent for anyone without
+   headset software.** "Play in VR" sits under the Roblox button, which keeps
+   its place and look. `vr::launcher_entry` decides what is there, in one
+   function: nothing on a host that is not x86-64 or with no OpenXR runtime
+   installed; only a "Set Up VR…" link to Settings → VR while a runtime is
+   installed but no Quest build is imported or no runtime resolves (none
+   active and none chosen); and the button once both are true. The button can
+   still be insensitive when it is shown, with the reason beneath it, for
+   what changes from one session to the next: WiVRn's server not running.
+   Settings → VR is present on every x86-64 install and says when no runtime
+   is found. `--diagnostics` gains a VR line and `--doctor` VR checks, which
+   are never worse than `info` unless a chosen runtime has gone.
+
+   **Why hidden rather than greyed.** As first merged (#75) the button and
+   the link showed, insensitive, on every x86-64 install, and the
+   maintainer's review asked for them gone for people without a headset: a
+   disabled control on the main screen is noise to everyone who will never
+   use it. Whether a runtime is installed is the line between those people
+   and the ones who might, and it is a question the machine can answer
+   without the user. The Quest build and the choice of runtime are steps the
+   user takes, so they get the link to where those steps are, not the button.
+
+   **Why from files.** The launcher asks at start-up and on every return to
+   the front, on the GTK thread. #75 already avoided scanning for runtimes
+   there when no Quest build existed; with the entry now depending on the
+   runtime first, the scan runs every time, so it is file-only:
+   `Places::from_files` finds WiVRn's Flatpak in the two default
+   installations on disk instead of starting `flatpak info`, which only
+   Settings → VR and a launch still ask. The cost is a WiVRn in a custom
+   Flatpak installation, which the launcher does not count; Settings → VR
+   finds it and choosing it there makes the entry appear. Inside Cordial's
+   Flatpak the same lookups see WiVRn's Flatpak and `~/.config/openxr`
+   through the manifest's grants, and nothing else, which matches what can
+   run there. **The entry follows changes while the launcher is open**:
+   it is recomputed when Settings closes and when the window becomes active
+   again, so a runtime installed or removed in another window shows on the
+   next focus.
 
 ## When Roblox stops accepting the build
 
