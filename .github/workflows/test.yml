@@ -57,9 +57,9 @@ jobs:
         # "unavailable" arms — the shape that made web views do nothing for
         # months and audio do nothing before that.
         #
-        # `boost-devel` is for dynarmic (crates/cordial-guest), which
-        # find_package()s Boost's headers on x86-64; `llvm` and `lld` also
-        # build that crate's arm64 test image.
+        # `boost-devel` is for dynarmic (crates/cordial-guest, behind
+        # `cordial-runtime/vr`), which find_package()s Boost's headers on
+        # x86-64; `llvm` and `lld` also build that crate's arm64 test image.
         run: |
           dnf install -y --setopt=install_weak_deps=False \
             git rust cargo clang cmake gcc-c++ binutils llvm lld boost-devel \
@@ -71,13 +71,16 @@ jobs:
         with:
           submodules: recursive
       - name: cargo test --workspace
+        # The default features, as a checkout builds: no web view and no VR,
+        # so neither dynarmic nor its arm64 test image is built here.
+        #
         # Not `--all-features`: the `webview` feature is exercised separately
         # below, because enabling only one crate's half leaves the caller
         # cfg'd out and the linker collects the whole web view — the dead-code
         # shape that hid this feature being absent for months.
         run: cargo test --workspace
-      - name: cargo test with the web view
-        run: cargo test --workspace --features cordial-shell/webview,cordial-runtime/webview
+      - name: cargo test with the web view and VR
+        run: cargo test --workspace --features cordial-shell/webview,cordial-runtime/webview,cordial-runtime/vr
 
   # The Discord issue bridge generates its modals from `.github/ISSUE_TEMPLATE/`
   # and fetches them at *runtime*, so an edit to a template needs no redeploy.

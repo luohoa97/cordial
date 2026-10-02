@@ -5,8 +5,11 @@
 #   ARCH=x86_64 tools/vr/build-aarch64.sh  # same recipe for x86-64, into target/
 #   ARCH=x86_64 BINS="cordial-run cordial-shell" tools/vr/build-aarch64.sh
 #                                          # the launcher as well as the client
-#   ARCH=x86_64 tools/vr/build-aarch64.sh cargo test -p cordial-guest
+#   ARCH=x86_64 tools/vr/build-aarch64.sh cargo test -p cordial-guest --features dynarmic
 #                                          # any cargo subcommand, same environment
+#
+# The build turns on `cordial-runtime/vr`, since VR is what this script is
+# for; a cargo subcommand gets only the features it is given.
 #
 # The compilers are the host's (clang, lld, rustup's aarch64 std); only the
 # headers and libraries come from an Ubuntu 24.04 filesystem built from
@@ -134,5 +137,5 @@ fi
 # without GTK 4 development packages can run the window that starts a VR
 # launch: BINS="cordial-run cordial-shell".
 bins=${BINS:-cordial-run}
-cargo build --release $(printf -- '--bin %s ' $bins) --target "$rust_target" "$@"
+cargo build --release $(printf -- '--bin %s ' $bins) --features cordial-runtime/vr --target "$rust_target" "$@"
 for bin in $bins; do echo "built $CARGO_TARGET_DIR/$rust_target/release/$bin"; done

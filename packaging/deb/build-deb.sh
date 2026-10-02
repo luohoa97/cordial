@@ -64,9 +64,10 @@ export CORDIAL_GIT_SHA="$CORDIAL_SHORTHASH"
 # webview::open, and the binary carries no WebKitGTK at all -- silently: the
 # build still succeeds. This exact shape shipped once in the Flatpak and was
 # reported as "webview doesnt work in cordial flatpak". The readelf check
-# below is what catches it here instead.
+# below is what catches it here instead. `cordial-runtime/vr` is Play in VR
+# (ADR-053), and why the build needs libboost-dev.
 cargo build --release --locked \
-    --features cordial-shell/webview,cordial-runtime/webview
+    --features cordial-shell/webview,cordial-runtime/webview,cordial-runtime/vr
 
 readelf -d target/release/cordial-run | grep -qi webkit || {
     echo "cordial-run linked no WebKitGTK; the webview features did not take" >&2
