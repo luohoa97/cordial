@@ -364,6 +364,12 @@ fn parse() -> Result<Options, String> {
         return Err("--lib-dir is required".into());
     }
     if opt.guest_arm64 {
+        // Refused before anything below changes the environment: the
+        // translator and the guest's bridges are behind the `vr` feature,
+        // which every package turns on and a checkout's `cargo build` does not.
+        if !cfg!(feature = "vr") {
+            return Err("--guest-arm64: this build has no VR support; built without the `vr` feature".into());
+        }
         // The Quest build keeps its engine storage apart from the phone
         // build's within the same profile, and shares the sign-in (ADR-053).
         cordial_runtime::profile::set_build(cordial_runtime::profile::Build::Quest);
@@ -1966,7 +1972,7 @@ fn main() -> ExitCode {
     // constructors (M2, M3). With `--app-bridge` the bring-up below then
     // carries on with that library exactly as it would with a native one,
     // its `Java_*` exports reaching the guest through host entries (M4).
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(feature = "vr", target_arch = "x86_64"))]
     let guest_lib = if opt.guest_arm64 {
         match guest_arm64_link(&opt) {
             Ok(lib) => Some(lib),
@@ -1975,7 +1981,7 @@ fn main() -> ExitCode {
     } else {
         None
     };
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(all(feature = "vr", target_arch = "x86_64")))]
     let guest_lib: Option<linker::Library> = None;
 
     let (lib, defer_ctors, android_libpath, time_ctors, elapsed) = 'link: {
@@ -5766,7 +5772,7 @@ mod disk_tests {
 /// that every import has an answer the guest can safely jump to, and that
 /// every relocation was applied -- the linker logs the count per type, to be
 /// checked against `llvm-readelf -r`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 fn guest_arm64_link(opt: &Options) -> Result<linker::Library, ExitCode> {
     use cordial_runtime::guest_link::{self, Answer};
     use std::collections::BTreeSet;
@@ -5941,7 +5947,7 @@ fn guest_arm64_link(opt: &Options) -> Result<linker::Library, ExitCode> {
 /// Jits, resident code cache, guest-to-host calls and their rate, and the CPU
 /// time of each thread that has run guest code -- so a long run records its
 /// own steady state (M4).
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 fn guest_stats_reporter(rt: std::sync::Arc<cordial_guest::Runtime>) {
     use std::sync::atomic::Ordering::Relaxed;
     // utime + stime of one task of this process, in clock ticks, and its name.
@@ -6028,7 +6034,7 @@ fn guest_stats_reporter(rt: std::sync::Arc<cordial_guest::Runtime>) {
 /// `--guest-arm64`, after the link: the engine's constructors in linker
 /// order, then `JNI_OnLoad` with `--jni-onload` (docs/vr/dynarmic-design.md
 /// M3), all on this thread's guest Jit.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 fn guest_arm64_run(
     opt: &Options,
     rt: &std::sync::Arc<cordial_guest::Runtime>,
@@ -6175,7 +6181,7 @@ fn guest_arm64_run(
 /// code caches, which it commits lazily so that what is resident is what was
 /// emitted (to the page), plus the one host-entry page. Read from /proc
 /// rather than from dynarmic, which has no public accessor for it.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 fn code_cache_resident_kib() -> u64 {
     let Ok(smaps) = std::fs::read_to_string("/proc/self/smaps") else { return 0 };
     let mut total = 0;

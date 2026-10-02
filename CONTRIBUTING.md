@@ -184,9 +184,13 @@ sudo apt install libgtk-4-dev libadwaita-1-dev    # Debian/Ubuntu
 sudo pacman -S gtk4 libadwaita                    # Arch
 ```
 
+Play in VR is the `vr` feature: off in a plain `cargo build`, on in every
+package, and turned on with `--features cordial-runtime/vr`. Nothing in the
+next paragraph is needed without it.
+
 On x86-64 the VR mode's translator, dynarmic (`third_party/dynarmic`, a
 submodule with submodules of its own, which `--recursive` fetches), also needs
-Boost's headers: `boost-devel`, `libboost-dev` or `boost`. `cargo test` builds a
+Boost's headers: `boost-devel`, `libboost-dev` or `boost`. `cargo test` with it builds a
 small arm64 test image for `crates/cordial-guest` and needs `lld` and `llvm`
 for it; without them only that crate's tests fail to compile, by name. The
 build compiles the loader and dynarmic with `patches/0005`--`0008` applied, in

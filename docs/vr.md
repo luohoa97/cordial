@@ -10,7 +10,7 @@ Play in VR runs Roblox's Meta Quest build on your PC and shows it in your headse
 
 ## What you need
 
-- An **x86-64 PC**. The button does not appear on other computers.
+- An **x86-64 PC**. The button does not appear on other computers, or in a build from source without the `vr` feature ([From source](install.md#from-source)).
 - **Your own Quest with Roblox installed** from the Meta Horizon Store. Cordial copies Roblox from it. It never downloads a Quest build from anywhere, and it refuses an APK that Roblox did not sign.
 - An **OpenXR runtime**. [WiVRn](https://github.com/WiVRn/WiVRn) streams to a Quest over Wi-Fi or USB; SteamVR and Monado also work. Cordial uses one and does not install one.
 - For copying Roblox off the headset: a USB-C cable that carries data (a charge-only cable is the commonest reason nothing shows up) and `adb`.

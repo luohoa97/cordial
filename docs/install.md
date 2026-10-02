@@ -236,8 +236,10 @@ You need:
 - **GTK4 (4.12 or newer) and libadwaita (1.5 or newer) development packages.**
   Fedora: `dnf install gtk4-devel libadwaita-devel`. Debian/Ubuntu:
   `apt install libgtk-4-dev libadwaita-1-dev`. Arch: `pacman -S gtk4 libadwaita`.
-- **Boost's headers** on x86-64 (`boost-devel`, `libboost-dev`, `boost`), for
-  dynarmic, the VR mode's translator. `--recursive` fetches it.
+- **Boost's headers**, only for Play in VR, which a plain `cargo build` leaves
+  out: build with `--features cordial-runtime/vr` and install `boost-devel`,
+  `libboost-dev` or `boost`. It is for dynarmic, the VR mode's translator, which
+  `--recursive` fetches. Every package has VR turned on.
 - **PipeWire's development headers** (`pipewire-devel`, `libpipewire-0.3-dev`),
   optional. With them the build includes the OpenSL ES audio backend; without
   them there is no sound and everything else works. `libpipewire-0.3.so` is

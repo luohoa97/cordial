@@ -441,7 +441,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          # Whole history and tags: off a tag the package is built from this
+          # checkout, and pkgver() runs `git describe --tags` on it.
+          fetch-depth: 0
           submodules: false
       - name: Install the PKGBUILD's own depends() and makedepends()
         # Read out of packaging/aur/cordial/PKGBUILD by sourcing it rather
@@ -475,12 +477,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Off a tag, build the commit under test rather than `main`'s.
+          # A named branch, because makepkg mirror-clones the source and a
+          # detached HEAD is not a ref the mirror carries.
+          source=""
+          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            git config --global --add safe.directory "$GITHUB_WORKSPACE"
+            git -C "$GITHUB_WORKSPACE" branch -f ci-under-test HEAD
+            source="git+file://$GITHUB_WORKSPACE#branch=ci-under-test"
+          fi
           useradd --create-home builder
           # $GITHUB_WORKSPACE rather than a guessed container path: that is
           # the one name Actions guarantees points at the checkout, whatever
           # the container job happens to mount it at.
           chown -R builder:builder "$GITHUB_WORKSPACE"
           runuser -u builder -- env CORDIAL_PKGBUILD_TAG="$CORDIAL_PKGBUILD_TAG" \
+            CORDIAL_PKGBUILD_SOURCE="$source" \
             makepkg --dir "$GITHUB_WORKSPACE/packaging/aur/cordial" \
               --noconfirm --cleanbuild --force
           install -d dist/arch

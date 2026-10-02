@@ -375,7 +375,10 @@ modules:
       #
       # `readelf -d /app/bin/cordial-run | grep -i webkit` is the check that it
       # actually linked.
-      - cargo build --release --offline --features cordial-shell/webview,cordial-runtime/webview
+      #
+      # `cordial-runtime/vr` is Play in VR (ADR-053), and what the dynarmic
+      # and boost-headers sources above are for.
+      - cargo build --release --offline --features cordial-shell/webview,cordial-runtime/webview,cordial-runtime/vr
       # Both binaries, side by side. `launch.rs` looks for the loader as the
       # sibling of `current_exe` and nowhere else — there is no baked-in
       # /app/bin and no configurable path — so shipping the shell without

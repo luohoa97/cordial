@@ -18,7 +18,9 @@
 //!
 //! On any target other than x86-64 the crate is empty: dynarmic's A64
 //! frontend has no arm64 host backend, and the aarch64 build runs the engine
-//! natively (or under qemu-user) instead.
+//! natively (or under qemu-user) instead. It is empty without the `dynarmic`
+//! feature too, which `cordial-runtime/vr` turns on: dynarmic needs Boost's
+//! headers, and a checkout's plain `cargo build` should not.
 
 // One of the ABI edges ADR-036 names: every guest register is a raw pointer
 // or a raw bit pattern the host has to reinterpret, and the Jit itself is a
@@ -26,41 +28,41 @@
 // remove it.
 #![allow(unsafe_code)]
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 mod abi;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 mod clock;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 pub mod code;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 mod entry;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 mod ffi;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 mod jit;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 mod keys;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 mod mem;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 mod string;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 pub mod thunks;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 pub use abi::{collect, invoke, printf_types, write_ret, Ret, Ty, VaList};
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 pub use entry::{host_entry, host_entry_count, ArgMap};
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 pub use ffi::HostRet;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 pub use keys::{key_clean_all, KEYS};
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 pub use string::STRING_FUNCTIONS;
 
 /// Guest instructions the translator has fetched to translate, process-wide
 /// (a block translated twice counts twice).
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 pub fn translated_instructions() -> u64 {
     // SAFETY: reads an atomic counter.
     unsafe { ffi::cg_translated_instructions() }
@@ -72,17 +74,17 @@ pub fn translated_instructions() -> u64 {
 /// # Safety
 ///
 /// `s` must be a C string and `end` null or writable.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 pub unsafe fn strtold_quad(s: *const std::ffi::c_char, end: *mut *mut std::ffi::c_char, out: &mut [u64; 2]) {
     // SAFETY: the caller's guarantee.
     unsafe { ffi::cg_strtold_quad(s, end, out) }
 }
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 pub use jit::{
     guest_call, guest_call_args, guest_stack_of, set_trace, guest_threads, last_fault_context, set_thread_stack,
     thread_depth, thread_guest_stack, thread_jit_count, Call, Exception, Fault, FaultContext, Handler, MonitorMode, Options,
     Returned, Runtime, StackSpec, Stats, ThreadInfo, UNSAFE_FP_INACCURATE_NAN, UNSAFE_FP_REDUCED_ERROR,
     UNSAFE_FP_UNFUSE_FMA,
 };
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 pub use mem::Mapping;

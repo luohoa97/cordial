@@ -30,6 +30,11 @@ path = "src/main.rs"
 [features]
 default = []
 webview = ["dep:webkit6"]
+# Whether the client built beside this launcher can play in VR. Nothing is
+# compiled differently: `cordial-runtime/vr` turns this on, and the launcher
+# reads it as `vr::COMPILED_IN` so it never offers a mode `cordial-run` would
+# refuse. Why a feature rather than asking `cordial-run`: ADR-053, decision 8.
+vr = []
 
 # Asks a live page what it got, which is the only way to answer "does this
 # machine's WebKitGTK do WebAuthn" — see the file. Not built by `cargo test

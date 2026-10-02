@@ -2,7 +2,7 @@
 //! rather than engine: a host entry point calling a guest function the way
 //! libjnivm calls a registered native, and the translator's SIGSEGV handler
 //! coexisting with the one Rust's runtime installs first.
-#![cfg(target_arch = "x86_64")]
+#![cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 #![allow(unsafe_code)]
 
 use std::process::Command;

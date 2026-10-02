@@ -21,9 +21,14 @@ use std::process::Command;
 /// Whether this build of Cordial can run the Quest build at all.
 ///
 /// The translator has an x86-64 host backend only, and `cordial-run` refuses
-/// `--guest-arm64` elsewhere. The launcher hides the VR entry rather than
-/// greying it out on other hosts: there is nothing the user can do about it.
-pub const HOST_SUPPORTED: bool = cfg!(target_arch = "x86_64");
+/// `--guest-arm64` elsewhere, and in a build without the `vr` feature
+/// ([`COMPILED_IN`]). The launcher hides the VR entry rather than greying it
+/// out in either case: there is nothing the user can do about it.
+pub const HOST_SUPPORTED: bool = cfg!(target_arch = "x86_64") && COMPILED_IN;
+
+/// Whether the VR mode was compiled in: `cordial-runtime/vr`, which every
+/// package turns on and a checkout's plain `cargo build` does not.
+pub const COMPILED_IN: bool = cfg!(feature = "vr");
 
 /// The WiVRn Flatpak's application id.
 pub const WIVRN_FLATPAK: &str = "io.github.wivrn.wivrn";

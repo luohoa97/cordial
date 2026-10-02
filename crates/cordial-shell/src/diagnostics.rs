@@ -210,6 +210,9 @@ fn roblox_in(dir: &std::path::Path) -> String {
 /// The Quest build, the OpenXR runtime "Play in VR" would use, and WiVRn's
 /// server when that is the runtime (ADR-053).
 fn vr() -> String {
+    if !cordial_shell::vr::COMPILED_IN {
+        return "not in this build (built without the `vr` feature)".into();
+    }
     if !cordial_shell::vr::HOST_SUPPORTED {
         return "not available on this architecture".into();
     }

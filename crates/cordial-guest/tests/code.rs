@@ -5,7 +5,7 @@
 //! The guest side is `tests/guest/code.c`. Its `mmap`, `munmap` and
 //! `mprotect` are `cordial_guest::code`'s, the functions the client's thunks
 //! call, so this is the client's path and not a stand-in for it.
-#![cfg(target_arch = "x86_64")]
+#![cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 #![allow(unsafe_code)]
 
 use std::sync::atomic::{AtomicI64, Ordering};

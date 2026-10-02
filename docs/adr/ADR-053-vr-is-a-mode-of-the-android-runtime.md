@@ -120,6 +120,20 @@ hands-on session is noted under "Not established" below.
    gains a VR line and `--doctor` VR checks, which are never worse than `info`
    unless a chosen runtime has gone.
 
+8. **VR is a Cargo feature, `cordial-runtime/vr`, off by default and on in
+   every package.** dynarmic needs Boost's headers, and the guest crate's
+   tests an arm64-capable clang, `lld` and `llvm`; with the translator in
+   every build, a plain `cargo build` from a checkout needed all of them.
+   Without the feature `crates/cordial-guest` compiles to nothing, the
+   `guest_*` modules, the XR mirror and its Vulkan hooks are absent, and
+   `cordial-run --guest-arm64` refuses by name. The feature also turns on
+   `cordial-shell/vr`, which the launcher reads as `vr::COMPILED_IN` and folds
+   into `HOST_SUPPORTED`, so it does not offer a mode its client would refuse.
+   A compile-time fact rather than asking `cordial-run` at startup, because
+   both binaries come from one `cargo build` in every package, and a process
+   spawn before the window opens would cost every launch for an answer fixed
+   when it was built.
+
 ## When Roblox stops accepting the build
 
 Roblox refuses old clients after an update, so a Quest build goes stale with

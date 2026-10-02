@@ -213,9 +213,10 @@ export CORDIAL_GIT_SHA="$CORDIAL_SHORTHASH"
 # for the shape of the bug that taught this project to say so at every
 # callsite: with only one crate's feature on, the linker collects
 # webview::open silently and the binary carries no WebKitGTK, with no error
-# anywhere in the build.
+# anywhere in the build. `cordial-runtime/vr` is Play in VR (ADR-053), and
+# why the build needs Boost's headers.
 cargo build --release --locked \
-    --features cordial-shell/webview,cordial-runtime/webview
+    --features cordial-shell/webview,cordial-runtime/webview,cordial-runtime/vr
 
 readelf -d "$target_dir/release/cordial-run" | grep -qi webkit || {
     echo "cordial-run linked no WebKitGTK; the webview features did not take" >&2

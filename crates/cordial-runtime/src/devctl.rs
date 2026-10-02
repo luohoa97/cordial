@@ -468,7 +468,7 @@ fn info_line() -> String {
 /// calls `vkQueuePresentKHR`, so `presents` stays 0 and `xr_frames` counts
 /// `xrEndFrame` instead (`guest_xr`).
 fn xr_info() -> String {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(feature = "vr", target_arch = "x86_64"))]
     if let Some(s) = crate::guest_xr::info() {
         return format!(" {s}");
     }

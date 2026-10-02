@@ -4,7 +4,7 @@
 //!
 //! The guest side is `tests/guest/m1.c`, compiled for aarch64 by build.rs, so
 //! every call into a stub is a call sequence Clang emitted for AAPCS64.
-#![cfg(target_arch = "x86_64")]
+#![cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 // The native side of every comparison is a raw libc call, which is the
 // point: the reference is the host function itself, not a Rust stand-in.
 #![allow(unsafe_code)]

@@ -31,6 +31,8 @@ pub mod vulkan;
 pub mod vulkan_etc;
 pub mod wayland;
 pub mod window;
+// VR only: it mirrors the guest engine's OpenXR left eye into the window.
+#[cfg(feature = "vr")]
 pub mod xr_mirror;
 
 use std::ffi::{c_int, c_void};

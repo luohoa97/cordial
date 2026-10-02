@@ -58,7 +58,8 @@ Files: third_party/dynarmic/*
 Copyright: 2017 merryhime
 License: 0BSD
 Comment:
- The arm64 recompiler behind the VR mode, compiled into x86-64 builds only.
+ The arm64 recompiler behind the VR mode, compiled into x86-64 builds only
+ (with the vr feature, which this package turns on).
  Full text at usr/share/doc/cordial/dynarmic-0BSD.txt.
 
 Files: third_party/dynarmic/externals/fmt/*

@@ -4,7 +4,7 @@
 //! Hand-assembled words rather than the compiled image, so this milestone
 //! depends on nothing but dynarmic and the shim. Encodings from
 //! `llvm-mc -triple=aarch64 -mattr=+fullfp16,+lse -show-encoding`.
-#![cfg(target_arch = "x86_64")]
+#![cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 
 use cordial_guest::{guest_call, Exception, Fault, Mapping, Options, Runtime};
 

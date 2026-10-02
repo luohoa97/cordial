@@ -150,7 +150,7 @@ signatures are correct.
 ## dynarmic — 0BSD, and what it bundles
 
 The arm64 dynamic recompiler behind `crates/cordial-guest`, compiled only into
-x86-64 builds. Submodule at [`third_party/dynarmic/`](third_party/dynarmic), from
+x86-64 builds with the `vr` feature, which every package turns on. Submodule at [`third_party/dynarmic/`](third_party/dynarmic), from
 [`azahar-emu/dynarmic`](https://github.com/azahar-emu/dynarmic) at commit
 `a46601580d5512d324104f985b5f0209dc980ddc`.
 
@@ -204,7 +204,7 @@ Each package installs the seven licence files above beside Cordial's own, as
 
 The guest's Vulkan, OpenXR and GL/EGL call tables are generated from Khronos's
 machine-readable registries by `tools/vr/gen-guest-{vk,xr,gl}.py`, and the
-output is committed and compiled into x86-64 builds. The registries themselves
+output is committed and compiled into x86-64 builds with the `vr` feature. The registries themselves
 are not vendored; each generated file names the release and commit it came
 from.
 

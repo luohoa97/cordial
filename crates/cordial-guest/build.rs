@@ -12,6 +12,11 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("x86_64") {
         return;
     }
+    // Without the feature the crate is empty (Cargo.toml says why), so
+    // nothing here may need Boost, lld or llvm.
+    if std::env::var_os("CARGO_FEATURE_DYNARMIC").is_none() {
+        return;
+    }
 
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest.join("../..").canonicalize().expect("workspace root");

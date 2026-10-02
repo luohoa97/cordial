@@ -2,7 +2,7 @@
 //! `pthread_setspecific` run as guest code in the stub page (`keys.rs`).
 //! Each case is checked against what bionic's `pthread_key.cpp` returns for
 //! it, entered the way the engine enters them: through the translator.
-#![cfg(target_arch = "x86_64")]
+#![cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

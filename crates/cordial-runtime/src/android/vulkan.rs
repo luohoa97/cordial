@@ -815,7 +815,7 @@ fn take_capture(queue: *mut c_void, info: *const c_void) {
 /// come from the host loader here, with the same instance the engine uses.
 /// The copy is submitted on the engine's own queue, from the thread that is
 /// releasing the image, which is the moment it is complete.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 pub(crate) fn capture_image(instance: u64, physical_device: u64, queue_index: u32, mut target: super::capture::Target) {
     let Some(h) = host() else {
         super::capture::abandon("no host Vulkan");
@@ -858,7 +858,7 @@ pub(crate) fn capture_image(instance: u64, physical_device: u64, queue_index: u3
 /// The physical device `vkCreateDevice` was last called with, and the device
 /// the engine's own path recorded, for the OpenXR bridge to check that the
 /// handles the runtime hands back are the ones this layer saw created.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 pub(crate) fn created_device() -> (u64, u64) {
     (
         PHYSICAL_DEVICE.load(std::sync::atomic::Ordering::Relaxed) as u64,
@@ -1025,13 +1025,16 @@ extern "C" fn vk_create_device(
     drop(stripped);
     if rc == VK_SUCCESS && !device_out.is_null() {
         // SAFETY: the driver just wrote the handle there.
-        CREATED_DEVICE.store(unsafe { *device_out } as usize, std::sync::atomic::Ordering::Relaxed);
-        super::vulkan_etc::device_created(physical_device, unsafe { *device_out });
+        let device = unsafe { *device_out };
+        #[cfg(all(feature = "vr", target_arch = "x86_64"))]
+        CREATED_DEVICE.store(device as usize, std::sync::atomic::Ordering::Relaxed);
+        super::vulkan_etc::device_created(physical_device, device);
     }
     rc
 }
 
 /// The last device `vkCreateDevice` returned through this layer.
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 static CREATED_DEVICE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// What the present-mode setting asked for.
@@ -1253,6 +1256,7 @@ fn surface_image_count_limits(surface: u64) -> Option<(u32, u32)> {
 
 /// The sRGB format with the same layout as a UNORM one, for the two the
 /// engine has asked for a window swapchain in.
+#[cfg(feature = "vr")]
 fn srgb_twin(format: i32) -> Option<i32> {
     match format {
         37 => Some(43), // R8G8B8A8_UNORM -> R8G8B8A8_SRGB
@@ -1262,6 +1266,7 @@ fn srgb_twin(format: i32) -> Option<i32> {
 }
 
 /// Whether the host offers `format` in `color_space` for `surface`.
+#[cfg(feature = "vr")]
 fn surface_supports(surface: u64, format: i32, color_space: i32) -> bool {
     let Some(h) = host() else { return false };
     let instance = HOST_INSTANCE.load(std::sync::atomic::Ordering::Relaxed);
@@ -1406,8 +1411,11 @@ extern "C" fn vk_create_swapchain_khr(
     // `TRANSFER_DST` in its usage. Added only when an XR session exists --
     // `xrCreateSession` precedes this call in every run logged -- only when
     // the surface allows it, and never for the flat client.
+    #[cfg(feature = "vr")]
     let mut widened;
+    #[cfg_attr(not(feature = "vr"), allow(unused_mut))]
     let mut create_info = create_info;
+    #[cfg(feature = "vr")]
     // SAFETY: the caller's struct, read only; a null one is forwarded as is.
     if let Some(info) = unsafe { create_info.as_ref() } {
         let want = super::xr_mirror::USAGE_TRANSFER_DST;
@@ -1454,8 +1462,11 @@ extern "C" fn vk_create_swapchain_khr(
     // handle, and a retired swapchain may not be passed as `oldSwapchain`
     // again. The mirror's current one stands in for it and is destroyed once
     // the engine's new one replaces it.
+    #[cfg(feature = "vr")]
     let mut relinked;
+    #[cfg(feature = "vr")]
     let mut replaced_mirror = 0;
+    #[cfg(feature = "vr")]
     // SAFETY: the caller's struct, read only.
     if let Some(info) = unsafe { create_info.as_ref() } {
         if info.old_swapchain != 0 {
@@ -1468,6 +1479,7 @@ extern "C" fn vk_create_swapchain_khr(
         }
     }
     let rc = vk_create_swapchain_inner(device, create_info, allocator, swapchain_out);
+    #[cfg(feature = "vr")]
     if rc == VK_SUCCESS && replaced_mirror != 0 {
         vk_destroy_swapchain_khr(device, replaced_mirror, std::ptr::null());
         MIRROR_RESIZE.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -1484,6 +1496,7 @@ extern "C" fn vk_create_swapchain_khr(
                 info.image_extent.height,
                 info.image_format as u32,
             );
+            #[cfg(feature = "vr")]
             if super::xr_mirror::SESSION.load(std::sync::atomic::Ordering::Relaxed) {
                 let mut kept = *info;
                 kept.p_next = std::ptr::null();
@@ -1497,6 +1510,7 @@ extern "C" fn vk_create_swapchain_khr(
                 kept.p_queue_family_indices = std::ptr::null();
                 *WINDOW_SHAPE.lock().unwrap_or_else(|e| e.into_inner()) = Some(SendShape(kept));
             }
+            #[cfg(feature = "vr")]
             super::xr_mirror::note_window_swapchain(
                 device as u64,
                 info.surface,
@@ -1511,12 +1525,20 @@ extern "C" fn vk_create_swapchain_khr(
     rc
 }
 
+#[cfg(feature = "vr")]
 static HOST_DESTROY_SWAPCHAIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// What to hand back for `vkDestroySwapchainKHR`. Only the VR mode's XR
 /// mirror needs to hear about a destroy, so the phone build gets the driver's
 /// own entry point, exactly as before the mirror existed, and a null stays
 /// null rather than becoming a wrapper that silently does nothing.
+/// Without the `vr` feature there is no mirror, so nothing is interposed.
+#[cfg(not(feature = "vr"))]
+fn destroy_swapchain_entry(host: *mut c_void) -> *mut c_void {
+    host
+}
+
+#[cfg(feature = "vr")]
 fn destroy_swapchain_entry(host: *mut c_void) -> *mut c_void {
     if host.is_null() || crate::profile::build() != crate::profile::Build::Quest {
         return host;
@@ -1528,6 +1550,7 @@ fn destroy_swapchain_entry(host: *mut c_void) -> *mut c_void {
 /// `vkDestroySwapchainKHR`, unchanged, after the XR mirror has let go of the
 /// swapchain: the mirror presents to the engine's swapchain from the XR
 /// thread, and the engine may destroy it from another.
+#[cfg(feature = "vr")]
 extern "C" fn vk_destroy_swapchain_khr(device: *mut c_void, swapchain: u64, allocator: *const c_void) {
     super::xr_mirror::forget_swapchain(swapchain);
     let f = HOST_DESTROY_SWAPCHAIN.load(std::sync::atomic::Ordering::Relaxed);
@@ -1540,15 +1563,20 @@ extern "C" fn vk_destroy_swapchain_khr(device: *mut c_void, swapchain: u64, allo
 
 /// The engine's window swapchain create info, as last created in an XR
 /// session: what the mirror recreates from when the window is resized.
+#[cfg(feature = "vr")]
 struct SendShape(VkSwapchainCreateInfoKHR);
 // SAFETY: its pointers are nulled before it is stored.
+#[cfg(feature = "vr")]
 unsafe impl Send for SendShape {}
+#[cfg(feature = "vr")]
 static WINDOW_SHAPE: std::sync::Mutex<Option<SendShape>> = std::sync::Mutex::new(None);
 
 /// `(the engine's retired handle, the mirror's current swapchain)` once the
 /// mirror has resized the window swapchain under the engine.
+#[cfg(feature = "vr")]
 static MIRROR_RESIZE: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
 
+#[cfg(feature = "vr")]
 fn mirror_swapchain_for_retired(old: u64) -> Option<u64> {
     let g = MIRROR_RESIZE.lock().unwrap_or_else(|e| e.into_inner());
     g.filter(|&(retired, _)| retired == old).map(|(_, current)| current)
@@ -1564,6 +1592,7 @@ fn mirror_swapchain_for_retired(old: u64) -> Option<u64> {
 /// this layer already chose. Must be called without the mirror's lock held:
 /// the create goes through [`vk_create_swapchain_khr`], which reports the new
 /// swapchain back to the mirror.
+#[cfg(feature = "vr")]
 pub(super) fn recreate_mirror_swapchain(device: u64, old: u64, width: u32, height: u32) -> Result<u64, String> {
     let Some(SendShape(mut info)) = WINDOW_SHAPE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| SendShape(s.0))
     else {
@@ -1600,6 +1629,7 @@ pub(super) fn recreate_mirror_swapchain(device: u64, old: u64, width: u32, heigh
 }
 
 /// The host's `vkGetDeviceProcAddr`, once anything has asked for it.
+#[cfg(feature = "vr")]
 pub(crate) fn device_proc_getter() -> Option<extern "C" fn(u64, *const c_char) -> *mut c_void> {
     let f = HOST_GET_DEVICE_PROC_ADDR.load(std::sync::atomic::Ordering::Relaxed);
     // SAFETY: resolved from the host loader for exactly this name.
@@ -1608,6 +1638,7 @@ pub(crate) fn device_proc_getter() -> Option<extern "C" fn(u64, *const c_char) -
 
 /// An instance-level command from the host loader, against the real host
 /// instance.
+#[cfg(feature = "vr")]
 pub(crate) fn instance_fn(name: &CStr) -> Option<*mut c_void> {
     let h = host()?;
     let mut inst = HOST_INSTANCE.load(std::sync::atomic::Ordering::Relaxed);
