@@ -40,7 +40,6 @@ of them. `cordial-run --help` lists the translator's own beside the rest.
 | `CORDIAL_GUEST_TLS_KEYS=host` | `pthread_getspecific`/`setspecific` through host stubs rather than guest code (§9.8). |
 | `CORDIAL_GUEST_STRING=host` | Short `memcpy`/`memmove`/`memset`/`memcmp` through host stubs rather than guest code (§9.9). |
 | `CORDIAL_GUEST_CLOCK=host` | `clock_gettime(CLOCK_MONOTONIC)` through a host stub rather than the guest counter (§9.9). |
-| `CORDIAL_GUEST_HWCAP_ATOMICS=1` | Advertises LSE atomics, which the translator lacks; the M3 control, and it should stop the guest. |
 | `CORDIAL_GUEST_OMIT=<a,b>` | Leaves those imports unanswered. |
 | `CORDIAL_GUEST_THREADS=0` | Every guest `pthread_create` fails with `EAGAIN`. |
 

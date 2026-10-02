@@ -572,9 +572,13 @@ binary's for the same build, 4,458 lines; the qemu runs' own dumps agree with
 each other. No `ExceptionRaised` or `InterpreterFallback` in any of them: the
 Jit stops on either, and none stopped.
 
-**Control.** `CORDIAL_GUEST_HWCAP_ATOMICS=1`: constructor 2 stops with
-`InterpreterFallback` at libroblox+0x2be8c60, which is `casalb w0, w1, [x2]` in
-`bti c; adrp x16; ldrb w16, [x16, #0x968]; cbz w16; casalb; ret`.
+**Control.** With `ATOMICS` advertised, constructor 2 stops with
+`InterpreterFallback` at a `casalb w0, w1, [x2]` in
+`bti c; adrp x16; ldrb w16, [x16, #0x968]; cbz w16; casalb; ret`. This was
+measured through an environment variable that has since been removed, because
+advertising a capability the translator lacks is a stub that lies; the control
+is now `guest_libc`'s `advertising_atomics_stops_the_guest_at_the_lse_instruction`,
+on a helper of the same shape, which only a test can switch.
 
 **Timing**, wall clock from the first constructor to `JNI_OnLoad` returning,
 dynarmic and qemu-user (Phase 1's aarch64 binary, `CORDIAL_TIME_CTORS=1`, which

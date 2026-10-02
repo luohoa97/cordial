@@ -68,17 +68,26 @@ const HWCAP_ASIMDDP: u64 = 1 << 20;
 /// ID-register reads. This is not a lie about the host; it is the CPU the
 /// guest runs on.
 ///
-/// `CORDIAL_GUEST_HWCAP_ATOMICS=1` adds `ATOMICS`, which *is* false: it is
-/// the control design §8 names for M3, and should stop the guest in an
-/// outline-atomics helper.
+/// A test can add `ATOMICS`, which *is* false, on its own thread
+/// (`ADVERTISE_ATOMICS`): the control design §8 names for M3, which stops the
+/// guest in an outline-atomics helper. It used to be an environment variable,
+/// and so reachable in a shipped client; a capability that is not there is
+/// a stub that lies, and only a test may ask for one.
 pub fn guest_hwcap() -> u64 {
     let honest = HWCAP_FP | HWCAP_ASIMD | HWCAP_AES | HWCAP_PMULL | HWCAP_SHA1 | HWCAP_SHA2
         | HWCAP_CRC32 | HWCAP_FCMA | HWCAP_ASIMDDP;
-    if std::env::var_os("CORDIAL_GUEST_HWCAP_ATOMICS").is_some() {
-        honest | HWCAP_ATOMICS
-    } else {
-        honest
+    #[cfg(test)]
+    if ADVERTISE_ATOMICS.get() {
+        return honest | HWCAP_ATOMICS;
     }
+    honest
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Per thread, so the control cannot leak into a test running beside it;
+    /// the guest's `getauxval` runs on the thread that called into the guest.
+    static ADVERTISE_ATOMICS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 const AT_PAGESZ: u64 = 6;
@@ -1495,12 +1504,55 @@ mod tests {
     fn hwcap_omits_what_the_translator_lacks() {
         // ATOMICS, FPHP, ASIMDHP, CPUID, ASIMDRDM, JSCVT, LRCPC, SVE.
         for bit in [8, 9, 10, 11, 12, 13, 15, 22] {
-            if bit == 8 && std::env::var_os("CORDIAL_GUEST_HWCAP_ATOMICS").is_some() {
-                continue;
-            }
             assert_eq!(guest_hwcap() & (1 << bit), 0, "bit {bit}");
         }
         assert_eq!(guest_hwcap() & 3, 3, "FP and ASIMD");
+    }
+
+    /// M3's control (design §8), without the engine: an outline-atomics
+    /// helper of the shape the Quest build's constructors reach -- a flag
+    /// byte, set from `getauxval(AT_HWCAP) & HWCAP_ATOMICS` as compiler-rt's
+    /// initialiser sets it, choosing `casalb` or an LL/SC loop. With the
+    /// honest answer the guest takes the loop and the swap happens; with
+    /// `ATOMICS` advertised it takes `casalb`, which the translator does not
+    /// implement, and stops there having written nothing.
+    #[test]
+    fn advertising_atomics_stops_the_guest_at_the_lse_instruction() {
+        use cordial_guest::{guest_call, Fault, Mapping, Options, Runtime};
+        let helper: [u32; 11] = [
+            0x3940_0070, // ldrb   w16, [x3]
+            0x3400_0070, // cbz    w16, llsc
+            0x08e0_fc41, // casalb w0, w1, [x2]
+            0xd65f_03c0, // ret
+            0x5300_1c10, // llsc: uxtb w16, w0
+            0x085f_fc40, // 1: ldaxrb w0, [x2]
+            0x6b10_001f, // cmp    w0, w16
+            0x5400_0061, // b.ne   2f
+            0x0811_fc41, // stlxrb w17, w1, [x2]
+            0x35ff_ff91, // cbnz   w17, 1b
+            0xd65f_03c0, // 2: ret
+        ];
+        let bytes: Vec<u8> = helper.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let code = Mapping::with_contents(&bytes, 0);
+        let casalb = code.addr() + 8;
+        let rt = Runtime::new(Options::default());
+        let getauxval = rt.register("getauxval", getauxval());
+
+        let run = |advertise: bool| {
+            ADVERTISE_ATOMICS.set(advertise);
+            let hwcap = guest_call(&rt, getauxval, &[AT_HWCAP], &[]).expect("getauxval returned").x0;
+            ADVERTISE_ATOMICS.set(false);
+            let have_lse = u8::from(hwcap & HWCAP_ATOMICS != 0);
+            let mut byte = 5u8;
+            let r = guest_call(&rt, code.addr(),
+                               &[5, 9, &mut byte as *mut u8 as u64, &have_lse as *const u8 as u64], &[]);
+            println!("ATOMICS advertised {advertise}: hwcap {hwcap:#x} -> {r:?}, byte {byte}");
+            (r.map(|r| r.x0 as u8), byte)
+        };
+        assert_eq!(run(false), (Ok(5), 9), "the honest hwcap takes the LL/SC path and swaps");
+        assert_eq!(run(true), (Err(Fault::InterpreterFallback { pc: casalb, count: 1 }), 5),
+                   "advertised ATOMICS did not stop at casalb");
+        assert_eq!(guest_hwcap() & HWCAP_ATOMICS, 0, "the override outlived its test");
     }
 
     /// Every O_* bit survives arm64 -> host -> arm64, and the four that

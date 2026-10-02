@@ -104,8 +104,7 @@ usage: cordial-load --lib-dir <dir> [options]
                     --jni-onload its JNI_OnLoad (docs/vr/dynarmic-design.md,
                     M3), or with --app-bridge the whole bring-up (M4).
                     CORDIAL_GUEST_OMIT=<a,b> leaves those imports
-                    unanswered; CORDIAL_GUEST_HWCAP_ATOMICS=1 advertises LSE,
-                    which the translator lacks (the M3 control)
+                    unanswered
   -v, --verbose     list every symbol and how it resolved
 
 env:
