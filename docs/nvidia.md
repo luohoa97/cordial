@@ -4,10 +4,13 @@
 <!-- icon: microchip -->
 
 > [!WARNING]
-> **Cordial has not been run on an NVIDIA GPU.** Nobody working on it has one, so
-> none of this is tested on NVIDIA hardware. It is what people running the same
-> Roblox engine (through Sober) have reported, what Cordial does about the
-> reports it can act on, and what to try. Where something is a guess it says so.
+> **Most of this page is untested on NVIDIA hardware.** The first runs on
+> NVIDIA were recorded 2026-10-03 (RTX 4070, driver 615.71.09, KDE on Wayland):
+> the client boots, renders and survives resize and fullscreen, and nothing
+> below has yet been run on a hybrid laptop, on a 535/550 driver, or in a
+> Flatpak. What follows is what people running the same Roblox engine (through
+> Sober) have reported, what Cordial does about the reports it can act on, and
+> what to try. Where something is a guess it says so.
 
 If you have an NVIDIA card, the tester plan in
 [`analysis/nvidia-support.md`](analysis/nvidia-support.md) is the most useful
@@ -114,6 +117,15 @@ above 2 crashed one:
 
 The "video memory: 64 MiB" line in the log is the engine's fixed figure on every
 vendor, not a sign your card is misread.
+
+**There is no known way to raise it, and the figure is not what allocation is
+decided on.** Measured 2026-10-03 on a 12 GiB RTX 4070: `DFIntEstimatedGmaSafeVideoMemoryMB`,
+the one flag name in Roblox's own settings document that speaks of video memory,
+moved nothing — the line still read `caps.videoMemory = 67108864` with the flag
+set to 8192, in a run where override delivery was proven in the same session
+(`DFIntTaskSchedulerTargetFps=30` holding 30.0 presents a second). A relayed
+Roblox maintainer statement (Sober #2077) says the figure is hard-coded and not
+what allocation is decided on. Do not spend a session on it.
 
 ## What Cordial does not do
 

@@ -157,7 +157,7 @@ Neither replaces the other. Frame pacing on FIFO caps you at your panel's rate w
 **Frame rate limit** offers Display refresh (sets nothing), or 90, 120, 144, 165 or 240. A new cap takes effect in a running game at once. Going back to Display refresh takes up to two minutes, because the engine does not unset a flag that Roblox's settings leave out.
 
 > [!WARNING]
-> Do not pick a cap above your display's refresh. On a 60 Hz output a cap of 90 presented about 31 frames a second and 240 about 36, against 57 to 60 with nothing set. That is one headless environment, and users on fast monitors report the opposite. Nothing above 240 is offered because a contributor reports the engine stops there; this project has no monitor that fast to check.
+> Do not pick a cap above your display's refresh. On a 60 Hz output a cap of 90 presented about 31 frames a second and 240 about 36, against 57 to 60 with nothing set. That is one headless environment, and on a fast monitor the opposite holds: on a 240 Hz output with an NVIDIA GPU, `DFIntTaskSchedulerTargetFps=240` presented 216-232 frames a second against a flat 59.9 with the engine's own target (measured 2026-10-03). Nothing above 240 is offered because a contributor reports the engine stops there.
 
 ## Import a list from another launcher
 

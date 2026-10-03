@@ -38,6 +38,27 @@ Sources, and how far each can be trusted:
   in the menus and in a game, all without a crash; the same user crashed on
   entering fullscreen with earlier builds. The first report of Cordial on an
   NVIDIA driver outside the 535/550 series, and it is clean for this path.
+- 2026-10-03, an RTX 4070 (single GPU, EndeavourOS, KDE Plasma 6.7.5 on Wayland,
+  the open kernel module 615.71.09, built from `main` at 0.23.2): tester-plan
+  steps 0-4 run, plus the frame-rate arms. `APP_READY Landing` reached with a
+  swapchain capture; F11 to 2560x1440 and back recreated the swapchain twice
+  without a crash, so the 535/550 resize class does not reproduce on this
+  driver. The driver offers `MAILBOX, unknown, FIFO, IMMEDIATE` on this session
+  and MAILBOX is picked by default. With input driven throughout: 59.9
+  presents/s at 232 moves/s on the 240.001 Hz output with the engine told the
+  rate, `DFIntTaskSchedulerTargetFps=240` reaching 216-232/s (p50 4.2 ms) and
+  `=30` holding 29.8/s, so the flat 60 is the engine's own target rather than
+  a display lock. The signed-in startup freeze reproduced (1 of 1 runs
+  restoring a signed-in session at start, 0 of 3 signing in later): presents
+  frozen at 7 while the dev control socket still accepted 892 pointer moves.
+  The core, taken about 50 minutes later, has the main thread parked in
+  `pthread_cond_wait` inside `libroblox.so` from `looper::teardown`'s lifecycle
+  sequence -- the issue #52 shape -- and no `teardown-watchdog` thread among
+  64 stacks, so the 10 s bound was not in force; `teardown` now reports a
+  watchdog spawn failure instead of answering `.ok()` (whether the spawn
+  failed is INFERRED; the absent thread is what the core shows). One run of
+  eight died with SIGSEGV on the main thread just after `APP_READY Startup`,
+  not reproduced since.
 
 ## What the data contradicts
 
@@ -48,7 +69,16 @@ Worth putting first, because each was in the brief that started this work.
   with Intel, 33 with AMD, and an AMD RX 7900 GRE and a Radeon HD 7400M
   reproduce it (Sober #2341). A relayed maintainer statement in #2077 says the
   figure is hard-coded and not what allocation is decided on. It is a red
-  herring for #2190, #2341 and #2374.
+  herring for #2190, #2341 and #2374. Confirmed again on 2026-10-03 on a 12 GiB
+  RTX 4070, where the same line reports `device memory = 12878610432` and still
+  sets `caps.videoMemory = 67108864`, and `DFIntEstimatedGmaSafeVideoMemoryMB`
+  moved nothing with override delivery proven in the same run
+  (`DFIntTaskSchedulerTargetFps=30` holding 30.0 presents/s).
+- **The `heapSize` figure in the same block is u32-truncated on every platform,
+  not by Cordial's shim.** On the RTX 4070 it reads 4288675840 for a
+  12878610432-byte heap (exactly the low 32 bits), and the Android trace
+  (`waydroid-roblox-startup.log.gz`) shows 3758365696 for a 12348300288-byte
+  heap -- the same truncation on real Android. It is the engine's own print.
 - **`VK_ERROR_DEVICE_LOST` is not NVIDIA-specific.** Sober #1880 is an AMD RX
   7800 XT, #184 and #1298 are Intel, #1725 also has AMD and Steam Deck reports.
   It is NVIDIA-attributable only where an Xid line or `libnvidia-glcore` frames

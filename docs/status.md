@@ -50,13 +50,13 @@ expecting rough edges. What changed release by release is on the
 
 ### Frame rate
 
-The records disagree and neither has been re-measured. A run on 2026-08-02, with
-pointer motion driven for the whole run (presents drop to exactly 1 a second when
-nothing is happening), read a flat 60.0 on `MAILBOX` against a variable 35-50 on
-`FIFO`. `crates/cordial-runtime/src/android/vulkan.rs` instead records `FIFO`
-tracking the output exactly, 60.0 on a 59.88 Hz panel and 49.4 on a 49.96 Hz one.
-**Do not quote either figure as settled.** Whether a flat 60 is a display lock or
-the engine's own pacing is open. The measurement that would settle it is in
+A flat 60 is the engine's own frame target, not a display lock. Measured
+2026-10-03 on a 240.001 Hz output with input driven the whole run: the engine
+was told the real rate and still held 59.9 presents a second until
+`DFIntTaskSchedulerTargetFps` was raised past 60. **Settings → General →
+Graphics → Frame rate limit** raises it ([fastflags.md](fastflags.md)); MAILBOX
+and FIFO both clear 60 with it set. What that measurement did not cover, and
+the older records it replaces, are in
 [ADR-044](adr/ADR-044-settings-reach-a-running-game.md).
 
 ## What is broken
@@ -77,7 +77,10 @@ The rest of the list in the
 
 ## Not tested
 
-- **NVIDIA GPUs.** Nobody working on Cordial has one; see [NVIDIA graphics](nvidia.md).
+- **NVIDIA GPUs.** First runs recorded 2026-10-03 (RTX 4070, driver 615.71.09):
+  boots, renders, survives resize and fullscreen, and MAILBOX holds the panel's
+  rate. Unverified on hybrid laptops, on 535/550, and in a Flatpak; see
+  [NVIDIA graphics](nvidia.md).
 - **Real ARM64 hardware.** See [Architectures](multiarch.md).
 - **The AppImage's web view on a machine without WebKitGTK**, and on anything but
   Fedora. See [Installing Cordial](install.md).
