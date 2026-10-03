@@ -1522,7 +1522,7 @@ fn teardown(handle: i64) {
     {
         let finished = finished.clone();
         let limit = teardown_limit();
-        std::thread::Builder::new()
+        let watchdog = std::thread::Builder::new()
             .name("teardown-watchdog".into())
             .spawn(move || {
                 watch_teardown(&finished, limit, || {
@@ -1540,8 +1540,24 @@ fn teardown(handle: i64) {
                     // reclaim.
                     unsafe { _exit(TEARDOWN_TIMEOUT_EXIT) }
                 });
-            })
-            .ok();
+            });
+        // **A failed spawn has to be loud, because it silences the bound.** The
+        // core of a client that froze inside this sequence on 2026-10-03 and
+        // stayed frozen for 47 minutes held no `teardown-watchdog` thread at
+        // all -- 64 thread stacks, none of them in `watch_teardown` -- so
+        // nothing was timing the sequence out, and the `ok()` that used to
+        // answer here is the one place a reason could disappear without a
+        // word. Every log line and the exit status still promised a bound that
+        // was not there. Whether the spawn failed or the thread died is
+        // INFERRED and not established; what is measured is that the bound was
+        // absent while this text claimed it. When this fires, say plainly that
+        // a stuck sequence now needs a signal or a kill.
+        if let Err(e) = watchdog {
+            eprintln!(
+                "[android] teardown-watchdog could not start ({e}); the engine's shutdown \
+                 sequence is unbounded in this process and a stuck one will need killing"
+            );
+        }
     }
 
     step("onWindowFocusChangedNative(false)", game_activity::window_focus(handle, false));
