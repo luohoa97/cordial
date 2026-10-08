@@ -185,7 +185,9 @@ env:
                                      responsive, and it costs power; 'fifo'
                                      saves the power and feels floatier),
                                      off (forward the engine's own choice, which
-                                     is FIFO — this is the control for a frame
+                                     is IMMEDIATE on 2.738 and was FIFO on the
+                                     builds measured in August — the log line
+                                     names it; this is the control for a frame
                                      rate measurement), or one of mailbox,
                                      immediate, uncapped, fifo, fifo-relaxed.
                                      'uncapped' means MAILBOX if the driver has

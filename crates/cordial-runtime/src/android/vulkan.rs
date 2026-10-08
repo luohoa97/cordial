@@ -945,8 +945,15 @@ fn is_first_or_power_of_ten(n: u64) -> bool {
 // ------------------------------------------------------------- present mode
 //
 // Cordial did not ask for a present mode until this existed, so the engine's
-// own choice stood, and the engine chooses `VK_PRESENT_MODE_FIFO_KHR` — the one
-// mode the specification guarantees, and a hard vsync lock. What that costs was
+// own choice stood. **That choice is not a constant, and this comment used to
+// say it was.** The August measurements below were taken when the engine asked
+// for `VK_PRESENT_MODE_FIFO_KHR`, the one mode the specification guarantees and
+// a hard vsync lock. On 2.738.0.1397, fresh profile, default settings, nested
+// sway on an Intel iGPU, 2026-10-08, `CORDIAL_PRESENT_MODE=off` printed
+// `swapchain present mode IMMEDIATE (the engine's own choice)` on all three
+// swapchains, and a user's log on 2.739 reads `IMMEDIATE -> FIFO`. So on a
+// current build `off` is IMMEDIATE, not FIFO, and "FIFO is the control" in the
+// notes below is the control for an older engine. What that costs was
 // measured rather than assumed: with input driven continuously for the whole
 // window, presents come out equal to the output's refresh and stay there, 60.0
 // on a 59.88 Hz panel and 49.4 on a 49.96 Hz one, unchanged by fullscreen at

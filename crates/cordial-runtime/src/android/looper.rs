@@ -1128,9 +1128,8 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
             let secs = heartbeat_at.elapsed().as_secs_f64();
             let drawn = now.saturating_sub(heartbeat_presents);
             println!(
-                "[cordial] health: {drawn} presents in {secs:.0}s ({:.1}/s), {now} total{}",
-                drawn as f64 / secs,
-                if drawn == 0 { " -- nothing was drawn" } else { "" }
+                "{}",
+                health_line(drawn, secs, now, super::frame_pacing::summary().as_deref())
             );
             flush_stdout();
             heartbeat_at = std::time::Instant::now();
@@ -2028,6 +2027,25 @@ pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
     ]
 }
 
+/// The periodic health line.
+///
+/// The frame-interval distribution rides on it because a mean cannot answer
+/// "does it stutter": a report of persistent micro-stutter arrived carrying
+/// only `34.2/s` from this line, which is a count over thirty seconds and is
+/// the same number for an even 8 ms cadence and for pairs of frames 16 ms
+/// apart. `frame_pacing` has kept the interval distribution since 2026-08-25,
+/// but it was reachable only over the development socket, so no user's log
+/// could carry it. The suffix is dropped, not zeroed, until enough frames have
+/// gone out for a percentile to mean anything.
+fn health_line(drawn: u64, secs: f64, total: u64, pacing: Option<&str>) -> String {
+    format!(
+        "[cordial] health: {drawn} presents in {secs:.0}s ({:.1}/s), {total} total{}{}",
+        drawn as f64 / secs,
+        if drawn == 0 { " -- nothing was drawn" } else { "" },
+        pacing.map(|p| format!("; {p}")).unwrap_or_default(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     // Only the tests close a descriptor, so the binding lives with them rather
@@ -2037,6 +2055,23 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn health_line_carries_the_frame_interval_distribution() {
+        let pacing = "frames n=1024 p50=13.3ms p95=14.1ms p99=29.8ms max=51.2ms median_fps=75";
+        let line = health_line(1061, 31.0, 1061, Some(pacing));
+        assert_eq!(
+            line,
+            format!("[cordial] health: 1061 presents in 31s (34.2/s), 1061 total; {pacing}")
+        );
+        // Before 32 frames have gone out there is nothing honest to add, and the
+        // line must stay exactly what it was so existing readers of it do not
+        // break.
+        assert_eq!(
+            health_line(0, 30.0, 0, None),
+            "[cordial] health: 0 presents in 30s (0.0/s), 0 total -- nothing was drawn"
+        );
+    }
 
     #[test]
     fn epoll_event_matches_glibcs_own_layout_for_this_architecture() {
