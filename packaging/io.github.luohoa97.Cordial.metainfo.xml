@@ -78,6 +78,15 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.27.0" date="2026-10-08">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.27.0</url>
+      <description>
+        <p>
+          A touchscreen no longer crashes Cordial, text boxes work in
+          fullscreen, and Settings shows which changes apply to a running game.
+        </p>
+      </description>
+    </release>
     <release version="0.26.0" date="2026-10-08">
       <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.26.0</url>
       <description>
