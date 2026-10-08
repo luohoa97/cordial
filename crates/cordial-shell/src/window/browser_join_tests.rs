@@ -70,10 +70,16 @@ fn browser_account_launches_matching_profile_through_window_action() {
     shell.window.close();
 }
 
+/// The name the header bar's profile button is showing: its label, which is the
+/// profile the next launch will use.
+fn shown_profile(button: &adw::gtk::MenuButton) -> Option<String> {
+    button.child().and_downcast::<adw::gtk::Label>().map(|label| label.text().to_string())
+}
+
 #[test]
 #[ignore = "requires a GTK display; run alone"]
 fn matched_profile_is_shown_when_automatic_launch_waits_for_retry() {
-    // Given two real profiles and the actual launcher profile row showing the last-used one.
+    // Given two real profiles and the actual launcher profile button showing the last-used one.
     adw::init().unwrap();
     let _guard = crate::PROFILE_ROOT_ENV
         .lock()
@@ -86,7 +92,7 @@ fn matched_profile_is_shown_when_automatic_launch_waits_for_retry() {
     config.borrow_mut().profile = "last-used".into();
     let config_path = Rc::new(root.path().join("shell.json"));
     let chooser = crate::profile_switcher::build(config.clone(), config_path.clone());
-    assert_eq!(chooser.row.selected(), 1);
+    assert_eq!(shown_profile(&chooser.button), Some("last-used".to_string()));
 
     let window = adw::Window::new();
     let join = PendingJoin::new();
@@ -96,16 +102,13 @@ fn matched_profile_is_shown_when_automatic_launch_waits_for_retry() {
     let launch = adw::gtk::gio::SimpleAction::new("launch", None);
     let main_loop = glib::MainLoop::new(None, false);
     {
-        let chooser = chooser.row.clone();
+        let button = chooser.button.clone();
         let launches = launches.clone();
         let shown_profiles = shown_profiles.clone();
         let join = join.clone();
         let main_loop = main_loop.clone();
         launch.connect_activate(move |_, _| {
-            let shown = chooser
-                .selected_item()
-                .and_downcast::<adw::gtk::StringObject>()
-                .map(|item| item.string().to_string());
+            let shown = shown_profile(&button);
             shown_profiles.borrow_mut().push(shown);
             launches.set(launches.get() + 1);
             if launches.get() == 1 {
@@ -132,7 +135,7 @@ fn matched_profile_is_shown_when_automatic_launch_waits_for_retry() {
     );
     main_loop.run();
 
-    // Then the row shows what a manual retry will launch, and that retry consumes the same join.
+    // Then the button shows what a manual retry will launch, and that retry consumes the same join.
     assert_eq!(launches.get(), 1);
     assert_eq!(
         shown_profiles.borrow().as_slice(),

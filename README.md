@@ -210,8 +210,8 @@ MangoHud's Vulkan layer is installed. Install routes and what it shows:
 people running the same engine, what Cordial does about it, and the Flatpak
 driver-extension trap: [`docs/nvidia.md`](docs/nvidia.md).
 
-**Profiles** are picked and created above the Launch button, and the trash button beside them deletes the
-shown one, its keyring sign-in included, after a confirmation.
+**Profiles** are picked from the button at the left of the header bar. Its menu also holds New Profile… and
+Delete Profile…, which removes the shown one, its keyring sign-in included, after a confirmation.
 
 **Frame rate limit**, under Settings → Graphics, holds the engine's own frame cap at 90 to 240 fps in a running
 game; Display refresh (the default) sets nothing. Any FastFlag you set now also stays set across Roblox's

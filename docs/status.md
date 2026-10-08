@@ -23,7 +23,7 @@ expecting rough edges. What changed release by release is on the
 | Clean shutdown | Works | Full pause, stop and destroy sequence, seen in the engine's own log |
 | Signing in | Works | Through Quick Sign-in, a code flow that needs no typing |
 | Staying signed in | Works | Cookies and identity are kept in the desktop keyring, not a file |
-| Profiles | Works | A chooser above Launch; creates one, and shows a profile another window holds as unavailable |
+| Profiles | Works | A menu in the header bar; creates and deletes one, and marks a profile another window holds |
 | Two accounts at once | Works | Two profiles, two instances, side by side; budget about 1.5 GB of memory each ([ADR-012](adr/ADR-012-profiles-and-instances.md)) |
 | Keyboard in an experience | Works | WASD, space, the lot |
 | Mouse: navigation, buttons, focus | Works | |

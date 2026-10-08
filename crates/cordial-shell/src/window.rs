@@ -254,32 +254,29 @@ pub fn build(
         })
     };
 
-    // Directly above the Launch button, and that position is the whole argument:
-    // the profile is a launch parameter — which of these do I start — rather
-    // than an ambient identity, so it belongs beside the button it governs. It
-    // was an avatar in the top-right corner first; see `profile_switcher.rs` for
-    // why that was a browser convention borrowed into an application that is not
-    // one.
+    // The header bar's start, as a labelled menu button; `profile_switcher.rs`
+    // has the reasoning, which reverses this window's earlier answer. What used
+    // to be a row above the Launch button is a button and a caption now, and
+    // the caption is empty and hidden unless the profile has something to say
+    // that changes what pressing Roblox does.
     let switcher = profile_switcher::build(config.clone(), config_path.clone());
-    let profile_row = switcher.group.clone();
-    let profile_combo = switcher.row.clone();
+    let profile_button = switcher.button.clone();
     let refresh_profile_row = switcher.refresh.clone();
 
-    // Two controls, centred, and the empty space around them is the point.
+    // One control, centred, and the empty space around it is the point.
     //
     // This was a stack of two `AdwPreferencesGroup`s pinned to the top of the
-    // window, which left the bottom two thirds blank and read as a form that had
-    // run out of fields. Nothing was added to fill it: the same two controls
-    // sitting in the middle of the window is a composition rather than a
-    // remainder, and the width clamp is tighter than the 480 the groups used
-    // because a boxed list and a pill button stretched to a launcher's full
-    // width look like a preferences page whatever is in them.
-    let column = gtk::Box::new(gtk::Orientation::Vertical, 24);
+    // window, then a profile row over the button, and each read as a form that
+    // had run out of fields. The width clamp is tighter than the 480 the groups
+    // used because a pill button stretched to a launcher's full width looks
+    // like a preferences page whatever is in it.
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
     column.set_valign(gtk::Align::Center);
-    column.append(&profile_row);
-    // The Roblox button and nothing under it. VR is started from Settings → VR
+    // The Roblox button and nothing under it but the profile's caption, which
+    // is hidden in the ordinary case. VR is started from Settings → VR
     // (ADR-053, decision 7): the launcher stays one button.
     column.append(&chooser_widget);
+    column.append(&switcher.note);
 
     let clamp = adw::Clamp::builder().maximum_size(360).child(&column).build();
     clamp.set_margin_top(24);
@@ -378,6 +375,9 @@ pub fn build(
         .primary(true)
         .build();
     host.header().pack_end(&menu_button);
+    // The profile, at the start of the header bar, opposite the menu: the
+    // context the window is acting in, rather than an action on it.
+    host.header().pack_start(&profile_button);
 
     let window = host.window().clone();
     // `HostWindow` is deliberately application-less — the runtime has no
@@ -507,32 +507,27 @@ pub fn build(
         // narrow screen instead of a floating box too wide to fit.
         settings.present(Some(&window_for_settings));
     });
-    // The same arrangement for the profile row: a launch refused because the
+    // The same arrangement for the profile button: a launch refused because the
     // profile is busy has to be able to reach the control that chooses another
-    // one. It is in this window rather than behind a button now, so the action
-    // only has to move the focus there.
+    // one. It is in this window's header bar, so the action only has to open
+    // its menu.
     let profile_action = gtk::gio::SimpleAction::new("profile", None);
-    // **Open the list, do not merely focus the container.** This called
-    // `grab_focus()` on the `PreferencesGroup`, which is a box around the row:
-    // nothing visible happened, so pressing "Choose a Profile" on the
-    // profile-busy dialog looked exactly like pressing "Cancel". Reported on
-    // 2026-08-28 as the two buttons doing the same thing -- and from outside
-    // the process they did, since the only difference was where keyboard focus
-    // landed behind a dialog that was disappearing.
+    // **Open the menu, do not merely focus the button.** The action once called
+    // `grab_focus()` on a container around the old row: nothing visible
+    // happened, so pressing "Choose a Profile" on the profile-busy dialog
+    // looked exactly like pressing "Cancel". Reported on 2026-08-28 as the two
+    // buttons doing the same thing -- and from outside the process they did,
+    // since the only difference was where keyboard focus landed behind a dialog
+    // that was disappearing.
     //
     // Deferred to an idle callback because the usual caller is that dialog's
     // response handler, and the dialog is still tearing down when it fires; a
     // popover asked to open underneath a closing modal does not.
-    let profile_combo_for_action = profile_combo.clone();
+    let profile_button_for_action = profile_button.clone();
     profile_action.connect_activate(move |_, _| {
-        let row = profile_combo_for_action.clone();
-        row.grab_focus();
-        glib::idle_add_local_once(move || {
-            // Disambiguated: `WidgetExt` and `ListBoxRowExt` both offer an
-            // `activate`, and the one that opens an `AdwComboRow`'s list is the
-            // row's, which is what a keyboard Enter on it does.
-            gtk::prelude::WidgetExt::activate(&row);
-        });
+        let button = profile_button_for_action.clone();
+        button.grab_focus();
+        glib::idle_add_local_once(move || button.popup());
     });
 
     // Fullscreen, on F11, because until now there was no way for a user to ask
@@ -715,8 +710,8 @@ pub fn build(
     // Save the fullscreen state the moment it changes, against whichever
     // profile is selected *at that moment* -- read fresh from `config` in
     // every handler below rather than captured once, so that switching the
-    // profile row and then pressing F11 saves against the row's new choice
-    // and not the one this window opened with. `window_state.rs`'s own header
+    // profile and then pressing F11 saves against the new choice and not the
+    // one this window opened with. `window_state.rs`'s own header
     // is the reasoning for why this happens unconditionally and why that is
     // safe for this window specifically -- it does not carry over to the
     // engine's own window without re-deriving it.
@@ -784,7 +779,7 @@ pub fn build(
     }
 
     // Focus starts on the thing the window is for, so that a keyboard launches
-    // with Return and nothing else. Left alone it lands on the profile row,
+    // with Return and nothing else. Left alone it lands on the profile button,
     // which is the first focusable widget and the one control here that is not
     // the point. GTK only *draws* a focus ring once a key has been pressed, so
     // this costs nothing visually on a window nobody types into.
@@ -873,7 +868,7 @@ fn initial_size(state: &window_state::WindowState) -> (i32, i32) {
 /// `config` currently names.
 ///
 /// Read-modify-write against the file rather than an in-memory cache, so that
-/// switching the profile row and then resizing, or the reverse, never writes
+/// switching the profile and then resizing, or the reverse, never writes
 /// one profile's geometry into another's record. The cost is a read on every
 /// toggle; `window.json` is a few dozen bytes and this fires on a keypress, not
 /// in a loop.
@@ -1604,9 +1599,9 @@ fn run_seconds_override() -> Option<u64> {
 /// double-clicking the launcher — so the dialog names the profile, says what is
 /// true, and offers the only action that helps: choosing a different one.
 ///
-/// It used to point at a text field in Settings. It now moves the focus to the
-/// profile row above the Launch button, which already shows the profile this
-/// dialog is about as unavailable.
+/// It used to point at a text field in Settings. It now opens the profile
+/// menu in the header bar, which marks the profile this dialog is about as
+/// opened in another window.
 /// The refusal a held profile earns, written so somebody can act on it.
 ///
 /// **The old wording said "close the window that already has it" and that was
@@ -1668,7 +1663,7 @@ fn profile_busy(
     let lifecycle = lifecycle.clone();
     dialog.connect_response(None, move |_, response| {
         match response {
-        // The switcher is the combo row above the launch button; activating the
+        // The switcher is the header bar's profile button; activating the
         // window's action rather than building a second chooser here keeps one
         // construction site.
         "profile" => {

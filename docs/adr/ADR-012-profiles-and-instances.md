@@ -406,6 +406,9 @@ describes every selection path in the shell.
 > ADR — the switcher still only selects a directory, and authentication still
 > happens in Roblox's own UI.
 
+**Placement superseded by "Changed 2026-10-08" at the end of this ADR; the reasoning
+about the shell, the lock and the list still stands.**
+
 **Built, 2026-08-02: the switcher lives in the shell, and it cannot live
 anywhere else.** It is an `AdwComboRow` above the Launch button, listing
 `profile::list()` with a suffix action that creates one. Three consequences of
@@ -471,3 +474,23 @@ still removed and the launcher says a keyring entry may remain. The row moves to
 another profile afterwards, or to `default`, which is created when next
 launched.
 
+## Changed 2026-10-08: the switcher is in the header bar
+
+The row described above, and the Delete button added on 2026-09-30, are now a
+menu button at the start of the header bar. It is labelled with the profile the
+next launch will use; its menu lists the profiles as radio items, then "New
+Profile…" and "Delete Profile…". The window body is the Roblox button alone, with
+a caption beneath it that is empty and hidden unless the profile is uncreated,
+held by another window, or pinned (ADR-033).
+
+This reverses the reasoning two sections up for placing it beside the button.
+The avatar's fault was its shape and its corner, not the header bar: a titled
+row, a subtitle and two icon buttons over the one control the window is for made
+the launcher read as a form. `INFERRED`, not measured: GNOME's HIG has no page
+for a profile switcher, so this follows its general header bar guidance.
+
+Unchanged: the list is exactly what is on disk, availability is still asked of
+the lock as the menu opens, a busy profile stays choosable (the dialog behind
+Roblox offers to close its holder), an unusable one does not, deletion still
+asks first and is still refused for a held profile, and "Choose a Profile" in the
+busy dialog opens the menu. Code: `profile_switcher.rs`.
