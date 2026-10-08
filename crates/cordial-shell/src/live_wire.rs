@@ -1,471 +1,177 @@
 //! The message set the shell uses to change a running client's settings.
 //!
-//! **A fixed vocabulary, not a command channel.** Each [`Update`] is one
-//! setting that the client reads on a hot path, or can act on in place, and can
-//! therefore change without a restart (ADR-044 has the classification and the reasons). The shell sends
-//! `{"set":{"pointer_acceleration":"unlocked"}}`; the client answers with a
-//! [`Reply`]. There is no verb that runs anything, reads a file, or reaches the
-//! engine, and an unknown key is reported back rather than acted on. A plugin
-//! never sees this socket (ADR-003, ADR-007): it lives in a `0700` directory in
-//! the profile, which the plugin sandbox does not bind.
+//! **This moved to `cordial-protocol`** (ADR-055), which is where the launcher
+//! and any other runtime get it from. What is left here is the path
+//! `cordial_shell::live_wire::...`, kept so `cordial-runtime`'s server side
+//! keeps compiling unchanged until it depends on the crate itself, and a test
+//! that proves the bytes did not change on the way.
 //!
-//! This module is pure -- no sockets, no GTK -- because both ends need to agree
-//! on it and `cordial-runtime` depends on `cordial-shell`, not the reverse.
-//! Values travel as the same words the launch environment already uses
-//! (`CORDIAL_POINTER_ACCEL=unlocked`, `CORDIAL_THROTTLE=off`), so a setting has
-//! one spelling whether it arrives at spawn or afterwards.
+//! A fixed vocabulary, not a command channel: each [`Update`] is one setting a
+//! running client can change in place, and there is no verb that runs anything
+//! (ADR-044, ADR-003).
 
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-
-/// Directory inside the profile that holds the socket.
-///
-/// A directory rather than a bare socket file so the permission is on the
-/// directory: a socket takes the process umask at `bind`, and closing the gap
-/// between `bind` and a `chmod` is easier done by making the path unreachable
-/// to anyone else from the start.
-pub const SOCKET_DIR: &str = "live";
-pub const SOCKET_NAME: &str = "settings.sock";
-
-/// Longest request line either side will read. Generous for four keys and
-/// small enough that a peer sending noise cannot make the client buffer it.
-pub const MAX_LINE: usize = 1024;
-
-/// Where a profile's client listens.
-pub fn socket_path(profile_dir: &Path) -> PathBuf {
-    profile_dir.join(SOCKET_DIR).join(SOCKET_NAME)
-}
-
-/// The camera-acceleration choice, in the words `CORDIAL_POINTER_ACCEL` uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Accel {
-    Unlocked,
-    Always,
-}
-
-impl Accel {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Accel::Unlocked => "unlocked",
-            Accel::Always => "always",
-        }
-    }
-    pub fn parse(word: &str) -> Option<Self> {
-        match word {
-            "unlocked" => Some(Accel::Unlocked),
-            "always" => Some(Accel::Always),
-            _ => None,
-        }
-    }
-}
-
-/// When the keepalive stops, in the words `CORDIAL_THROTTLE` uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Throttle {
-    Visible,
-    Unfocused,
-    Off,
-}
-
-impl Throttle {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Throttle::Visible => "visible",
-            Throttle::Unfocused => "unfocused",
-            Throttle::Off => "off",
-        }
-    }
-    pub fn parse(word: &str) -> Option<Self> {
-        match word {
-            "visible" => Some(Throttle::Visible),
-            "unfocused" => Some(Throttle::Unfocused),
-            "off" => Some(Throttle::Off),
-            _ => None,
-        }
-    }
-}
-
-/// One setting a running client can change. Adding a variant here is the whole
-/// of "making a setting live" on the wire; the client must also read it from a
-/// place that can change (see `cordial_runtime::live_settings`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Update {
-    PointerAcceleration(Accel),
-    Throttle(Throttle),
-    CloseOnLeave(bool),
-    CarryLaunchTicket(bool),
-    /// The PipeWire sink's `node.name`, or empty for the system default. The
-    /// same string `CORDIAL_AUDIO_SINK` carries at launch, so a choice has one
-    /// spelling whether it arrives at spawn or afterwards.
-    AudioOutput(String),
-    /// The PipeWire source's `node.name` Roblox records from, or empty for the
-    /// system default; the string `CORDIAL_AUDIO_SOURCE` carries at launch. A
-    /// microphone that is recording is re-linked in place, and one that is not
-    /// is left alone: applying this never opens a capture stream.
-    AudioInput(String),
-    /// Whether the client is registered with Feral GameMode's daemon.
-    Gamemode(bool),
-    /// Whether the client reads `/dev/input/js*` and feeds the engine pads.
-    Gamepad(bool),
-    /// The game window's header bar.
-    TitleBar(crate::title_bar::TitleBar),
-    /// What `DFIntTaskSchedulerTargetFps` is held at, in the words
-    /// `CORDIAL_FRAME_RATE_LIMIT` uses. The client stores it and tells the
-    /// engine, through the same re-apply that keeps a flag in force after the
-    /// engine's own settings refresh (ADR-051).
-    FrameRateLimit(crate::frame_rate_limit::FrameRateLimit),
-}
-
-/// A title-bar choice in the words `CORDIAL_TITLE_BAR` and `shell.json` use.
-pub fn title_bar_word(t: crate::title_bar::TitleBar) -> &'static str {
-    use crate::title_bar::TitleBar;
-    match t {
-        TitleBar::Default => "default",
-        TitleBar::Compact => "compact",
-        TitleBar::Hidden => "hidden",
-    }
-}
-
-pub fn parse_title_bar(word: &str) -> Option<crate::title_bar::TitleBar> {
-    use crate::title_bar::TitleBar;
-    match word {
-        "default" => Some(TitleBar::Default),
-        "compact" => Some(TitleBar::Compact),
-        "hidden" => Some(TitleBar::Hidden),
-        _ => None,
-    }
-}
-
-/// The keys [`Update`] can carry, which are also the `shell.json` field names.
-pub const KEYS: [&str; 10] = [
-    "pointer_acceleration",
-    "throttle",
-    "close_on_leave",
-    "carry_launch_ticket",
-    "audio_output",
-    "audio_input",
-    "gamemode",
-    "gamepad",
-    "title_bar",
-    "frame_rate_limit",
-];
-
-/// Longest sink name accepted. PipeWire node names are short; the bound is
-/// there so a value cannot approach [`MAX_LINE`] and so the client never hands
-/// a hostile length to the native side.
-pub const MAX_SINK_NAME: usize = 256;
-
-/// Whether `name` is a sink name the client will pass on: no control
-/// characters, bounded. Empty is valid and means the system default.
-pub fn valid_sink_name(name: &str) -> bool {
-    name.len() <= MAX_SINK_NAME && !name.chars().any(char::is_control)
-}
-
-impl Update {
-    pub fn key(&self) -> &'static str {
-        match self {
-            Update::PointerAcceleration(_) => "pointer_acceleration",
-            Update::Throttle(_) => "throttle",
-            Update::CloseOnLeave(_) => "close_on_leave",
-            Update::CarryLaunchTicket(_) => "carry_launch_ticket",
-            Update::AudioOutput(_) => "audio_output",
-            Update::AudioInput(_) => "audio_input",
-            Update::Gamemode(_) => "gamemode",
-            Update::Gamepad(_) => "gamepad",
-            Update::TitleBar(_) => "title_bar",
-            Update::FrameRateLimit(_) => "frame_rate_limit",
-        }
-    }
-
-    fn value(&self) -> Value {
-        match self {
-            Update::PointerAcceleration(a) => Value::from(a.as_str()),
-            Update::Throttle(t) => Value::from(t.as_str()),
-            Update::CloseOnLeave(b) | Update::CarryLaunchTicket(b) | Update::Gamemode(b) | Update::Gamepad(b) => {
-                Value::from(*b)
-            }
-            Update::AudioOutput(name) | Update::AudioInput(name) => Value::from(name.as_str()),
-            Update::TitleBar(t) => Value::from(title_bar_word(*t)),
-            Update::FrameRateLimit(l) => Value::from(l.as_env()),
-        }
-    }
-
-    /// A known key with its value, or why the value is unusable. `Ok(None)` is
-    /// not returned: the caller has already split unknown keys off.
-    fn from_pair(key: &str, value: &Value) -> Result<Self, String> {
-        let bad = || format!("{key}: {value} is not a value this setting takes");
-        match key {
-            "pointer_acceleration" => value
-                .as_str()
-                .and_then(Accel::parse)
-                .map(Update::PointerAcceleration)
-                .ok_or_else(bad),
-            "throttle" => {
-                value.as_str().and_then(Throttle::parse).map(Update::Throttle).ok_or_else(bad)
-            }
-            "close_on_leave" => value.as_bool().map(Update::CloseOnLeave).ok_or_else(bad),
-            "carry_launch_ticket" => value.as_bool().map(Update::CarryLaunchTicket).ok_or_else(bad),
-            "gamemode" => value.as_bool().map(Update::Gamemode).ok_or_else(bad),
-            "gamepad" => value.as_bool().map(Update::Gamepad).ok_or_else(bad),
-            "title_bar" => {
-                value.as_str().and_then(parse_title_bar).map(Update::TitleBar).ok_or_else(bad)
-            }
-            "frame_rate_limit" => value
-                .as_str()
-                .and_then(crate::frame_rate_limit::FrameRateLimit::parse)
-                .map(Update::FrameRateLimit)
-                .ok_or_else(bad),
-            "audio_output" => value
-                .as_str()
-                .filter(|n| valid_sink_name(n))
-                .map(|n| Update::AudioOutput(n.to_string()))
-                .ok_or_else(bad),
-            // A source is a `node.name` like a sink is, so the same bound and
-            // the same refusal of control characters apply.
-            "audio_input" => value
-                .as_str()
-                .filter(|n| valid_sink_name(n))
-                .map(|n| Update::AudioInput(n.to_string()))
-                .ok_or_else(bad),
-            _ => Err(format!("{key}: not a live setting")),
-        }
-    }
-}
-
-/// What a client is asked.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Request {
-    /// Change these. `ignored` names keys this client does not know, which are
-    /// reported back rather than failing the whole message, so a newer shell
-    /// talking to an older client still gets its known keys applied.
-    Set { updates: Vec<Update>, ignored: Vec<String> },
-    /// Report the values in force now.
-    Get,
-}
-
-/// One line, newline-terminated.
-pub fn encode_set(updates: &[Update]) -> String {
-    let mut set = Map::new();
-    for u in updates {
-        set.insert(u.key().to_string(), u.value());
-    }
-    let mut line = Value::Object(Map::from_iter([("set".to_string(), Value::Object(set))])).to_string();
-    line.push('\n');
-    line
-}
-
-pub fn encode_get() -> String {
-    "{\"get\":true}\n".to_string()
-}
-
-pub fn decode(line: &str) -> Result<Request, String> {
-    if line.len() > MAX_LINE {
-        return Err(format!("request longer than {MAX_LINE} bytes"));
-    }
-    let value: Value = serde_json::from_str(line.trim()).map_err(|e| format!("not JSON: {e}"))?;
-    let Value::Object(top) = value else {
-        return Err("a request is a JSON object".to_string());
-    };
-    if top.len() != 1 {
-        return Err("a request has exactly one verb".to_string());
-    }
-    let (verb, body) = top.into_iter().next().expect("length checked above");
-    match (verb.as_str(), body) {
-        ("get", Value::Bool(true)) => Ok(Request::Get),
-        ("set", Value::Object(map)) => {
-            let mut updates = Vec::new();
-            let mut ignored = Vec::new();
-            for (key, value) in &map {
-                if KEYS.contains(&key.as_str()) {
-                    updates.push(Update::from_pair(key, value)?);
-                } else {
-                    ignored.push(key.clone());
-                }
-            }
-            Ok(Request::Set { updates, ignored })
-        }
-        (other, _) => Err(format!("unknown request {other:?}")),
-    }
-}
-
-/// A client's answer. `values` is filled for `get` and for a `set` (the state
-/// after the change), so the shell can log what is actually in force rather
-/// than what it asked for.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct Reply {
-    pub ok: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub applied: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ignored: Vec<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub values: BTreeMap<String, Value>,
-    /// Things the client applied but wants said: `audio_output` with nothing
-    /// playing has nothing to move, and on a backend with no notion of a sink it
-    /// cannot move anything. Keyed by setting. Present so "applied" is never
-    /// read as "you will hear it", which is the claim a settings row must not
-    /// make on the client's behalf.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub notes: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-impl Reply {
-    pub fn failure(why: impl Into<String>) -> Self {
-        Reply { ok: false, error: Some(why.into()), ..Reply::default() }
-    }
-    pub fn encode(&self) -> String {
-        let mut line = serde_json::to_string(self).expect("a Reply always serialises");
-        line.push('\n');
-        line
-    }
-    pub fn decode(line: &str) -> Result<Self, String> {
-        serde_json::from_str(line.trim()).map_err(|e| format!("unreadable reply: {e}"))
-    }
-}
+pub use cordial_protocol::settings::{
+    parse_title_bar, title_bar_word, valid_sink_name, Accel, Throttle, Update, KEYS, MAX_SINK_NAME,
+};
+pub use cordial_protocol::v0::{
+    decode, encode_get, encode_set, socket_path, Reply, Request, MAX_LINE, SOCKET_DIR, SOCKET_NAME,
+};
 
 #[cfg(test)]
 mod tests {
+    //! **The oracle.** `legacy` below is the encoder exactly as it stood in this
+    //! file before it moved to `cordial-protocol`, copied verbatim and kept only
+    //! here. Every test feeds the same values through it and through the
+    //! re-exports and demands identical bytes, which is the claim the move makes:
+    //! a running client written against the old shell reads the new one. The
+    //! golden strings in `cordial-protocol`'s `v0` tests pin the same bytes from
+    //! the other side.
+
     use super::*;
+    use cordial_protocol::{FrameRateLimit, TitleBar};
+    use serde::Serialize;
+    use serde_json::{Map, Value};
+    use std::collections::BTreeMap;
 
-    fn all() -> Vec<Update> {
-        vec![
-            Update::PointerAcceleration(Accel::Unlocked),
-            Update::Throttle(Throttle::Off),
-            Update::CloseOnLeave(true),
-            Update::CarryLaunchTicket(false),
-            Update::AudioOutput("alsa_output.pci-0000_00_1f.3.analog-stereo".to_string()),
-            Update::AudioInput("alsa_input.usb-Headset-00.mono-fallback".to_string()),
-            Update::Gamemode(false),
-            Update::Gamepad(false),
-            Update::TitleBar(crate::title_bar::TitleBar::Hidden),
-            Update::FrameRateLimit(crate::frame_rate_limit::FrameRateLimit::Cap144),
-        ]
-    }
+    mod legacy {
+        use super::*;
 
-    #[test]
-    fn every_update_round_trips_through_the_wire() {
-        let line = encode_set(&all());
-        assert!(line.ends_with('\n') && line.matches('\n').count() == 1, "one line");
-        let Request::Set { mut updates, ignored } = decode(&line).unwrap() else {
-            panic!("a set encodes to a set")
-        };
-        assert!(ignored.is_empty());
-        let mut want = all();
-        // JSON objects are unordered; compare as sets of keys.
-        updates.sort_by_key(|u| u.key());
-        want.sort_by_key(|u| u.key());
-        assert_eq!(updates, want);
-    }
-
-    #[test]
-    fn the_key_list_matches_what_update_can_carry() {
-        let mut keys: Vec<_> = all().iter().map(Update::key).collect();
-        keys.sort_unstable();
-        let mut listed = KEYS.to_vec();
-        listed.sort_unstable();
-        assert_eq!(keys, listed, "KEYS and Update::key drifted apart");
-    }
-
-    #[test]
-    fn a_sink_name_may_be_empty_and_may_not_be_enormous() {
-        // Empty is the system default, which is a choice and not an error.
-        let Request::Set { updates, .. } = decode(r#"{"set":{"audio_output":""}}"#).unwrap() else {
-            panic!("a set decodes to a set")
-        };
-        assert_eq!(updates, vec![Update::AudioOutput(String::new())]);
-        let long = format!(r#"{{"set":{{"audio_output":"{}"}}}}"#, "a".repeat(MAX_SINK_NAME + 1));
-        assert!(decode(&long).is_err());
-        assert!(valid_sink_name("bluez_output.AA_BB_CC.1"));
-        assert!(!valid_sink_name("two\nlines"));
-    }
-
-    #[test]
-    fn get_round_trips() {
-        assert_eq!(decode(&encode_get()).unwrap(), Request::Get);
-    }
-
-    #[test]
-    fn an_unknown_key_is_ignored_and_named_and_known_keys_still_apply() {
-        let r = decode(r#"{"set":{"throttle":"off","warp_drive":"on"}}"#).unwrap();
-        assert_eq!(
-            r,
-            Request::Set {
-                updates: vec![Update::Throttle(Throttle::Off)],
-                ignored: vec!["warp_drive".to_string()],
+        pub fn value(u: &Update) -> Value {
+            match u {
+                Update::PointerAcceleration(a) => Value::from(a.as_str()),
+                Update::Throttle(t) => Value::from(t.as_str()),
+                Update::CloseOnLeave(b) | Update::CarryLaunchTicket(b) | Update::Gamemode(b) | Update::Gamepad(b) => {
+                    Value::from(*b)
+                }
+                Update::AudioOutput(name) | Update::AudioInput(name) => Value::from(name.as_str()),
+                Update::TitleBar(t) => Value::from(title_bar_word(*t)),
+                Update::FrameRateLimit(l) => Value::from(l.as_env()),
             }
-        );
+        }
+
+        pub fn encode_set(updates: &[Update]) -> String {
+            let mut set = Map::new();
+            for u in updates {
+                set.insert(u.key().to_string(), value(u));
+            }
+            let mut line = Value::Object(Map::from_iter([("set".to_string(), Value::Object(set))])).to_string();
+            line.push('\n');
+            line
+        }
+
+        pub fn encode_get() -> String {
+            "{\"get\":true}\n".to_string()
+        }
+
+        #[derive(Serialize, Default)]
+        pub struct Reply {
+            pub ok: bool,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub applied: Vec<String>,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub ignored: Vec<String>,
+            #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+            pub values: BTreeMap<String, Value>,
+            #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+            pub notes: BTreeMap<String, String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub error: Option<String>,
+        }
+
+        impl Reply {
+            pub fn encode(&self) -> String {
+                let mut line = serde_json::to_string(self).expect("a Reply always serialises");
+                line.push('\n');
+                line
+            }
+        }
+    }
+
+    /// Every variant, with every enum value it can carry, so the loop below
+    /// covers the whole wire vocabulary rather than one example of each.
+    fn every_value() -> Vec<Update> {
+        let mut all = Vec::new();
+        all.extend([Accel::Unlocked, Accel::Always].map(Update::PointerAcceleration));
+        all.extend([Throttle::Visible, Throttle::Unfocused, Throttle::Off].map(Update::Throttle));
+        for b in [true, false] {
+            all.extend([Update::CloseOnLeave(b), Update::CarryLaunchTicket(b), Update::Gamemode(b), Update::Gamepad(b)]);
+        }
+        for name in ["", "alsa_output.pci-0000_00_1f.3.analog-stereo", "bluez_output.AC_12.1", "caf\u{e9} \"quoted\" \\ slash"] {
+            all.extend([Update::AudioOutput(name.into()), Update::AudioInput(name.into())]);
+        }
+        all.extend([TitleBar::Default, TitleBar::Compact, TitleBar::Hidden].map(Update::TitleBar));
+        all.extend(FrameRateLimit::ALL.map(Update::FrameRateLimit));
+        all
     }
 
     #[test]
-    fn a_known_key_with_a_bad_value_refuses_the_whole_message() {
-        // Half-applying a message would leave the shell believing one thing and
-        // the client another, so a bad value is an error, not a skip.
-        for bad in [
-            r#"{"set":{"throttle":"sometimes"}}"#,
-            r#"{"set":{"pointer_acceleration":true}}"#,
-            r#"{"set":{"close_on_leave":"yes"}}"#,
-            r#"{"set":{"throttle":"off","carry_launch_ticket":1}}"#,
-            r#"{"set":{"audio_output":true}}"#,
-            r#"{"set":{"gamemode":"on"}}"#,
-            r#"{"set":{"gamepad":0}}"#,
-            r#"{"set":{"title_bar":"tiny"}}"#,
-            r#"{"set":{"title_bar":true}}"#,
-            r#"{"set":{"frame_rate_limit":"unlimited"}}"#,
-            r#"{"set":{"frame_rate_limit":"9999"}}"#,
-            r#"{"set":{"frame_rate_limit":144}}"#,
-            r#"{"set":{"audio_output":"a\u0000b"}}"#,
-            r#"{"set":{"audio_input":false}}"#,
-            r#"{"set":{"audio_input":"a\u0000b"}}"#,
-        ] {
-            assert!(decode(bad).is_err(), "{bad} should be refused");
+    fn each_update_encodes_to_the_same_bytes_as_the_old_encoder() {
+        for u in every_value() {
+            let one = std::slice::from_ref(&u);
+            assert_eq!(encode_set(one), legacy::encode_set(one), "{u:?}");
         }
     }
 
     #[test]
-    fn nothing_but_the_two_verbs_is_understood() {
-        for bad in [
-            "",
-            "hello",
-            "[]",
-            r#"{}"#,
-            r#"{"get":false}"#,
-            r#"{"run":"ls"}"#,
-            r#"{"exec":{"cmd":"ls"}}"#,
-            r#"{"set":{},"get":true}"#,
-            r#"{"set":"throttle"}"#,
-        ] {
-            assert!(decode(bad).is_err(), "{bad:?} must not decode");
+    fn a_message_of_every_key_encodes_to_the_same_bytes_as_the_old_encoder() {
+        // One value per key, a few ways, since a set carries one value per key.
+        let every = every_value();
+        for round in 0..4 {
+            let mut by_key: BTreeMap<&str, Update> = BTreeMap::new();
+            for (i, u) in every.iter().enumerate() {
+                if i % 4 == round % 4 || !by_key.contains_key(u.key()) {
+                    by_key.insert(u.key(), u.clone());
+                }
+            }
+            let message: Vec<Update> = by_key.into_values().collect();
+            assert_eq!(message.len(), KEYS.len());
+            assert_eq!(encode_set(&message), legacy::encode_set(&message));
         }
+        assert_eq!(encode_set(&[]), legacy::encode_set(&[]));
+        assert_eq!(encode_get(), legacy::encode_get());
     }
 
     #[test]
-    fn an_oversized_line_is_refused_before_it_is_parsed() {
-        let big = format!(r#"{{"set":{{"x":"{}"}}}}"#, "a".repeat(MAX_LINE));
-        assert!(decode(&big).unwrap_err().contains("longer than"));
+    fn replies_encode_to_the_same_bytes_as_the_old_encoder() {
+        let mut new = Reply { ok: true, applied: vec!["throttle".into(), "title_bar".into()], ..Reply::default() };
+        let mut old = legacy::Reply { ok: true, applied: new.applied.clone(), ..legacy::Reply::default() };
+        assert_eq!(new.encode(), old.encode());
+        new.ignored = vec!["warp_drive".into()];
+        old.ignored = new.ignored.clone();
+        assert_eq!(new.encode(), old.encode());
+        for (k, v) in [("throttle", Value::from("off")), ("gamemode", Value::from(true)), ("audio_output", Value::from(""))] {
+            new.values.insert(k.into(), v.clone());
+            old.values.insert(k.into(), v);
+        }
+        assert_eq!(new.encode(), old.encode());
+        // `notes` is the field the version-0 reply gained for audio; it must
+        // still ride on the wire.
+        new.notes.insert("audio_output".into(), "nothing was playing".into());
+        old.notes.insert("audio_output".into(), "nothing was playing".into());
+        assert_eq!(new.encode(), old.encode());
+        assert!(new.encode().contains("\"notes\":{\"audio_output\":\"nothing was playing\"}"));
+        new.error = Some("nope".into());
+        old.error = Some("nope".into());
+        assert_eq!(new.encode(), old.encode());
+        assert_eq!(Reply::failure("nope").encode(), legacy::Reply { error: Some("nope".into()), ..legacy::Reply::default() }.encode());
+        assert_eq!(Reply::default().encode(), legacy::Reply::default().encode());
     }
 
     #[test]
-    fn a_reply_round_trips_and_a_failure_says_why() {
-        let mut ok = Reply { ok: true, applied: vec!["throttle".into()], ..Reply::default() };
-        ok.values.insert("throttle".into(), Value::from("off"));
-        assert_eq!(Reply::decode(&ok.encode()).unwrap(), ok);
-        ok.notes.insert("audio_output".into(), "nothing was playing".into());
-        assert_eq!(Reply::decode(&ok.encode()).unwrap(), ok);
-        let bad = Reply::failure("nope");
-        let back = Reply::decode(&bad.encode()).unwrap();
-        assert!(!back.ok);
-        assert_eq!(back.error.as_deref(), Some("nope"));
+    fn the_line_limit_and_version_are_the_ones_the_old_module_had() {
+        assert_eq!(MAX_LINE, 1024);
+        assert_eq!((SOCKET_DIR, SOCKET_NAME), ("live", "settings.sock"));
     }
 
     #[test]
-    fn the_socket_lives_in_a_directory_of_its_own_inside_the_profile() {
-        assert_eq!(
-            socket_path(Path::new("/p/default")),
-            PathBuf::from("/p/default/live/settings.sock")
-        );
+    fn the_two_paths_are_the_same_types() {
+        // A re-export, not a copy: a value built through either path is accepted
+        // by the other without a conversion.
+        let u: cordial_protocol::Update = Update::Throttle(Throttle::Off);
+        let _: Update = u;
+        let t: crate::title_bar::TitleBar = TitleBar::Compact;
+        let _: cordial_protocol::TitleBar = t;
+        let f: crate::frame_rate_limit::FrameRateLimit = FrameRateLimit::Cap90;
+        let _: cordial_protocol::FrameRateLimit = f;
     }
 }

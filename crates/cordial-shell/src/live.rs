@@ -26,12 +26,14 @@
 //! waits for the next event.
 
 use crate::shell_config::{self, ShellConfig};
-use cordial_shell::live_wire::{self, Accel, Reply, Throttle, Update};
+use cordial_protocol::settings::{Accel, Throttle};
+use cordial_protocol::v0::{self, Reply};
+use cordial_protocol::{LineReader, Next, Update};
 use libadwaita::gio;
 use libadwaita::glib;
 use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -45,7 +47,7 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Applies {
     /// Sent to every running client of this shell, and in force within a
-    /// moment. Exactly the keys in `live_wire::KEYS`.
+    /// moment. Exactly the keys in `cordial_protocol::settings::KEYS`.
     Live,
     /// Read by the shell itself, when it next needs the value. There is no
     /// running client to tell.
@@ -92,7 +94,7 @@ pub fn classify(key: &str) -> Option<Applies> {
 
 // ---- reading the live values out of a config --------------------------------
 
-/// The live keys of a config, as wire updates, in `live_wire::KEYS` order.
+/// The live keys of a config, as wire updates, in `KEYS` order.
 pub fn live_updates(config: &ShellConfig) -> Vec<Update> {
     use shell_config::{PointerAcceleration, ThrottleWhen};
     vec![
@@ -142,10 +144,18 @@ pub fn send(socket: &Path, updates: &[Update]) -> Result<Reply, String> {
     stream.set_read_timeout(Some(IO_TIMEOUT)).map_err(|e| e.to_string())?;
     stream.set_write_timeout(Some(IO_TIMEOUT)).map_err(|e| e.to_string())?;
     stream
-        .write_all(live_wire::encode_set(updates).as_bytes())
+        .write_all(v0::encode_set(updates).as_bytes())
         .map_err(|e| format!("write: {e}"))?;
-    let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line).map_err(|e| format!("read: {e}"))?;
+    // Bounded: a client that answers with noise and no newline costs one cap's
+    // worth of buffer and an error, not however long it keeps writing. The cap
+    // is the protocol's 64 KiB, well above the biggest reply a client sends.
+    let line = match LineReader::new(stream).next_line().map_err(|e| format!("read: {e}"))? {
+        Next::Line(line) => line,
+        Next::Eof => return Err("read: the client closed without replying".to_string()),
+        Next::Truncated => return Err("read: the reply was cut off".to_string()),
+        Next::TooLong => return Err("read: the reply was longer than the protocol allows".to_string()),
+        Next::NotUtf8 => return Err("read: the reply was not UTF-8".to_string()),
+    };
     let reply = Reply::decode(&line)?;
     if !reply.ok {
         return Err(reply.error.clone().unwrap_or_else(|| "refused".to_string()));
@@ -448,6 +458,8 @@ pub fn start(config_path: &Path, current: &ShellConfig) -> Option<FileWatch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cordial_protocol::settings::KEYS;
+    use std::io::{BufRead, BufReader};
     use std::io::Read;
     use std::os::unix::net::UnixListener;
 
@@ -471,7 +483,7 @@ mod tests {
             .map(|(k, _, _)| *k)
             .collect();
         live.sort_unstable();
-        let mut wire = live_wire::KEYS.to_vec();
+        let mut wire = KEYS.to_vec();
         wire.sort_unstable();
         assert_eq!(live, wire, "a live key with no wire message applies to nothing");
         // Optional keys are skipped when unset, so also check the table against
@@ -592,7 +604,7 @@ mod tests {
     /// A listener that plays the client's part, answering with the keys it was
     /// given, or with a refusal.
     fn fake_client(dir: &Path, refuse: bool) -> (PathBuf, std::thread::JoinHandle<String>) {
-        let socket = live_wire::socket_path(dir);
+        let socket = v0::socket_path(dir);
         std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let listener = UnixListener::bind(&socket).unwrap();
         let handle = std::thread::spawn(move || {
@@ -602,13 +614,13 @@ mod tests {
             let reply = if refuse {
                 Reply::failure("no")
             } else {
-                match live_wire::decode(&line).unwrap() {
-                    live_wire::Request::Set { updates, .. } => Reply {
+                match v0::decode(&line).unwrap() {
+                    v0::Request::Set { updates, .. } => Reply {
                         ok: true,
                         applied: updates.iter().map(|u| u.key().to_string()).collect(),
                         ..Reply::default()
                     },
-                    live_wire::Request::Get => Reply { ok: true, ..Reply::default() },
+                    v0::Request::Get => Reply { ok: true, ..Reply::default() },
                 }
             };
             stream.write_all(reply.encode().as_bytes()).unwrap();
@@ -628,6 +640,27 @@ mod tests {
         assert_eq!(reply.applied.len(), 2);
         let line = seen.join().unwrap();
         assert_eq!(line.matches('\n').count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn send_does_not_buffer_a_reply_that_never_ends() {
+        // A client that answers with more than the protocol's line cap and no
+        // newline used to make `read_line` grow its buffer for as long as the
+        // client kept writing. Now it costs one error.
+        let dir = scratch("noise");
+        let socket = v0::socket_path(&dir);
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap()).read_line(&mut request).unwrap();
+            stream.write_all(&vec![b'x'; 70_000]).unwrap();
+        });
+        let err = send(&socket, &[Update::CloseOnLeave(true)]).unwrap_err();
+        assert!(err.contains("cut off"), "{err}");
+        server.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -364,6 +364,7 @@ version = "0.25.0"
 dependencies = [
  "cordial-linker-sys",
  "cordial-plugins",
+ "cordial-protocol",
  "cordial-update",
  "gdk4-wayland",
  "gtk4",

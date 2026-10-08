@@ -144,7 +144,7 @@ pub struct Instance {
     /// Where this client listens for live setting changes, and what it was
     /// started with, so `live` can send it only what differs (ADR-044).
     pub live_socket: PathBuf,
-    pub launched_with: Vec<cordial_shell::live_wire::Update>,
+    pub launched_with: Vec<cordial_protocol::Update>,
 }
 
 /// Per-launch values that may be absent for an ordinary button launch.
@@ -668,7 +668,7 @@ pub fn spawn(
         child,
         command_line,
         tail,
-        live_socket: cordial_shell::live_wire::socket_path(&profile_dir),
+        live_socket: cordial_protocol::v0::socket_path(&profile_dir),
         launched_with: crate::live::live_updates(&config),
     })
 }

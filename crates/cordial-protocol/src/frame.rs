@@ -174,6 +174,16 @@ impl DecodeError {
     }
 }
 
+impl DecodeError {
+    /// Whether a receiver closes the connection on this (spec section 9). A line
+    /// that is not a frame at all does. A well-formed frame carrying an
+    /// out-of-range value ([`Limit`](DecodeError::Limit)) is dropped and counted,
+    /// and the connection stays.
+    pub fn closes_connection(&self) -> bool {
+        !matches!(self, DecodeError::Limit(_))
+    }
+}
+
 impl fmt::Display for DecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -378,6 +388,16 @@ mod tests {
         }
         let exact = "x".repeat(MAX_STRING);
         assert!(decode_line(&format!(r#"{{"id":1,"m":"a","p":{{"k":"{exact}"}}}}"#)).is_ok());
+    }
+
+    #[test]
+    fn only_an_out_of_range_value_keeps_the_connection() {
+        let long = "x".repeat(MAX_STRING + 1);
+        let over = decode_line(&format!(r#"{{"ev":"e","n":1,"p":{{"k":"{long}"}}}}"#)).unwrap_err();
+        assert!(!over.closes_connection());
+        for line in ["nope", "[]", "{}", r#"{"id":-1,"m":"x"}"#] {
+            assert!(decode_line(line).unwrap_err().closes_connection(), "{line}");
+        }
     }
 
     #[test]

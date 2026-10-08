@@ -51,6 +51,11 @@ required-features = ["webview"]
 [dependencies]
 libc = "0.2"
 cordial-plugins = { path = "../cordial-plugins" }
+# The live-settings wire: the message types, the codec and the bounded line
+# reader the launcher uses to talk to a running client (ADR-044, ADR-055). This
+# crate is the one under MIT OR Apache-2.0; it depends on serde and serde_json
+# only, so it adds no native code to the launcher.
+cordial-protocol = { path = "../cordial-protocol" }
 # For one symbol pair, and it is worth saying which: `cordial_audio_sinks` /
 # `cordial_audio_sinks_free` in `native/pipewire_backend.cpp`, which the Audio
 # row in settings uses to list the machine's PipeWire outputs. This crate does
