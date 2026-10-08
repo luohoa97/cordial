@@ -2443,11 +2443,12 @@ an `i6` of 0 would resolve to no font file. And 3, 4 and 5 are `SourceSans`,
 unstyled TextLabel -- so Roblox's own Android mapping does not cover Roblox's
 own default font, even though `SourceSansPro-Regular.ttf` ships in the same
 archive. That is the strongest available evidence that a fallback is mandatory
-rather than a nicety. Cordial does not paper over it with a hand-written row:
-`3 => SourceSansPro-Regular` is knowledge about Roblox's enum rather than
-something the archive says, nothing would tell us when it stopped being true,
-and it is exactly the hand-maintained table this section already said must not
-be written.
+rather than a nicety. **Superseded:** Cordial now answers 3, 4 and 5 with the
+Source Sans Pro Regular, Bold and Light files (`SOURCE_SANS_FALLBACKS` in
+`editor_font.rs`). The earlier refusal to write the ids down left a box set to
+`SourceSans` drawing in Builder Sans while `SourceSansItalic` beside it drew in
+Source Sans Pro. The family, weight and slant are still read from the file by
+fontconfig and checked against what the id means, and only id 6 may draw slanted.
 
 **"`families/BuilderSans.json` gives the family string Pango needs" is right
 for that one file and wrong in general.** Pango asks fontconfig, and fontconfig

@@ -92,6 +92,11 @@ static QUEUE: Mutex<Vec<Cmd>> = Mutex::new(Vec::new());
 /// when the thing being driven is not.
 static ACCEPTED: AtomicU64 = AtomicU64::new(0);
 
+/// The font id the next `fakefocus` puts in its synthetic spec. Zero is what it
+/// always sent, which `Enum.Font` calls `Legacy` and the shipped manifest has
+/// no row for; set by `fakefont` so the editor can be drawn in any id.
+static FAKE_FONT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
 fn push(c: Cmd) {
     if let Ok(mut q) = QUEUE.lock() {
         q.push(c);
@@ -261,7 +266,7 @@ fn handle(line: &str) -> String {
                         // project has ever reported (`android_classes.cpp`'s
                         // own doc comment) rather than an invented colour.
                         text_color: 0xffd5_d5ddu32 as i32,
-                        font: 0,
+                        font: FAKE_FONT.load(Ordering::Relaxed),
                         text_input_type: 0,
                         return_key_type: 0,
                         manual_focus_release: 1,
@@ -280,6 +285,16 @@ fn handle(line: &str) -> String {
                 _ => "err fakefocus <0|1> <x> <y> <w> <h> [text]".into(),
             }
         }
+        // `fakefont <id>` -- the font id later `fakefocus` calls carry. Synthetic,
+        // for the same reason `fakefocus` is: it shows which face the editor
+        // draws for an id, and says nothing about which id a game sends.
+        "fakefont" => match it.next().and_then(|v| v.parse::<i32>().ok()) {
+            Some(id) => {
+                FAKE_FONT.store(id, Ordering::Relaxed);
+                format!("ok fakefont synthetic id={id}")
+            }
+            None => "err fakefont <id>".into(),
+        },
         "fakeblur" => {
             cordial_linker_sys::game_activity::test_blur_textbox();
             "ok fakeblur".into()

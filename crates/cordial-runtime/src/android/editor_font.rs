@@ -68,12 +68,27 @@
 //! ships in the same archive and the table simply does not point at it.
 //! Roblox's own Android mapping not covering Roblox's own default font is the
 //! strongest available evidence that a fallback is mandatory rather than a
-//! nicety -- their code must have one too. Cordial does not paper over the gap
-//! with a hand-written row, because a literal `3 => "SourceSansPro-Regular"`
-//! here is exactly the hand-maintained table that must not be written: it is
-//! knowledge about Roblox's enum rather than something the archive says, and
-//! nothing would tell us when it stopped being true. An id with no row falls
-//! back to the default family and says so once.
+//! nicety -- their code must have one too. An id with no row falls back to
+//! the default family and says so once.
+//!
+//! **Ids 3, 4 and 5 are now answered anyway, and this reverses the earlier
+//! refusal to write them down.** That paragraph argued a literal
+//! `3 => "SourceSansPro-Regular"` was a hand-maintained table of Roblox
+//! knowledge. It is, and leaving the gap cost something concrete: a box set to
+//! `SourceSans` drew in Builder Sans, a different typeface, while `SourceSansItalic`
+//! (6) next to it drew in Source Sans Pro, so restyling a box between the two
+//! changed typeface as well as slant. [`SOURCE_SANS_FALLBACKS`] is the whole
+//! table -- three ids from Roblox's public `Enum.Font` documentation and three
+//! file names from the archive's own listing -- and the family, weight and
+//! slant are still read out of the staged file by fontconfig and checked
+//! against what the id means. A file that disagrees is not used.
+//!
+//! **Slant is allowed only to ids that mean it.** Id 6 is the one italic
+//! member of the enum and `SourceSansPro-It.ttf` is the one italic file the
+//! manifest points at; [`ITALIC_IDS`] refuses a slanted face for any other id,
+//! so a mispairing can degrade a box to the upright default but cannot slant
+//! one. Ids with no face of their own -- 0, anything past 51, `Unknown` -- keep
+//! drawing in the default: upright, weight 400.
 //!
 //! **`assets/content/fonts/families/*.json` is not the source for the family
 //! string.** This file used to say it "gives the family string Pango wants",
@@ -128,6 +143,43 @@ pub const FAMILY: &str = "Builder Sans";
 const ASSET: &str = "content/fonts/BuilderSans-Regular.otf";
 const MAPPINGS: &str = "android/fonts/font-mappings.json";
 const FONT_ASSET_DIR: &str = "content/fonts/";
+
+/// The `Enum.Font` ids whose manifest row is genuinely a slanted face.
+///
+/// Roblox documents the numbering publicly
+/// (create.roblox.com/docs/reference/engine/enums/Font): `SourceSansItalic` is
+/// 6 and no other member is italic. An id outside this list that resolves to
+/// a slanted file is therefore a wrong answer -- a renumbered manifest, or a
+/// family match landing on the one italic file in a family -- and is refused
+/// rather than drawn, because "upright regular when unsure" is the failure a
+/// reader of the text can ignore and slanted text in a chat box is not.
+const ITALIC_IDS: [i32; 1] = [6];
+
+/// Ids the APK's manifest has no row for, although each is a plain Source
+/// Sans Pro face the archive ships, as `(id, file, OpenType weight)`.
+///
+/// `SourceSans` (3), `SourceSansBold` (4) and `SourceSansLight` (5) are the
+/// engine's default family for an unstyled box and the manifest skips them.
+/// Left unanswered they drew in Builder Sans, which is a different typeface,
+/// while the neighbouring ids 6 and 16 drew in Source Sans Pro -- so a game
+/// that restyled one box from Source Sans to Source Sans Italic changed
+/// typeface as well as slant. The ids come from Roblox's public `Font` enum
+/// and the file names from the archive's own `content/fonts/` listing; the
+/// family, weight and slant are still read out of the staged file by
+/// fontconfig, and the weight here is only what the result is checked
+/// against. A file that reads as anything else is not used, and the id keeps
+/// drawing in the default face rather than in a face nobody checked.
+const SOURCE_SANS_FALLBACKS: [(i32, &str, i32); 3] = [
+    (3, "SourceSansPro-Regular.ttf", 400),
+    (4, "SourceSansPro-Bold.ttf", 700),
+    (5, "SourceSansPro-Light.ttf", 300),
+];
+
+/// The id whose manifest row names the Source Sans family, borrowed for its
+/// size ratio by the ids in [`SOURCE_SANS_FALLBACKS`]. `INFERRED`: the
+/// manifest gives 6 and 16 different ratios, so the number is a closest guess
+/// from the unhinted-weight sibling and not a measurement of ids 3-5.
+const SOURCE_SANS_RATIO_ID: i32 = 6;
 
 /// A face the editor can ask Pango for: everything needed to name one shipped
 /// font file unambiguously.
@@ -405,38 +457,36 @@ fn build_table() -> Table {
     // file that would not register is retried per id and counted twice, and the
     // summary line below then reports more unusable files than there are.
     let mut faces: BTreeMap<String, Option<Face>> = BTreeMap::new();
-    let mut by_id = BTreeMap::new();
-    for (id, file, ratio) in &entries {
+    let load = |file: &str| -> Option<Face> {
+        stage(&format!("{FONT_ASSET_DIR}{file}"))
+            .filter(|path| register(path))
+            .and_then(|path| query_face(&path))
+    };
+    for (_, file, _) in &entries {
         if !faces.contains_key(file) {
-            let face = stage(&format!("{FONT_ASSET_DIR}{file}"))
-                .filter(|path| register(path))
-                .and_then(|path| query_face(&path));
+            let face = load(file);
             faces.insert(file.clone(), face);
         }
-        // The cache above is keyed on filename, because staging and
-        // registering it with fontconfig is the expensive, per-*file* step
-        // and two ids can share a file. The ratio is a per-*id* row, so it is
-        // stamped onto this id's own copy rather than folded into the cache,
-        // which would silently give a second id the first one's number.
-        if let Some(Some(face)) = faces.get(file) {
-            let mut face = face.clone();
-            face.from_rbx_font_ratio = *ratio;
-            by_id.insert(*id, face);
-        }
     }
+    let mut by_id = rows_to_faces(&entries, &faces);
+    add_missing_source_sans(&mut by_id, |file| {
+        // Same per-file cache as the rows, so a build that does add a row for
+        // one of these files does not stage it twice.
+        if !faces.contains_key(file) {
+            let face = load(file);
+            faces.insert(file.to_owned(), face);
+        }
+        faces.get(file).cloned().flatten()
+    });
     let failed = faces.values().filter(|f| f.is_none()).count();
 
     // The default follows the archive where the archive has an opinion. If a
     // future build renumbers Builder Sans or ships it at a different weight,
     // this tracks it; the constant is only reached when the table is unusable.
-    let default = by_id
-        .values()
-        .find(|f| f.family == FAMILY && f.weight == 400 && !f.italic)
-        .cloned()
-        .or_else(registered_default);
+    let default = pick_default(&by_id);
 
     println!(
-        "[android] editor font: {} of {} ids resolved to {} faces in {} ms{}",
+        "[android] editor font: {} ids resolved ({} manifest rows) to {} faces in {} ms{}",
         by_id.len(),
         entries.len(),
         faces.len() - failed,
@@ -444,6 +494,91 @@ fn build_table() -> Table {
         if failed == 0 { String::new() } else { format!(", {failed} file(s) unusable") }
     );
     Table { by_id, default }
+}
+
+/// Turn the manifest's rows and what fontconfig read out of each file into the
+/// id-to-face table.
+///
+/// A row whose file would not register is absent, not guessed. And a row that
+/// resolves to a slanted file for an id that is not one of [`ITALIC_IDS`] is
+/// dropped with a line saying so: `Face::italic` is read from the file, and a
+/// family with a single italic member is exactly where a wrong id-to-file
+/// pairing would draw slanted text with nothing in the log to explain it.
+fn rows_to_faces(
+    entries: &[(i32, String, f32)],
+    faces: &BTreeMap<String, Option<Face>>,
+) -> BTreeMap<i32, Face> {
+    let mut by_id = BTreeMap::new();
+    for (id, file, ratio) in entries {
+        // The file cache is keyed on filename, because staging and registering
+        // is the expensive, per-*file* step and two ids can share a file. The
+        // ratio is a per-*id* row, so it is stamped onto this id's own copy
+        // rather than folded into the cache, which would silently give a
+        // second id the first one's number.
+        let Some(Some(face)) = faces.get(file) else { continue };
+        if !admit(*id, face) {
+            eprintln!(
+                "[android] editor font: id {id} maps to {file}, which is italic, and id {id} \
+                 is not an italic font; drawing the default face for it instead"
+            );
+            continue;
+        }
+        let mut face = face.clone();
+        face.from_rbx_font_ratio = *ratio;
+        by_id.insert(*id, face);
+    }
+    by_id
+}
+
+/// Whether `face` may stand for `id`: slanted faces only for italic ids.
+fn admit(id: i32, face: &Face) -> bool {
+    !face.italic || ITALIC_IDS.contains(&id)
+}
+
+/// Give ids 3, 4 and 5 their Source Sans Pro face, where the manifest has no
+/// row for them and the archive ships the file. See [`SOURCE_SANS_FALLBACKS`].
+///
+/// A row the archive does supply always wins, so a future build that adds
+/// these ids is followed rather than overridden. `load` stages, registers and
+/// reads one file, and is a parameter so the choice of face can be tested
+/// without fontconfig.
+fn add_missing_source_sans(
+    by_id: &mut BTreeMap<i32, Face>,
+    mut load: impl FnMut(&str) -> Option<Face>,
+) {
+    let ratio = by_id.get(&SOURCE_SANS_RATIO_ID).map_or(1.0, |f| f.from_rbx_font_ratio);
+    for (id, file, weight) in SOURCE_SANS_FALLBACKS {
+        if by_id.contains_key(&id) {
+            continue;
+        }
+        let Some(mut face) = load(file) else { continue };
+        // Read from the file and then checked against the enum's meaning, in
+        // both directions: a file that reads as slanted or at another weight
+        // is not what this id names, and a wrong face drawn confidently is the
+        // stub that lies.
+        if face.italic || face.weight != weight {
+            eprintln!(
+                "[android] editor font: {file} reads as weight {} italic {}, not the upright \
+                 weight {weight} that id {id} names; id {id} keeps the default face",
+                face.weight, face.italic
+            );
+            continue;
+        }
+        face.from_rbx_font_ratio = ratio;
+        by_id.insert(id, face);
+    }
+}
+
+/// The face an id with no face of its own is drawn in: upright, regular
+/// weight, in the engine's UI family. Never a neighbour's face -- a family match
+/// may pick a file, but not for an id it was not asked about, which is how a
+/// slanted face could reach an upright request.
+fn pick_default(by_id: &BTreeMap<i32, Face>) -> Option<Face> {
+    by_id
+        .values()
+        .find(|f| f.family == FAMILY && f.weight == 400 && !f.italic)
+        .cloned()
+        .or_else(registered_default)
 }
 
 /// Read `assets/android/fonts/font-mappings.json` into id-to-filename pairs.
@@ -872,6 +1007,142 @@ mod tests {
             dirs.iter().find_map(|d| walk(d, depth - 1))
         }
         walk(std::path::Path::new("/usr/share/fonts"), 6)
+    }
+
+    // ------------------------------------------- which id draws which face
+    //
+    // Faces here are written by hand, in the shape fontconfig reads them out of
+    // the shipped Source Sans Pro files (checked with `fc-scan` on the user's
+    // own APK: Regular 400 upright, Bold 700, Light 300, Italic 400 slanted,
+    // Semibold 600). What is under test is which id gets which of them.
+
+    fn face(family: &str, weight: i32, italic: bool) -> Face {
+        Face { family: family.to_owned(), weight, italic, from_rbx_font_ratio: 1.0 }
+    }
+
+    /// Source Sans Pro as fontconfig reads the five shipped files.
+    fn source_sans(file: &str) -> Option<Face> {
+        let (weight, italic) = match file {
+            "SourceSansPro-Regular.ttf" => (400, false),
+            "SourceSansPro-Bold.ttf" => (700, false),
+            "SourceSansPro-Light.ttf" => (300, false),
+            "SourceSansPro-It.ttf" => (400, true),
+            "SourceSansPro-Semibold.ttf" => (600, false),
+            _ => return None,
+        };
+        Some(face("Source Sans Pro", weight, italic))
+    }
+
+    /// The table as the shipped manifest shapes it: 6 and 16 present, 3-5 not,
+    /// Builder Sans at 46.
+    fn shipped_shape() -> BTreeMap<i32, Face> {
+        let entries: Vec<(i32, String, f32)> = vec![
+            (6, "SourceSansPro-It.ttf".into(), 0.895),
+            (16, "SourceSansPro-Semibold.ttf".into(), 0.7955),
+            (46, "BuilderSans-Regular.otf".into(), 0.7937),
+        ];
+        let mut faces = BTreeMap::new();
+        for (_, file, _) in &entries {
+            faces.insert(
+                file.clone(),
+                source_sans(file).or_else(|| Some(face(FAMILY, 400, false))),
+            );
+        }
+        rows_to_faces(&entries, &faces)
+    }
+
+    #[test]
+    fn sourcesans_3_is_upright_regular_source_sans() {
+        let mut t = shipped_shape();
+        add_missing_source_sans(&mut t, source_sans);
+        let f = &t[&3];
+        assert_eq!((f.family.as_str(), f.weight, f.italic), ("Source Sans Pro", 400, false));
+    }
+
+    #[test]
+    fn sourcesans_4_is_upright_bold_source_sans() {
+        let mut t = shipped_shape();
+        add_missing_source_sans(&mut t, source_sans);
+        let f = &t[&4];
+        assert_eq!((f.family.as_str(), f.weight, f.italic), ("Source Sans Pro", 700, false));
+    }
+
+    #[test]
+    fn sourcesans_5_is_upright_light_source_sans() {
+        let mut t = shipped_shape();
+        add_missing_source_sans(&mut t, source_sans);
+        let f = &t[&5];
+        assert_eq!((f.family.as_str(), f.weight, f.italic), ("Source Sans Pro", 300, false));
+    }
+
+    #[test]
+    fn sourcesans_6_is_the_one_italic_and_keeps_its_slant() {
+        let mut t = shipped_shape();
+        add_missing_source_sans(&mut t, source_sans);
+        let f = &t[&6];
+        assert_eq!((f.family.as_str(), f.weight, f.italic), ("Source Sans Pro", 400, true));
+        // And it is the only slanted face in the table.
+        let slanted: Vec<_> = t.iter().filter(|(_, f)| f.italic).map(|(id, _)| *id).collect();
+        assert_eq!(slanted, vec![6]);
+    }
+
+    #[test]
+    fn the_filled_in_ids_borrow_the_source_sans_size_ratio() {
+        let mut t = shipped_shape();
+        add_missing_source_sans(&mut t, source_sans);
+        assert_eq!(t[&3].from_rbx_font_ratio, 0.895);
+        assert_eq!(t[&16].from_rbx_font_ratio, 0.7955);
+    }
+
+    #[test]
+    fn an_unknown_id_draws_upright_regular_builder_sans_never_a_neighbour() {
+        let mut t = shipped_shape();
+        add_missing_source_sans(&mut t, source_sans);
+        for id in [0, 52, 100, 999, -1] {
+            assert!(!t.contains_key(&id), "id {id} must have no face of its own");
+        }
+        let default = pick_default(&t).expect("a Builder Sans row is present");
+        assert_eq!((default.family.as_str(), default.weight, default.italic), (FAMILY, 400, false));
+    }
+
+    #[test]
+    fn a_fallback_file_that_reads_as_the_wrong_weight_or_slant_is_not_used() {
+        for wrong in [face("Source Sans Pro", 400, true), face("Source Sans Pro", 600, false)] {
+            let mut t = shipped_shape();
+            add_missing_source_sans(&mut t, |_| Some(wrong.clone()));
+            for id in [3, 4, 5] {
+                // 3 matches weight 400 only when upright; the italic 400 and
+                // the 600 both fail every id, and the id then has no face.
+                assert!(!t.contains_key(&id), "id {id} took {wrong:?}");
+            }
+        }
+        let mut t = shipped_shape();
+        add_missing_source_sans(&mut t, |_| None);
+        assert!(t.get(&3).is_none() && t.get(&4).is_none() && t.get(&5).is_none());
+    }
+
+    #[test]
+    fn a_row_from_the_archive_is_never_overridden_by_the_fallback() {
+        let entries = vec![(3, "Other.ttf".to_owned(), 0.5)];
+        let mut faces = BTreeMap::new();
+        faces.insert("Other.ttf".to_owned(), Some(face("Other", 400, false)));
+        let mut t = rows_to_faces(&entries, &faces);
+        add_missing_source_sans(&mut t, source_sans);
+        assert_eq!(t[&3].family, "Other");
+    }
+
+    #[test]
+    fn a_slanted_file_is_refused_for_an_id_that_is_not_italic() {
+        // A mispaired row: id 3 pointing at the italic file.
+        let entries = vec![
+            (3, "SourceSansPro-It.ttf".to_owned(), 0.895),
+            (6, "SourceSansPro-It.ttf".to_owned(), 0.895),
+        ];
+        let mut faces = BTreeMap::new();
+        faces.insert("SourceSansPro-It.ttf".to_owned(), source_sans("SourceSansPro-It.ttf"));
+        let t = rows_to_faces(&entries, &faces);
+        assert!(!t.contains_key(&3), "id 3 must not be drawn slanted");
+        assert!(t[&6].italic);
     }
 
     /// The Login-screen capture the default rests on, kept as a regression: if
