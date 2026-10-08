@@ -731,7 +731,13 @@ impl HostWindow {
     /// rather than that minus a titlebar.
     pub fn with_canvas(title: &str, width: i32, height: i32) -> Self {
         let title_bar = crate::title_bar::TitleBar::from_env();
-        let chrome_height = if title_bar.revealed(false) { header_height_hint() } else { 0 };
+        // With no header bar the window carries the visibility anchor instead,
+        // so the content still comes out the size the caller asked for.
+        let chrome_height = if title_bar.revealed(false) {
+            header_height_hint()
+        } else {
+            anchor_height(false)
+        };
         // A `GtkDrawingArea` with no draw function paints nothing at all, so
         // what shows through is the themed window background — which is
         // exactly what ADR-011 asks for behind the canvas ("the desktop's own
@@ -819,6 +825,10 @@ impl HostWindow {
         // definition the thing painting the canvas.
         let sheet = String::from(
             ".cordial-engine-host drawingarea { background-color: transparent; } \
+             .cordial-engine-host .cordial-visibility-anchor { \
+                 background-color: #000000; \
+                 min-height: 1px; \
+             } \
              .cordial-engine-host headerbar { \
                  background-color: @headerbar_bg_color; \
                  color: @headerbar_fg_color; \
@@ -899,6 +909,7 @@ impl HostWindow {
         let header = adw::HeaderBar::new();
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&header);
+        install_visibility_anchor(&toolbar);
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(content));
         let text_layer = gtk::Fixed::new();
@@ -2444,6 +2455,61 @@ fn input_region(
     region
 }
 
+/// How tall the strip of window that keeps the host surface visible is, given
+/// whether the header bar is showing.
+///
+/// **Zero while the header bar is up, one pixel when it is not.** The engine's
+/// subsurface is opaque and, with no header bar, exactly as large as the window,
+/// so the compositor sees the GTK surface behind it as fully covered. A
+/// compositor sends no frame callbacks and no presentation feedback to a surface
+/// nobody can see (wlroots: `wl_surface.leave`, then silence), GDK's frame clock
+/// waits on a callback before it paints again, and the gate in
+/// [`crate::stacking_gate`] -- which lowers the canvas only once GTK has
+/// presented a frame -- waits for ever. Measured in a nested sway: the same
+/// binary lowers the canvas in 20 ms with a header bar and never does in
+/// fullscreen, or tiled with the title bar set to Hidden. One pixel of the
+/// window left uncovered is all the compositor needs to count it visible.
+/// ADR-056.
+pub const fn visibility_anchor_height(top_bars_revealed: bool) -> i32 {
+    if top_bars_revealed { 0 } else { 1 }
+}
+
+/// [`visibility_anchor_height`], unless `CORDIAL_VISIBILITY_ANCHOR=off`.
+///
+/// The switch is the control a before-and-after needs from one binary, the same
+/// role `CORDIAL_STACKING_GATE=off` plays for the gate. It is read each time so
+/// a test can flip it, and nothing but a measurement should set it.
+fn anchor_height(top_bars_revealed: bool) -> i32 {
+    match std::env::var("CORDIAL_VISIBILITY_ANCHOR").as_deref() {
+        Ok("off") | Ok("0") => 0,
+        _ => visibility_anchor_height(top_bars_revealed),
+    }
+}
+
+/// Put the one-pixel strip at the foot of the window, shown exactly while the
+/// header bar is not. See [`visibility_anchor_height`].
+///
+/// A bottom bar rather than a margin on the canvas because the toolbar view
+/// already owns the layout the engine's rectangle is read from
+/// (`content_rect`), so the content shrinks by the strip without a second
+/// source of truth. It paints black rather than the window's background: the
+/// background is near white under a light theme, and a white line under a game
+/// reads as a defect where a black one reads as the edge of the screen.
+fn install_visibility_anchor(toolbar: &adw::ToolbarView) {
+    let anchor = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    anchor.add_css_class("cordial-visibility-anchor");
+    anchor.set_height_request(visibility_anchor_height(false));
+    anchor.set_can_target(false);
+    anchor.set_visible(anchor_height(toolbar.reveals_top_bars()) > 0);
+    toolbar.add_bottom_bar(&anchor);
+    // Every writer of the reveal -- the fullscreen handler, the live
+    // title-bar setting, `with_canvas` -- goes through the property, so one
+    // notify keeps the strip right for all of them.
+    toolbar.connect_reveal_top_bars_notify(move |t| {
+        anchor.set_visible(anchor_height(t.reveals_top_bars()) > 0);
+    });
+}
+
 /// A first guess at the header bar's height, used only to pick the window's
 /// initial size so the *content* comes out at the requested resolution. The
 /// real height is read back from the widget tree once there is a layout — see
@@ -2818,5 +2884,29 @@ mod tests {
         // default size" rather than as an error — a silently ignored clamp.
         let (w, h) = fit_within((1280, 767), (64, 48));
         assert!(w > 0 && h > 0, "{w}x{h}");
+    }
+
+    /// The rule that keeps the host surface visible to the compositor. With the
+    /// header bar up the window is already partly uncovered by the engine's
+    /// subsurface, so it needs nothing; the moment there is no bar -- fullscreen,
+    /// or Title bar set to Hidden -- one pixel must stay uncovered, or sway sends
+    /// the surface no frame callback at all and the editor never appears.
+    #[test]
+    fn the_host_surface_keeps_one_pixel_exactly_when_there_is_no_header_bar() {
+        assert_eq!(visibility_anchor_height(true), 0);
+        assert_eq!(visibility_anchor_height(false), 1);
+    }
+
+    /// Control for the switch the measurement uses: with it off the window goes
+    /// back to being fully covered, which is the behaviour under test.
+    #[test]
+    fn the_control_switch_removes_the_pixel_in_every_state() {
+        // `set_var` is process-wide; every other test here leaves this one alone.
+        std::env::set_var("CORDIAL_VISIBILITY_ANCHOR", "off");
+        let off = (anchor_height(true), anchor_height(false));
+        std::env::remove_var("CORDIAL_VISIBILITY_ANCHOR");
+        let on = (anchor_height(true), anchor_height(false));
+        assert_eq!(off, (0, 0));
+        assert_eq!(on, (0, 1));
     }
 }

@@ -87,3 +87,43 @@ fn the_title_bar_can_change_while_the_game_window_is_up() {
     println!("title-bar live: default={ordinary} hidden=0 compact={compact} default-again={ordinary}");
     game.window().close();
 }
+
+/// The window keeps one row the engine's rectangle does not cover exactly when
+/// no header bar is showing (ADR-056). The content rectangle is what the engine
+/// is sized from, so it is the thing to measure: with the bar up it is the
+/// window less the bar, and with the bar gone it must be the window less one
+/// row, not the whole window. Without that row a compositor that culls hidden
+/// surfaces sends the GTK surface no frame callbacks, and the editor never
+/// shows. Launched with the default title bar, so every assertion is about a
+/// change.
+#[test]
+#[ignore = "requires a Wayland display; launch without CORDIAL_TITLE_BAR"]
+fn the_window_keeps_one_row_the_engine_does_not_cover_when_no_bar_shows() {
+    libadwaita::init().unwrap();
+    assert_eq!(TitleBar::from_env(), TitleBar::Default, "launch this test without CORDIAL_TITLE_BAR");
+    let game = HostWindow::with_canvas("Cordial visibility anchor fixture", 640, 480);
+    game.present();
+    game.wait_until_mapped(Duration::from_secs(5)).unwrap();
+    spin(600);
+
+    // With the bar up the bar itself is the uncovered part: nothing is added.
+    let bar = game.toolbar().top_bar_height();
+    assert!(bar > 0);
+    let (_, _, _, h_bar) = game.content_rect().unwrap();
+    assert_eq!(h_bar + bar, game.window().height(), "bar up: content plus bar is the window");
+
+    // With it gone, one row is left over.
+    game.set_title_bar(TitleBar::Hidden);
+    spin(800);
+    let (_, _, _, h_hidden) = game.content_rect().unwrap();
+    assert_eq!(h_hidden + 1, game.window().height(), "bar hidden: content plus one row is the window");
+
+    // And it goes again when the bar comes back, so the strip is not a
+    // permanent loss in the ordinary window.
+    game.set_title_bar(TitleBar::Default);
+    spin(800);
+    let (_, _, _, h_back) = game.content_rect().unwrap();
+    assert_eq!(h_back + bar, game.window().height(), "bar back: the strip is gone");
+    println!("visibility anchor: bar {bar}, content {h_bar} / {h_hidden} / {h_back}, window {}", game.window().height());
+    game.window().close();
+}
