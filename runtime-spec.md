@@ -1,11 +1,11 @@
 ---
 title: "`cordial.runtime/1`: the runtime spec"
-description: "The draft protocol between the Cordial launcher and a runtime that turns Play into a running Roblox client. Not implemented yet."
+description: "The draft protocol between the Cordial launcher and a runtime that turns Play into a running Roblox client. The wire types exist as a crate; no runtime speaks it yet."
 icon: "microchip"
 ---
 <Warning>
 
-**Draft v0.2, accepted as design in [ADR-052](/adr/ADR-052-the-runtime-spec) and reshaped by [ADR-055](/adr/ADR-055-the-launcher-and-the-runtime-are-two-programs). Nothing here is implemented.** No runtime speaks it, `cordial` has no code to load one, and no `--runtime-check` exists. Treat every section as a proposal. Sections marked **draft** are the least settled.
+**Draft v0.2, accepted as design in [ADR-052](/adr/ADR-052-the-runtime-spec) and reshaped by [ADR-055](/adr/ADR-055-the-launcher-and-the-runtime-are-two-programs). The message types and conformance cases are implemented in the [`cordial-protocol`](https://github.com/luohoa97/cordial/tree/main/crates/cordial-protocol) crate; nothing else is.** No runtime speaks it, `cordial` has no code to load one, and no `--runtime-check` exists. Treat every section as a proposal. Sections marked **draft** are the least settled.
 
 </Warning>
 
@@ -14,6 +14,8 @@ This page is for someone building a runtime. Cordial lists only its own built-in
 There are two programs. The **launcher** (`cordial-shell`) owns profiles, settings, the FastFlag layers, plugins and their grants, presence, the secret store, doctor, the report screen and the launcher's own window. A **runtime** (`cordial-run` today) is whatever turns Play into a running Roblox client: it loads the engine, owns the game window, reports what happened, and accepts a small closed set of requests. The protocol carries events and effects. It never carries channels or code.
 
 A port forks the runtime and nothing else. Why the line is here: [ADR-055](/adr/ADR-055-the-launcher-and-the-runtime-are-two-programs).
+
+**The reference implementation of the wire is a crate.** [`cordial-protocol`](https://github.com/luohoa97/cordial/tree/main/crates/cordial-protocol) holds the framing, version negotiation, typed messages, the manifest type and a conformance harness. It is `MIT OR Apache-2.0`, unlike the rest of Cordial, so a launcher or a runtime can depend on it; it needs only `serde` and `serde_json`. A runtime in any language can implement this page and the line vectors in the crate's `vectors/` directory without it. Where this page was ambiguous, [section 9](#9-where-the-draft-was-ambiguous) says which reading the crate takes.
 
 ## 1. Manifest
 
@@ -65,7 +67,7 @@ The launcher creates `<profile>/runtime/<session>/` with mode `0700` and passes 
 {"id":7,"m":"settings.set","p":{"throttle":"off"}}                       request
 {"id":7,"ok":true,"p":{"applied":["throttle"]}}                           reply
 {"id":7,"ok":false,"e":{"code":"unsupported","detail":"..."}}            error reply
-{"ev":"game.joined","n":41,"p":{}}                                        event, runtime to launcher
+{"ev":"game.joined","n":41,"p":{"place_id":1818,"at":1700000000000}}      event, runtime to launcher
 ```
 
 - Every request gets exactly one reply. A request with none within two seconds is treated by the launcher as `failed`, never as success.
@@ -81,7 +83,7 @@ The launcher sends `hello {protocol:{major:1,minor:0}, cordial:"0.25.0", session
 - A capability's version is an integer that is additive within a major: it never changes meaning or loses a field. Taking the lower of two is therefore always safe.
 - Runtime-private events are prefixed `x-<id>.`. Plugins never see them; they appear only in the report.
 - A reattaching launcher sends the same `hello` with `reattach:true`, and `state.get` then returns what it missed.
-- **Draft:** `cordial --runtime-check <manifest>` spawns the runtime, runs the handshake and the conformance cases from `cordial-protocol`, and prints doctor-shaped results.
+- **Draft:** `cordial --runtime-check <manifest>` spawns the runtime, runs the handshake and the conformance cases from `cordial-protocol`, and prints doctor-shaped results. The cases exist, in the crate's `conformance` feature, and can be run against a runtime over any socket today; the command that wraps them does not.
 
 ## 4. Lifecycle
 
@@ -103,7 +105,7 @@ Error codes: `unsupported`, `invalid`, `failed`, `busy`, and `not_ready` for a r
 | Capability | Carries | Required |
 |---|---|---|
 | `lifecycle` | `lifecycle.stop`, and the optional `lifecycle.ready`, `bye` and `health`. Nothing that starts a runtime: the launcher spawns it from the manifest | yes |
-| `events.core` | `game.joined {place_id, universe_id?, job_id?, at}`, `game.left {at}`, `session.state {signed_in, user_id?}`, `engine.version {version}`. Never the token | no |
+| `events.core` | `game.joined {place_id, universe_id?, job_id?, at}`, `game.left {at}` (`at` is Unix time in milliseconds), `session.state {signed_in, user_id?}`, `engine.version {version}`. Never the token | no |
 | `events.presence` | `game.presence`, the folded BloxstrapRPC payload | no |
 | `state` | `state.get`: the latest value of each event above, for a launcher that reattached | no |
 | `settings` | `settings.set` and `settings.get` over Cordial's **closed key set**. The runtime declares, per key, `live`, `next-launch` or `unsupported`. The reply names the keys applied and carries `notes` for anything applied with a caveat, so "applied" is never read as "you will hear it" | no |
@@ -140,3 +142,22 @@ The plugin host, grants and broker, hot-swap ([ADR-038](/adr/ADR-038-plugin-hot-
 Until it does, the version-0 surface keeps working: `<profile>/live/settings.sock` with its `set` and `get` verbs ([ADR-044](/adr/ADR-044-settings-reach-a-running-game)), the launch environment, and the engine log the shell reads for freeze recovery. It stays as an alias until the launcher no longer needs it, and nothing new is added to it.
 
 The portable core moves to the launcher's side of the line: `plugin_host.rs`, the flag layer resolver in `flags.rs`, `roblox_api.rs`. `client_settings.rs`, `flag_reapply.rs`, `bloxstrap_rpc.rs` and the log tail stay with the runtime, because they read the engine's own files. The order of the move is in [ADR-055](/adr/ADR-055-the-launcher-and-the-runtime-are-two-programs).
+
+## 9. Where the draft was ambiguous
+
+The crate had to pick a reading, and picked the simplest. If one is wrong, the spec changes and the crate follows.
+
+- **`hello` is an ordinary request** (`m: "hello"`, with an `id`), and the handshake answer is its reply payload. `reattach` is a field of the request. Any other request before it completes gets `not_ready`.
+- **`bye` is an event**, `{"ev":"bye","n":..,"p":{"reason":".."}}`, and the one event either side may send. `n` is the sender's.
+- **The event counter `n`** starts at 1 and increases by one for each event sent. It is assigned when an event leaves the queue, so a dropped event consumes no number and `events.dropped` is how a loss is reported. A runtime keeps one counter for its life, so a reattached launcher sees the numbers carry on.
+- **A frame is a request if it has `m`, an event if it has `ev`, a reply if it has `ok`.** One of the three, never two or none.
+- **The 64 KiB limit counts the line without its `\n`.** A line that ends at end-of-file with no newline was cut off and is discarded.
+- **What closes the connection and what does not.** A line that is not a frame at all closes it: not UTF-8, not JSON, not an object, over the limit, none or more than one of `m`/`ev`/`ok`, a field of the wrong type (an `id` that is not a non-negative integer, a code outside the closed set). A well-formed frame carrying an out-of-range value is dropped and counted and the connection stays: a string over the bound, a typed payload that breaks its rules.
+- **The 512-byte string bound applies to every string and object key** in a message. The one exception is `root` in `assets.overlay.set`, which is a path and may be 4,096 bytes.
+- **`settings.set`** takes the key-to-value object itself as `p`, with no wrapper, and replies `{applied, ignored?, notes?}`. A known key with an unusable value fails the whole message with `invalid`; an unknown key is named in `ignored` and the rest apply. **`settings.get`** replies `{values, declared}`, where `declared` maps each key to `live`, `next-launch` or `unsupported`: that is where the per-key declaration travels. The declaration for `flags` (`{families, allowlist}`) has no stated carrier, so the crate leaves it untyped.
+- **`flags.live`** takes `{flags: {name: value}}` with `DF*` names and scalar values, and replies `{applied, ignored}`. **`flags.apply`**'s `sha256` is 64 lowercase hex digits.
+- **`state.get`** replies with one optional field per event: `game_joined`, `game_left`, `session_state`, `engine_version`, `game_presence`, each absent until it has happened.
+- **`game.presence`** carries only the fields the game set: `details`, `state`, `start`, `end`, `large_image_key`, `large_text`, `small_image_key`, `small_text`. An empty string is the game clearing one.
+- **`diagnostics.get`** replies `{lines: [..]}`. **`lifecycle.stop`** takes `{grace_ms}`. Replies that carry nothing may omit `p` or send `{}`.
+- **The handshake reply requires `client`**, and `runtime.id` must be non-empty. A runtime must offer `lifecycle`, in the manifest and in the handshake.
+- **Manifest placeholders** expand in one left-to-right pass, so a substituted value is never expanded again; a `{name}` that is not one of the five is refused when the manifest is read; a known placeholder with no value (`{join_url}` with nothing to join) is an error, not an empty string, and the launcher decides what that means. `launch.exec[0]` is relative with no `..`, and `id` is a single path component of letters, digits, `.`, `_` and `-`.

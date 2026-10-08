@@ -1,7 +1,7 @@
 ---
 title: "ADR-055: The launcher and the runtime are two programs, and plugins stay in the launcher"
 ---
-**Status:** proposed; implementation not started.
+**Status:** proposed. The `cordial-protocol` crate and the `live_wire` move (steps 2 and 3 of the plan) are done; nothing else is implemented.
 **Date:** 2026-10-08
 **Supersedes:** [ADR-052](/adr/ADR-052-the-runtime-spec) decision 4 ("the built-in Android runtime is the first implementation, in-process") and `docs/runtime-spec.md` section 8 as first written. The rest of ADR-052, including the listing policy, stands.
 **Amends:** [ADR-038](/adr/ADR-038-plugin-hot-swap) on *where* the reconciler runs (the launcher, not the client); its reasoning about polling and about never restarting a plugin for a re-grant stands. [ADR-044](/adr/ADR-044-settings-reach-a-running-game): the live or next-launch classification becomes a per-runtime declaration, with today's table as the built-in runtime's.
@@ -148,21 +148,45 @@ codec, the manifest type, the version negotiation and a conformance harness that
 both sides run against shared line vectors. `live_wire.rs` moves into it with its
 tests. Both the launcher and `cordial-run` depend on it.
 
-It is licensed **GPL-3.0-or-later like the rest of the workspace**. The rule in
-`CONTRIBUTING.md` ("The licence is settled") declines a permissive carve-out,
-and a crate is not exempt from it. **This has a cost this ADR does not wave
-away:** ADR-052 rejected "a trait with no wire form" partly because it forces a
-runtime into Cordial's licence, and a GPL crate does the same to a Rust runtime
-that links it. What keeps the contract neutral is that the wire is plain JSON
-lines specified in `docs/runtime-spec.md`, so a runtime in any language, under
-any licence, implements it without the crate. Whether the line vectors may be
-taken under a permissive licence is the maintainer's call and is **not decided
-here**. Publishing to crates.io waits for the split to land; only
-`cordial-protocol` would be published, and every other crate stays
-`publish = false` because each links the AOSP linker or GTK. No `NOTICE` or
-`THIRD-PARTY-NOTICES.md` entry is needed for a first-party GPL crate. (`NOTICE`
-says "See COPYING", a file that does not exist; the repository's text is
-`LICENSE`, corrected in the same change as this ADR.)
+It is licensed **`MIT OR Apache-2.0`**, and it is the only part of Cordial that
+is. The maintainer decided this on 2026-10-08, after this ADR was first written
+with the crate under the workspace's GPL-3.0-or-later. The reasoning that
+decided it is the one the first draft left as a cost: ADR-052 rejected "a trait
+with no wire form" partly because it forces a runtime into Cordial's licence,
+and a GPL crate does the same to a Rust runtime or launcher that links it. The
+crate is the interface other programs implement, so it has to be something they
+can depend on whatever their own licence is. What it contains is the message
+types, the codec, the manifest type, the version negotiation and the conformance
+cases, which are an interface and its tests and not the client. The wire itself
+stays plain JSON lines specified in `docs/runtime-spec.md`, so a runtime in any
+language implements it without the crate.
+
+**Why this is not the relicensing `CONTRIBUTING.md` declines.** The rule in "The
+licence is settled" refuses requests to relicense Cordial, and it still does. It
+now names this crate as the single exception, with the reason, and says
+contributions to `crates/cordial-protocol` are under the crate's licence. The
+sole author of the code that moved in (`live_wire.rs`, which the crate was built
+from) is the maintainer, who made the decision, so nobody else's grant is
+overridden. A pull request to that directory is accepted under `MIT OR
+Apache-2.0` and a contributor is told so before they write it.
+
+**What the permissive crate may not become.** It stays small and pure:
+`serde` and `serde_json` only, no native code, nothing that links the engine,
+the AOSP linker or GTK. Anything that needs those belongs in a GPL crate that
+depends on it, never the other way round; a permissive crate that depended on a
+GPL one could not be published. The two settings types it took from the
+launcher (`TitleBar`, `FrameRateLimit`) came with the methods the Settings rows
+call, which are pure data.
+
+**Publishing.** `crates.io` publication is the maintainer's call and is not done
+here; the crate is `publish = true` at version 0.1.0, independent of Cordial's
+version, and `cargo publish --dry-run` passes. It is meant to be published once
+the split has landed, so the first public version is not immediately wrong.
+Every other crate stays `publish = false`, because each links the AOSP linker or
+GTK. `NOTICE` and `THIRD-PARTY-NOTICES.md` say the exception exists and where
+its licence texts are (`crates/cordial-protocol/LICENSE-MIT` and
+`LICENSE-APACHE`). (`NOTICE` said "See COPYING", a file that does not exist; the
+repository's text is `LICENSE`, corrected in the same change as this ADR.)
 
 ## Order of work
 
@@ -172,11 +196,14 @@ keeps the single-binary path working; the numbered plan is in the review note.
 boxes) touches `window.rs`, the start or publish sites in `load.rs`, the native
 shims or the startup path.** The crate skeleton and the `live_wire` move are
 the only code that qualifies, and `flags.rs`, `profile.rs` and the plugin host
-wait.
+wait. Both are done: the launcher's live-settings client (`live.rs`) builds and
+parses messages with the crate's own types and its bounded line reader, and
+`cordial_shell::live_wire` is a set of `pub use` re-exports so the server side in
+`cordial-runtime` is unchanged until that crate depends on `cordial-protocol`
+itself, a later step.
 
 ## What is not decided
 
-- Whether the line vectors are permissively licensed (above).
 - Where the session cookie lives for a third-party runtime. The built-in
   runtime reads the secret store itself through `cordial_shell::secrets`
   (re-exported in `cordial-runtime/src/secrets.rs`); `session.vault` is deferred
