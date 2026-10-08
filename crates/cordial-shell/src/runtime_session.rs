@@ -619,6 +619,11 @@ mod tests {
     /// A runtime that answers `hello` with `reply_line` (the id filled in) and
     /// then says nothing, so what is under test is the launcher.
     fn answering(dir: &Path, reply: impl FnOnce(u64) -> String + Send + 'static) -> std::thread::JoinHandle<()> {
+        answering_for(dir, Duration::from_millis(400), reply)
+    }
+
+    /// As [`answering`], holding the connection open for `hold` afterwards.
+    fn answering_for(dir: &Path, hold: Duration, reply: impl FnOnce(u64) -> String + Send + 'static) -> std::thread::JoinHandle<()> {
         let listener: UnixListener = socket::bind(dir).unwrap();
         std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
@@ -630,7 +635,7 @@ mod tests {
             };
             (&stream).write_all(reply(id).as_bytes()).unwrap();
             // Held open until the launcher is done with it.
-            std::thread::sleep(Duration::from_millis(400));
+            std::thread::sleep(hold);
         })
     }
 
@@ -696,7 +701,9 @@ mod tests {
     #[test]
     fn a_request_with_no_reply_is_an_error_and_not_a_success() {
         let dir = scratch("noreply");
-        let server = answering(&dir, |id| hello_reply(id, 1, BUILTIN_RUNTIME_ID));
+        // Held open past the two seconds, or what is observed is the connection
+        // closing and not a reply that never came.
+        let server = answering_for(&dir, Duration::from_millis(3000), |id| hello_reply(id, 1, BUILTIN_RUNTIME_ID));
         let link = Link::open(&dir, OpenOptions::new("abcd1234")).unwrap();
         // The runtime above says nothing else, and `lifecycle` does not offer
         // settings, so ask for something it was never going to answer.
