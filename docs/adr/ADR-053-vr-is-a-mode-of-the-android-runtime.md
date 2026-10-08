@@ -132,7 +132,7 @@ hands-on session is noted under "Not established" below.
    more step to start a VR session; the readiness reasons are unchanged.
 
 8. **VR is a Cargo feature, `cordial-runtime/vr`, off by default and on in
-   every package.** dynarmic needs Boost's headers, and the guest crate's
+   every package recipe in this repository.** dynarmic needs Boost's headers, and the guest crate's
    tests an arm64-capable clang, `lld` and `llvm`; with the translator in
    every build, a plain `cargo build` from a checkout needed all of them.
    Without the feature `crates/cordial-guest` compiles to nothing, the
@@ -144,6 +144,9 @@ hands-on session is noted under "Not established" below.
    both binaries come from one `cargo build` in every package, and a process
    spawn before the window opens would cost every launch for an answer fixed
    when it was built.
+   The nixpkgs draft in `packaging/nix/` pins v0.23.2, a tag that predates the
+   feature, so it names nothing; the bump to a later tag adds
+   `cordial-runtime/vr` to its `buildFeatures` and `boost` to its inputs.
 
 ## When Roblox stops accepting the build
 

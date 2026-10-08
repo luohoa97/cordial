@@ -79,6 +79,11 @@ rustPlatform.buildRustPackage.override { stdenv = clangStdenv; } (finalAttrs: {
   # cordial-runtime is cfg'd out, the linker drops webview::open, and the
   # build succeeds with no WebKitGTK linked. It is `buildFeatures`;
   # `cargoBuildFeatures` is overwritten by buildRustPackage.
+  #
+  # Not `cordial-runtime/vr` (Play in VR, ADR-053): this pins v0.23.2, which
+  # predates that feature. When the pin moves to a tag that has it, add the
+  # feature here and `boost` to the inputs; the flake.nix in the repository
+  # already does.
   buildFeatures = [
     "cordial-shell/webview"
     "cordial-runtime/webview"

@@ -343,6 +343,12 @@ fn start(app: &libadwaita::Application, shell: &Rc<RefCell<Option<window::Shell>
 /// `cordial --import-quest-apk FILE`. Exit 0 when filed (or already held), 1
 /// when refused, 2 on a bad command line.
 fn import_quest_apk(flags: &[String]) -> u8 {
+    // Filing a Quest build in a build that cannot run it would only leave a
+    // copy nothing reads.
+    if !cordial_shell::vr::HOST_SUPPORTED {
+        eprintln!("cordial: this build has no VR support, so there is nowhere to use a Quest build");
+        return 1;
+    }
     let Some(path) = flags.iter().skip_while(|a| *a != "--import-quest-apk").nth(1) else {
         eprintln!("cordial: --import-quest-apk needs a FILE");
         return 2;

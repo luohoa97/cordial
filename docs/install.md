@@ -264,7 +264,9 @@ You need:
 - **Boost's headers**, only for Play in VR, which a plain `cargo build` leaves
   out: build with `--features cordial-runtime/vr` and install `boost-devel`,
   `libboost-dev` or `boost`. It is for dynarmic, the VR mode's translator, which
-  `--recursive` fetches. Every package has VR turned on.
+  `--recursive` fetches. Every package built from this repository's recipes has
+  VR turned on; the unsubmitted nixpkgs draft in `packaging/nix/` pins v0.23.2,
+  which predates the feature, and does not name it.
 - **PipeWire's development headers** (`pipewire-devel`, `libpipewire-0.3-dev`),
   optional. With them the build includes the OpenSL ES audio backend; without
   them there is no sound and everything else works. `libpipewire-0.3.so` is

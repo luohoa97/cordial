@@ -439,6 +439,12 @@ jobs:
     container: archlinux:base-devel
     timeout-minutes: 75
     steps:
+      # Before the checkout, not with the other packages below: `archlinux:
+      # base-devel` carries no git, and without one `actions/checkout` falls
+      # back to an archive with no `.git`, so the `git branch` in the build
+      # step has no repository to name and fails with "not a git repository".
+      - name: Install git for the checkout
+        run: pacman -Syu --noconfirm --needed git
       - uses: actions/checkout@v4
         with:
           # Whole history and tags: off a tag the package is built from this

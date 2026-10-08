@@ -1150,6 +1150,12 @@ fn try_launch_tracked(
     // getting one -- applies to it. Re-checked here rather than trusted from
     // the button, because the button's state was gathered when it was drawn.
     if mode == Mode::Vr {
+        // A build without the `vr` feature has no Settings page to reach this
+        // from, but `win.launch-vr` is still a named action, so say why rather
+        // than start a client that would refuse `--guest-arm64`.
+        if !cordial_shell::vr::HOST_SUPPORTED {
+            return Outcome::Failed("This build of Cordial has no VR support.".into());
+        }
         let readiness = cordial_shell::vr::Readiness::gather(config.borrow().vr_openxr_runtime.as_deref());
         if !readiness.ready() {
             return Outcome::Failed(readiness.missing().join("\n\n"));
