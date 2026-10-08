@@ -597,11 +597,17 @@ collide on that lock and read the refusal as a bug in whatever they were
 working on:
 
 ```bash
-XDG_DATA_HOME=~/.cache/cordial-agent-<yours> just client --run 30
+XDG_DATA_HOME=~/.cache/cordial-agent-<yours>/data \
+XDG_CACHE_HOME=~/.cache/cordial-agent-<yours>/cache \
+XDG_CONFIG_HOME=~/.cache/cordial-agent-<yours>/config just client --run 30
 ```
 
 Both the shell's profile root and the client's data directory derive from
-`XDG_DATA_HOME`, so that redirects the lot. Use a path on disk — `/tmp` is tmpfs
+`XDG_DATA_HOME`, but since 0.25.0 that no longer redirects the lot: the shell's
+first launch moves an old build store from `$XDG_CACHE_HOME/cordial/builds`
+into `$XDG_DATA_HOME/cordial/builds` (ADR-054). On 2026-10-08 an agent that
+redirected only `XDG_DATA_HOME` had the host's real store moved into its scratch
+directory, then deleted it with the rest of its scratch. Redirect all three. Use a path on disk — `/tmp` is tmpfs
 and comes out of RAM — and delete it when you are done. `CORDIAL_PROFILE_ROOT`
 redirects `profile.rs` only, which is what the unit tests use; it does **not**
 move the client, which still hardcodes its own path.
