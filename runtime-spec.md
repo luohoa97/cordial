@@ -1,11 +1,11 @@
 ---
 title: "`cordial.runtime/1`: the runtime spec"
-description: "The draft protocol between the Cordial launcher and a runtime that turns Play into a running Roblox client. The wire types exist as a crate; no runtime speaks it yet."
+description: "The protocol between the Cordial launcher and a runtime that turns Play into a running Roblox client. The built-in runtime and the launcher speak it as their only channel; no other runtime exists."
 icon: "microchip"
 ---
 <Warning>
 
-**Draft v0.2, accepted as design in [ADR-052](/adr/ADR-052-the-runtime-spec) and reshaped by [ADR-055](/adr/ADR-055-the-launcher-and-the-runtime-are-two-programs). The message types and conformance cases are implemented in the [`cordial-protocol`](https://github.com/luohoa97/cordial/tree/main/crates/cordial-protocol) crate; nothing else is.** No runtime speaks it, `cordial` has no code to load one, and no `--runtime-check` exists. Treat every section as a proposal. Sections marked **draft** are the least settled.
+**Draft v0.3, accepted as design in [ADR-052](/adr/ADR-052-the-runtime-spec) and reshaped by [ADR-055](/adr/ADR-055-the-launcher-and-the-runtime-are-two-programs).** The message types and conformance cases are in the [`cordial-protocol`](https://github.com/luohoa97/cordial/tree/main/crates/cordial-protocol) crate. **The built-in runtime, `cordial-run`, serves this protocol and the launcher speaks it, as the only channel between them** (section 8 says what each side does and does not do yet). No other runtime exists, `cordial` has no code to load one from a manifest, and no `--runtime-check` command exists; the conformance harness runs against a listening runtime through the crate's `check_runtime` example. Treat the sections that no running code exercises as proposals. Sections marked **draft** are the least settled.
 
 </Warning>
 
@@ -48,7 +48,7 @@ A port forks the runtime and nothing else. Why the line is here: [ADR-055](/adr/
 
 <Note>
 
-The built-in runtime is the exception in version 1. It keeps the argv and about fifteen environment variables the launcher passes today, and the profile lock descriptor is inherited. A third-party runtime gets only the placeholders above; its settings arrive over the socket.
+The built-in runtime is the exception in version 1. It keeps the argv and about fifteen environment variables the launcher passes today, and the profile lock descriptor is inherited. The one thing it is told that is a path the launcher chose is the session directory, in `CORDIAL_SESSION_DIR`, which is what `{session_dir}` is for a manifest-launched runtime. A third-party runtime gets only the placeholders above; its settings arrive over the socket.
 
 </Note>
 
@@ -60,7 +60,7 @@ The launcher creates `<profile>/runtime/<session>/` with mode `0700` and passes 
 
 - **One controller at a time.** A new connection that completes a handshake replaces the old one, which is sent `bye {reason:"superseded"}` (either side may send `bye` before closing).
 - **Socket paths are short.** `sun_path` holds 108 bytes and a profile directory under a Flatpak is already long. The launcher keeps `<session>` to eight characters, and a runtime that finds `{socket}` too long binds through `/proc/self/fd/<dirfd>/ctl.sock` instead.
-- **Closing the socket does not stop the runtime.** Closing the launcher's window while a game runs is the ordinary case ([ADR-012](/adr/ADR-012-profiles-and-instances), [ADR-031](/adr/ADR-031-the-launcher-outlives-its-window)). On EOF the runtime keeps the game running, keeps listening, and expects a controller to reattach. It must also survive a closed stdout and stderr, which the launcher pipes for its crash page.
+- **Closing the socket does not stop the runtime.** Closing the launcher's window while a game runs is the ordinary case ([ADR-012](/adr/ADR-012-profiles-and-instances), [ADR-031](/adr/ADR-031-the-launcher-outlives-its-window)). On EOF the runtime keeps the game running, keeps listening, and expects a controller to reattach. It must also survive a closed stdout and stderr, which the launcher pipes for its crash page. **The built-in runtime survives the socket closing and does not yet survive its stdout closing**: a launcher that crashes still takes the client with it through that pipe, and only a launcher that is restarted while the first one's pipe is open, or a client started by hand with its output elsewhere, can be reattached to.
 - **A line that does not parse closes the connection**, never the runtime.
 
 ```
@@ -91,7 +91,7 @@ The launcher sends `hello {protocol:{major:1,minor:0}, cordial:"0.25.0", session
 |---|---|
 | Spawn | The launcher claims the profile lock ([ADR-012](/adr/ADR-012-profiles-and-instances)), creates the session directory and starts the runtime. The child inherits the lock descriptor and releases it by exiting, however it exits. |
 | Ready | The handshake completing is the readiness signal: the runtime is up and answering. `lifecycle.ready` is an optional event meaning the engine itself is up. The built-in runtime publishes none today, so the launcher never waits for it. |
-| Run | The launcher pushes `settings.set` with every value it holds, then `flags.apply`, and events begin to flow. |
+| Run | The launcher pushes `settings.set` with every value it holds, then `flags.apply`, and events begin to flow. The built-in runtime has its settings in its launch environment already, so the launcher asks `settings.get` first and sends only the values that differ from what it reports in force. |
 | Stop | `lifecycle.stop {grace_ms}` asks for a clean exit. The launcher sends SIGTERM after the grace, and SIGKILL two seconds later. |
 | Exit, crash | **The launcher decides these, from the child's wait status.** A crashed runtime cannot report its own crash, so `lifecycle.exit` does not exist. A runtime that exits cleanly may send `bye {reason}` first and the launcher records it. The crash page quotes the captured stderr tail and names the runtime id and version. |
 | Restart | A launcher policy, not a message: stop, then a new spawn with a new session. The signed-in startup freeze recovery is the existing example, and today the shell reads the engine log for it. A runtime may report `health {state:"stalled", what}` so the launcher need not read its log. |
@@ -137,11 +137,16 @@ The plugin host, grants and broker, hot-swap ([ADR-038](/adr/ADR-038-plugin-hot-
 
 ## 8. The built-in Android runtime
 
-`cordial-run` is a separate process today and stays one. It implements this spec behind the same socket, so the built-in runtime is the conformance suite for everything above, and the launcher has one code path for it and for any other runtime.
+`cordial-run` is a separate process and stays one. It serves this spec on `<profile>/runtime/<session>/ctl.sock`, behind the same socket a third-party runtime would use, so the launcher has one code path for it and for any other, and the built-in runtime is the conformance suite for everything above. The version-0 surface, `<profile>/live/settings.sock` with its `set` and `get` verbs ([ADR-044](/adr/ADR-044-settings-reach-a-running-game)), is gone: nothing in the repository used it after the launcher moved over.
 
-Until it does, the version-0 surface keeps working: `<profile>/live/settings.sock` with its `set` and `get` verbs ([ADR-044](/adr/ADR-044-settings-reach-a-running-game)), the launch environment, and the engine log the shell reads for freeze recovery. It stays as an alias until the launcher no longer needs it, and nothing new is added to it.
+**What it offers:** `lifecycle` (`lifecycle.stop`, mapped to the quit path the window's close button uses; the launcher's `SIGTERM` after the grace lands on the same flag), `events.core` (`game.joined`, `game.left`, `session.state`, `engine.version`), `events.presence`, `state` and `settings`. **What it does not:** `flags`, `assets.overlay` and `diagnostics`, which no code behind it implements, so the handshake leaves them out and a request for one is `unsupported`; `lifecycle.ready` and `health`, which nothing publishes.
 
-The portable core moves to the launcher's side of the line: `plugin_host.rs`, the flag layer resolver in `flags.rs`, `roblox_api.rs`. `client_settings.rs`, `flag_reapply.rs`, `bloxstrap_rpc.rs` and the log tail stay with the runtime, because they read the engine's own files. The order of the move is in [ADR-055](/adr/ADR-055-the-launcher-and-the-runtime-are-two-programs).
+- `session.state` is sent when a join names a user, as `{signed_in:true, user_id}`. The runtime learns that somebody is signed in from the join line in the engine's log and has no source for being signed out, so it never claims it.
+- `settings.get` declares the ten keys the wire carries as `live`, and `graphics`, `graphics_optimization_mode`, `present_mode`, `mangohud`, `vkbasalt` and `unpacked_plugins` as `next-launch`. Those six are launch-environment settings the process reads once. They are not in the wire's closed key set, so `settings.set` cannot carry them and reports one in `ignored`; the declaration exists so the launcher can say "next launch" from the runtime's word.
+- The launcher adopts a runtime it did not start: on startup it looks for `runtime/*/ctl.sock` under every profile, says `hello {reattach:true}` and takes control. That is what reattaching means for a launcher process that was restarted. A launcher whose window merely closed is the same process holding the same connection, and nothing is found or needed.
+- The launch environment, the engine log the launcher reads for freeze recovery, and `devctl` are not part of the protocol and are unchanged.
+
+The portable core moves to the launcher's side of the line: `plugin_host.rs`, the flag layer resolver in `flags.rs`, `roblox_api.rs`. `client_settings.rs`, `flag_reapply.rs`, `bloxstrap_rpc.rs` and the log tail stay with the runtime, because they read the engine's own files. The order of the move is in [ADR-055](/adr/ADR-055-the-launcher-and-the-runtime-are-two-programs); the plugin host is the next step and is not done.
 
 ## 9. Where the draft was ambiguous
 
@@ -161,3 +166,6 @@ The crate had to pick a reading, and picked the simplest. If one is wrong, the s
 - **`diagnostics.get`** replies `{lines: [..]}`. **`lifecycle.stop`** takes `{grace_ms}`. Replies that carry nothing may omit `p` or send `{}`.
 - **The handshake reply requires `client`**, and `runtime.id` must be non-empty. A runtime must offer `lifecycle`, in the manifest and in the handshake.
 - **Manifest placeholders** expand in one left-to-right pass, so a substituted value is never expanded again; a `{name}` that is not one of the five is refused when the manifest is read; a known placeholder with no value (`{join_url}` with nothing to join) is an error, not an empty string, and the launcher decides what that means. `launch.exec[0]` is relative with no `..`, and `id` is a single path component of letters, digits, `.`, `_` and `-`.
+- **A launcher does not fight for control.** A `bye {reason:"superseded"}` means a newer controller took over; the launcher that received it stops sending and does not reconnect, because two controllers each replacing the other is not control.
+- **The runtime is asked what it runs, not assumed.** A connecting launcher reads `settings.get`'s `values` as what is in force and diffs its wanted settings against that, so a value the runtime already holds is not sent again and a runtime that was started with different ones is corrected.
+- **Events sent while no controller is attached are not queued.** The runtime keeps the latest value of each in the snapshot `state.get` returns and lets the events go, and the counter `n` carries on across the gap. A launcher cannot know the first number it will see, so it asks `state.get` on every attach and does not infer what it missed from `n`; a gap *within* one connection (a number skipped) is how it learns the stream lost something.
