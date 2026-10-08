@@ -1500,6 +1500,12 @@ fn respond(id: u64, result: Result<(), String>) -> Response {
 /// caller that wants to notice can. There is nothing to fail: publishing is
 /// something the client does on its way past.
 pub fn publish_core(name: &'static str, payload: serde_json::Value) -> Delivered {
+    // The launcher hears the same facts the plugins do, over `cordial.runtime/1`
+    // (ADR-055). Mirrored here because every producer already comes through this
+    // function, so what the launcher is told cannot drift from what a plugin is.
+    // It never waits: the event goes into a bounded queue and a thread of its
+    // own writes it.
+    crate::control::mirror_core_event(name, &payload);
     let Some(needed) = core_events::capability_for(name) else {
         println!("  plugin core event {name:?} is not in the capability table, so nobody receives it");
         return Delivered::default();

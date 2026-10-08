@@ -545,6 +545,10 @@ pub fn poll() {
                     // agree.
                     state.joined_at = Some(now_secs());
                 }
+                // Told to the launcher from the same update that wrote the state,
+                // so the snapshot it can ask for and the event it hears are one
+                // thing seen twice (ADR-055).
+                crate::control::game_joined(&session_state());
                 crate::plugin_host::publish_core(
                     cordial_plugins::core_events::GAME_PRESENCE,
                     presence_payload(),
@@ -578,6 +582,7 @@ pub fn poll() {
                 // The experience's name and creator go with the experience too.
                 *DEFAULTS.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 STATE.lock().unwrap_or_else(|e| e.into_inner()).left();
+                crate::control::game_left();
                 crate::plugin_host::publish_core(
                     cordial_plugins::core_events::GAME_PRESENCE,
                     serde_json::json!({}),
