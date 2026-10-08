@@ -332,6 +332,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cordial-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cordial-runtime"
 version = "0.25.0"
 dependencies = [

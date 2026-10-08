@@ -1,0 +1,45 @@
+[package]
+name = "cordial-protocol"
+description = "The wire protocol between the Cordial launcher and a Roblox runtime: JSON-line framing, handshake, typed messages, runtime manifest and conformance vectors"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+# Not `license.workspace = true`. The rest of Cordial is GPL-3.0-or-later; this
+# one crate is the interface other launchers and runtimes implement, so it is
+# permissive on purpose. CONTRIBUTING.md ("The licence is settled") names it as
+# the single exception, and ADR-055 records the decision.
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/luohoa97/cordial"
+readme = "README.md"
+keywords = ["cordial", "roblox", "protocol", "ipc", "json-lines"]
+categories = ["network-programming", "encoding"]
+publish = true
+# `cargo package` keeps what is listed here and nothing else: the crate's own
+# sources, the shared vectors, and both licence files.
+include = [
+    "src/**",
+    "vectors/**",
+    "tests/**",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# The shared accept and reject vectors and a harness either side can run against
+# a peer. Off by default so a runtime that only wants the types does not carry
+# test fixtures.
+conformance = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[test]]
+name = "conformance"
+required-features = ["conformance"]

@@ -1,0 +1,36 @@
+{"name":"an empty line","line":"","error":"not_json"}
+{"name":"not JSON","line":"this is not json","error":"not_json"}
+{"name":"a JSON array","line":"[1,2,3]","error":"not_object"}
+{"name":"a JSON number","line":"7","error":"not_object"}
+{"name":"a JSON string","line":"\"hello\"","error":"not_object"}
+{"name":"an empty object","line":"{}","error":"ambiguous"}
+{"name":"an id and nothing else","line":"{\"id\":1}","error":"ambiguous"}
+{"name":"a request that is also an event","line":"{\"id\":1,\"m\":\"a\",\"ev\":\"b\",\"n\":1}","error":"ambiguous"}
+{"name":"a request that is also a reply","line":"{\"id\":1,\"m\":\"a\",\"ok\":true}","error":"ambiguous"}
+{"name":"a negative id","line":"{\"id\":-1,\"m\":\"state.get\"}","error":"field"}
+{"name":"a fractional id","line":"{\"id\":1.5,\"m\":\"state.get\"}","error":"field"}
+{"name":"a string id","line":"{\"id\":\"1\",\"m\":\"state.get\"}","error":"field"}
+{"name":"an id out of range","line":"{\"id\":99999999999999999999,\"m\":\"state.get\"}","error":"field"}
+{"name":"a request with no id","line":"{\"m\":\"state.get\"}","error":"field"}
+{"name":"an event with no counter","line":"{\"ev\":\"game.left\",\"p\":{\"at\":1}}","error":"field"}
+{"name":"an event with a string counter","line":"{\"ev\":\"game.left\",\"n\":\"1\",\"p\":{\"at\":1}}","error":"field"}
+{"name":"an error reply with no e","line":"{\"id\":1,\"ok\":false}","error":"field"}
+{"name":"an ok reply that carries an error","line":"{\"id\":1,\"ok\":true,\"e\":{\"code\":\"failed\"}}","error":"field"}
+{"name":"an error code outside the closed set","line":"{\"id\":1,\"ok\":false,\"e\":{\"code\":\"teapot\",\"detail\":\"\"}}","error":"field"}
+{"name":"ok that is not a boolean","line":"{\"id\":1,\"ok\":\"yes\"}","error":"field"}
+{"name":"game.joined with a string place_id","line":"{\"ev\":\"game.joined\",\"n\":1,\"p\":{\"place_id\":\"1818\",\"at\":1}}","error":"payload"}
+{"name":"game.joined with a negative place_id","line":"{\"ev\":\"game.joined\",\"n\":1,\"p\":{\"place_id\":-1,\"at\":1}}","error":"payload"}
+{"name":"game.joined with no place_id (the spec example abbreviated it away)","line":"{\"ev\":\"game.joined\",\"n\":1,\"p\":{}}","error":"payload"}
+{"name":"session.state with a string for signed_in","line":"{\"ev\":\"session.state\",\"n\":1,\"p\":{\"signed_in\":\"yes\"}}","error":"payload"}
+{"name":"health outside the closed set","line":"{\"ev\":\"health\",\"n\":1,\"p\":{\"state\":\"on fire\",\"what\":\"x\"}}","error":"payload"}
+{"name":"settings.set with a value outside the set","line":"{\"id\":1,\"m\":\"settings.set\",\"p\":{\"throttle\":\"sometimes\"}}","error":"payload"}
+{"name":"settings.set with a value of the wrong type","line":"{\"id\":1,\"m\":\"settings.set\",\"p\":{\"close_on_leave\":\"yes\"}}","error":"payload"}
+{"name":"settings.set whose payload is not an object","line":"{\"id\":1,\"m\":\"settings.set\",\"p\":[\"throttle\"]}","error":"payload"}
+{"name":"flags.apply with a short digest","line":"{\"id\":1,\"m\":\"flags.apply\",\"p\":{\"sha256\":\"abc\",\"count\":1}}","error":"payload"}
+{"name":"flags.live with a static flag name","line":"{\"id\":1,\"m\":\"flags.live\",\"p\":{\"flags\":{\"FIntStatic\":1}}}","error":"payload"}
+{"name":"flags.live with a list for a value","line":"{\"id\":1,\"m\":\"flags.live\",\"p\":{\"flags\":{\"DFIntX\":[1]}}}","error":"payload"}
+{"name":"assets.overlay.set with a relative root","line":"{\"id\":1,\"m\":\"assets.overlay.set\",\"p\":{\"plugin\":\"p\",\"root\":\"assets\"}}","error":"payload"}
+{"name":"assets.overlay.set that climbs out","line":"{\"id\":1,\"m\":\"assets.overlay.set\",\"p\":{\"plugin\":\"p\",\"root\":\"/a/../etc\"}}","error":"payload"}
+{"name":"hello with a string major","line":"{\"id\":1,\"m\":\"hello\",\"p\":{\"protocol\":{\"major\":\"1\",\"minor\":0},\"cordial\":\"0\",\"session\":\"s\",\"caps\":{}}}","error":"payload"}
+{"name":"hello with a capability version that is not an integer","line":"{\"id\":1,\"m\":\"hello\",\"p\":{\"protocol\":{\"major\":1,\"minor\":0},\"cordial\":\"0\",\"session\":\"s\",\"caps\":{\"lifecycle\":\"one\"}}}","error":"payload"}
+{"name":"lifecycle.stop with no grace","line":"{\"id\":1,\"m\":\"lifecycle.stop\",\"p\":{}}","error":"payload"}

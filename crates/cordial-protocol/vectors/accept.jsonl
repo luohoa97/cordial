@@ -1,0 +1,31 @@
+{"name":"request: settings.set from the spec","line":"{\"id\":7,\"m\":\"settings.set\",\"p\":{\"throttle\":\"off\"}}","kind":"request","verb":"settings.set"}
+{"name":"reply: ok from the spec","line":"{\"id\":7,\"ok\":true,\"p\":{\"applied\":[\"throttle\"]}}","kind":"reply"}
+{"name":"reply: error from the spec","line":"{\"id\":7,\"ok\":false,\"e\":{\"code\":\"unsupported\",\"detail\":\"...\"}}","kind":"error"}
+{"name":"event: game.joined","line":"{\"ev\":\"game.joined\",\"n\":41,\"p\":{\"place_id\":1818,\"universe_id\":13058,\"job_id\":\"abc\",\"at\":1700000000000}}","kind":"event","verb":"game.joined"}
+{"name":"event: game.joined with only the required fields","line":"{\"ev\":\"game.joined\",\"n\":1,\"p\":{\"place_id\":1818,\"at\":1}}","kind":"event","verb":"game.joined"}
+{"name":"event: game.left","line":"{\"ev\":\"game.left\",\"n\":2,\"p\":{\"at\":1700000000500}}","kind":"event","verb":"game.left"}
+{"name":"event: session.state","line":"{\"ev\":\"session.state\",\"n\":3,\"p\":{\"signed_in\":true,\"user_id\":7}}","kind":"event","verb":"session.state"}
+{"name":"event: engine.version","line":"{\"ev\":\"engine.version\",\"n\":4,\"p\":{\"version\":\"0.700.0.7000000\"}}","kind":"event","verb":"engine.version"}
+{"name":"event: game.presence","line":"{\"ev\":\"game.presence\",\"n\":5,\"p\":{\"details\":\"Lobby\",\"state\":\"\",\"start\":1700000000}}","kind":"event","verb":"game.presence"}
+{"name":"event: events.dropped","line":"{\"ev\":\"events.dropped\",\"n\":6,\"p\":{\"count\":12}}","kind":"event","verb":"events.dropped"}
+{"name":"event: health","line":"{\"ev\":\"health\",\"n\":7,\"p\":{\"state\":\"stalled\",\"what\":\"no frames for 5 s\"}}","kind":"event","verb":"health"}
+{"name":"event: bye","line":"{\"ev\":\"bye\",\"n\":8,\"p\":{\"reason\":\"superseded\"}}","kind":"event","verb":"bye"}
+{"name":"event: lifecycle.ready with no payload","line":"{\"ev\":\"lifecycle.ready\",\"n\":9}","kind":"event","verb":"lifecycle.ready"}
+{"name":"event: a runtime-private event is accepted and left to the report","line":"{\"ev\":\"x-org.example.runtime.thing\",\"n\":10,\"p\":{\"anything\":[1,2,3]}}","kind":"event","verb":"x-org.example.runtime.thing"}
+{"name":"event: an event this spec does not define is ignored, not refused","line":"{\"ev\":\"game.teleported\",\"n\":11,\"p\":{}}","kind":"event","verb":"game.teleported"}
+{"name":"event: unknown fields are ignored","line":"{\"ev\":\"game.left\",\"n\":12,\"p\":{\"at\":1,\"later\":true},\"trace\":\"abc\"}","kind":"event","verb":"game.left"}
+{"name":"request: hello","line":"{\"id\":1,\"m\":\"hello\",\"p\":{\"protocol\":{\"major\":1,\"minor\":0},\"cordial\":\"0.25.0\",\"session\":\"a1b2c3d4\",\"caps\":{\"lifecycle\":1,\"settings\":1}}}","kind":"request","verb":"hello"}
+{"name":"request: hello with reattach","line":"{\"id\":1,\"m\":\"hello\",\"p\":{\"protocol\":{\"major\":1,\"minor\":0},\"cordial\":\"0.25.0\",\"session\":\"a1b2c3d4\",\"caps\":{\"lifecycle\":1},\"reattach\":true}}","kind":"request","verb":"hello"}
+{"name":"reply: the handshake answer","line":"{\"id\":1,\"ok\":true,\"p\":{\"protocol\":{\"major\":1,\"minor\":0},\"runtime\":{\"id\":\"org.example.runtime\",\"version\":\"0.13\"},\"client\":{\"name\":\"Roblox\",\"version\":\"2.700\",\"build\":\"700\"},\"caps\":{\"lifecycle\":1,\"settings\":1}}}","kind":"reply"}
+{"name":"request: state.get without a payload","line":"{\"id\":2,\"m\":\"state.get\"}","kind":"request","verb":"state.get"}
+{"name":"request: lifecycle.stop","line":"{\"id\":3,\"m\":\"lifecycle.stop\",\"p\":{\"grace_ms\":5000}}","kind":"request","verb":"lifecycle.stop"}
+{"name":"request: settings.set reports an unknown key rather than failing","line":"{\"id\":4,\"m\":\"settings.set\",\"p\":{\"throttle\":\"off\",\"warp_drive\":\"on\"}}","kind":"request","verb":"settings.set"}
+{"name":"request: settings.set with every key","line":"{\"id\":4,\"m\":\"settings.set\",\"p\":{\"pointer_acceleration\":\"unlocked\",\"throttle\":\"unfocused\",\"close_on_leave\":true,\"carry_launch_ticket\":false,\"audio_output\":\"\",\"audio_input\":\"\",\"gamemode\":false,\"gamepad\":true,\"title_bar\":\"compact\",\"frame_rate_limit\":\"144\"}}","kind":"request","verb":"settings.set"}
+{"name":"request: flags.apply","line":"{\"id\":5,\"m\":\"flags.apply\",\"p\":{\"sha256\":\"000000000000000000000000000000000000000000000000000000000000000f\",\"count\":3}}","kind":"request","verb":"flags.apply"}
+{"name":"request: flags.live","line":"{\"id\":6,\"m\":\"flags.live\",\"p\":{\"flags\":{\"DFIntTaskSchedulerTargetFps\":144,\"DFFlagExample\":true,\"DFStringExample\":\"v\"}}}","kind":"request","verb":"flags.live"}
+{"name":"request: assets.overlay.set","line":"{\"id\":7,\"m\":\"assets.overlay.set\",\"p\":{\"plugin\":\"org.example.plugin\",\"root\":\"/home/me/.local/share/cordial/plugins/org.example.plugin/assets\"}}","kind":"request","verb":"assets.overlay.set"}
+{"name":"request: assets.overlay.clear","line":"{\"id\":8,\"m\":\"assets.overlay.clear\",\"p\":{\"plugin\":\"org.example.plugin\"}}","kind":"request","verb":"assets.overlay.clear"}
+{"name":"request: a request this spec does not define is accepted by the codec and answered unsupported","line":"{\"id\":9,\"m\":\"exec\",\"p\":{\"cmd\":\"ls\"}}","kind":"request","verb":"exec"}
+{"name":"reply: diagnostics","line":"{\"id\":10,\"ok\":true,\"p\":{\"lines\":[\"a\",\"b\"]}}","kind":"reply"}
+{"name":"reply: error codes are a closed set","line":"{\"id\":11,\"ok\":false,\"e\":{\"code\":\"not_ready\",\"detail\":\"\"}}","kind":"error"}
+{"name":"reply: an error with no detail","line":"{\"id\":11,\"ok\":false,\"e\":{\"code\":\"busy\"}}","kind":"error"}
