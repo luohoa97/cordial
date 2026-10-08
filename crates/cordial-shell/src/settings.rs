@@ -1269,6 +1269,40 @@ fn build_microphone_row(
 /// only by the X11 backend and do nothing on the Wayland one the launcher asks
 /// for, so a row for either would be a control that changes nothing — which is
 /// exactly what the Renderer row turned out to be until this change.
+/// "Running now": what the game that is open says about how it takes these
+/// settings.
+///
+/// **The runtime's word, not this window's.** The rows below say "Applies at
+/// next launch" from a table the shell keeps; this group reads the declaration
+/// the running runtime sent in `settings.get` (ADR-044, ADR-055), so a runtime
+/// that takes a setting differently is described as it is. Hidden when nothing
+/// is running, which is every time the window is opened before a game is
+/// started, and refreshed while it is open because a game can start or exit
+/// under it.
+fn add_running_group(page: &adw::PreferencesPage) {
+    let row = adw::ActionRow::builder().build();
+    let group = adw::PreferencesGroup::builder().title("Running now").visible(false).build();
+    group.add(&row);
+    page.add(&group);
+    let refresh = {
+        let (group, row) = (group.downgrade(), row.downgrade());
+        move || {
+            let (Some(group), Some(row)) = (group.upgrade(), row.upgrade()) else { return glib::ControlFlow::Break };
+            match crate::live::running_summary() {
+                Some(r) => {
+                    row.set_title(&glib::markup_escape_text(&r.title));
+                    row.set_subtitle(&glib::markup_escape_text(&r.detail));
+                    group.set_visible(true);
+                }
+                None => group.set_visible(false),
+            }
+            glib::ControlFlow::Continue
+        }
+    };
+    refresh();
+    glib::timeout_add_seconds_local(2, refresh);
+}
+
 fn build_general_page(
     config: Rc<RefCell<ShellConfig>>,
     config_path: Rc<PathBuf>,
@@ -1278,6 +1312,7 @@ fn build_general_page(
         .name("general")
         .icon_name("preferences-other-symbolic")
         .build();
+    add_running_group(&page);
 
     let group = adw::PreferencesGroup::builder()
         .title("Graphics")

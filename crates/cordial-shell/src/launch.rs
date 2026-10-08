@@ -141,9 +141,12 @@ pub struct Instance {
     /// immediately — an exit code on its own says nothing about what was run.
     pub command_line: String,
     tail: Tail,
-    /// Where this client listens for live setting changes, and what it was
-    /// started with, so `live` can send it only what differs (ADR-044).
-    pub live_socket: PathBuf,
+    /// The directory this client's `ctl.sock` is in (`cordial.runtime/1`,
+    /// ADR-055), made by the launcher before the spawn. `None` when it could not
+    /// be made, and the client then has no channel to this launcher.
+    pub session: Option<cordial_shell::runtime_session::SessionDir>,
+    /// What the client was started with, so `live` can tell what a newly
+    /// connected one still needs (ADR-044).
     pub launched_with: Vec<cordial_protocol::Update>,
 }
 
@@ -639,6 +642,27 @@ pub fn spawn(
     // panic with none of what led to it.
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    // The channel to the runtime: `<profile>/runtime/<session>/`, mode 0700,
+    // made here because the launcher is the side that can be restarted and has
+    // to be able to find it again by scanning for it. The profile lock is held,
+    // which is what lets this clear the directories a killed client left.
+    //
+    // Passed in the environment because the built-in runtime keeps env and argv
+    // for its launch configuration (spec section 6); a third-party runtime gets
+    // the same path as `{session_dir}`. A failure is narrated and not fatal: a
+    // client with no channel still plays, and live settings then wait for the
+    // next launch, as they did before the channel existed.
+    let session = match cordial_shell::runtime_session::SessionDir::create(&profile_dir) {
+        Ok(s) => {
+            command.env("CORDIAL_SESSION_DIR", &s.dir);
+            Some(s)
+        }
+        Err(e) => {
+            println!("  shell: could not make a session directory under {} ({e}); this client will not take live settings", profile_dir.display());
+            None
+        }
+    };
+
     claim.hand_to(&mut command);
 
     let command_line = describe(&loader, &build.lib_dir, &build.apk, &run, request.join_url, request.vr.is_some());
@@ -668,7 +692,7 @@ pub fn spawn(
         child,
         command_line,
         tail,
-        live_socket: cordial_protocol::v0::socket_path(&profile_dir),
+        session,
         launched_with: crate::live::live_updates(&config),
     })
 }

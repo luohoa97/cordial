@@ -1294,7 +1294,9 @@ fn start_attempt(
     // From here Settings changes reach this client as well as the next launch:
     // see `live`. Registered with the values its environment carried, so a
     // change made while it loads is sent once its socket exists.
-    crate::live::register(instance.pid(), instance.live_socket.clone(), instance.launched_with.clone());
+    if let Some(session) = instance.session.clone() {
+        crate::live::register(instance.pid(), session, instance.launched_with.clone());
+    }
 
     let notice = (attempt.restarts > 0).then(|| {
         freeze_recovery::status_line(attempt.restarts + 1, freeze_recovery::MAX_RESTARTS + 1)
