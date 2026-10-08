@@ -4,7 +4,7 @@
 //! guest's own system call, as arm64 Linux treats it.
 //!
 //! Hand-assembled, as in `m0.rs`. `svc #imm` is `0xd4000001 | imm << 5`.
-#![cfg(target_arch = "x86_64")]
+#![cfg(all(feature = "dynarmic", target_arch = "x86_64"))]
 #![allow(unsafe_code)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
