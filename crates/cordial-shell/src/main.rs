@@ -184,6 +184,11 @@ fn main() -> libadwaita::glib::ExitCode {
         return libadwaita::glib::ExitCode::SUCCESS;
     }
 
+    // From here on this process shows a window, and the log export (Report a
+    // Problem -> Save logs) wants what it has printed. After every flag that
+    // answers and exits, so those keep their plain stdout.
+    cordial_shell::session_log::install();
+
     // Both flags, and the second one is the load-bearing one.
     //
     // `HANDLES_OPEN` says this application takes URLs at all; a `GApplication`

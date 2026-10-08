@@ -83,6 +83,19 @@ const SHORT_DESCRIPTIONS: Record<string, string> = {
   "needs-implementation": "Which symbol, and what the engine does with it.",
 };
 
+/**
+ * Fields the web form asks for and a Discord modal cannot carry.
+ *
+ * **`log-archive` asks for a `.zip` to be dragged into the box.** A modal holds
+ * text inputs and menus, so the field would be a required box nobody can fill
+ * honestly, and it would take a slot from the fields that matter. They are kept
+ * out of the modal and the body, and listed in `IssueForm.webOnly` so a test can
+ * say a template did not quietly grow another one. The issue says the archive
+ * was not attached -- see `renderIssueBody` -- and `Add to the issue` carries a
+ * link to one posted in the thread (ADR-030, amended).
+ */
+export const WEB_ONLY_FIELDS: ReadonlySet<string> = new Set(["log-archive"]);
+
 export interface FormBlock {
   type: string;
   id?: string;
@@ -102,6 +115,8 @@ export interface IssueForm {
   titlePrefix: string;
   /** Every non-markdown block, in template order -- including the dropped. */
   fields: FormBlock[];
+  /** Blocks the web form has and a modal cannot: see [`WEB_ONLY_FIELDS`]. */
+  webOnly: FormBlock[];
   /** The five (or fewer) that fit the modal. */
   placed: FormBlock[];
   /** Optional fields that did not fit, offered by a follow-up modal. */
@@ -250,7 +265,9 @@ export function parseForm(slug: string, yamlText: string): IssueForm {
     body?: FormBlock[];
   };
 
-  const fields = (doc.body ?? []).filter((b) => b.type !== "markdown");
+  const blocks = (doc.body ?? []).filter((b) => b.type !== "markdown");
+  const fields = blocks.filter((b) => !(b.id && WEB_ONLY_FIELDS.has(b.id)));
+  const webOnly = blocks.filter((b) => b.id && WEB_ONLY_FIELDS.has(b.id));
   const { placed, dropped, overflowRequired } = pack(fields, MODAL_MAX_COMPONENTS);
 
   if (overflowRequired.length) {
@@ -274,6 +291,7 @@ export function parseForm(slug: string, yamlText: string): IssueForm {
     labels: doc.labels ?? [],
     titlePrefix: doc.title ?? "",
     fields,
+    webOnly,
     placed,
     dropped,
   };
@@ -367,7 +385,7 @@ export function labelPickerComponent(
  * quietly loses the line telling somebody where to get their diagnostics.
  */
 export function checkShortDescriptions(forms: IssueForm[]): void {
-  const known = new Set(forms.flatMap((f) => f.fields.map((b) => b.id)));
+  const known = new Set(forms.flatMap((f) => [...f.fields, ...f.webOnly].map((b) => b.id)));
   const stale = Object.keys(SHORT_DESCRIPTIONS).filter((k) => !known.has(k)).sort();
   if (stale.length) {
     throw new FormError(

@@ -266,7 +266,8 @@ the ones that were reversed, are written down in [`docs/adr/`](docs/adr).
 [`CONTRIBUTING.md`](CONTRIBUTING.md). Bugs and feature requests go on
 [GitHub](https://github.com/luohoa97/cordial/issues/new/choose), not Discord —
 every template needs a Diagnostics block from the main menu's **Report a
-Problem** or `cordial --diagnostics`. Security issues go through
+Problem** or `cordial --diagnostics`, and the bug templates want its **Save
+logs…** archive attached. Security issues go through
 [a private advisory](https://github.com/luohoa97/cordial/security/advisories/new).
 
 Questions and help: [Discord](https://discord.gg/qJzU3Xfr9b).

@@ -271,3 +271,13 @@ Deno.test("a pasted heading inside an answer is content, not a boundary", () => 
     assertStringIncludes(parsed.sections.get("diagnostics")!.value, "Cordial 0.13.2");
   }
 });
+
+Deno.test("a Discord report says no log archive is attached, and how one gets added", () => {
+  const body = renderIssueBody(form, submission, "999");
+  assertStringIncludes(body, "No log archive is attached");
+  assertStringIncludes(body, "Save logs");
+  // The note sits inside the section the editor carries through untouched.
+  assert(body.indexOf("No log archive") > body.indexOf("### Reported from Discord"));
+  // And a body round-trips as before.
+  assert(parseBody(form, body) !== null);
+});

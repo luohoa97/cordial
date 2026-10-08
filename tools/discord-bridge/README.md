@@ -13,7 +13,7 @@ From then on the thread is the issue's other face:
 | In Discord                                          | What happens                                                                       |
 | --------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | **Comment on the issue**                            | A modal; the text becomes a comment, attributed to you                             |
-| Right-click a message → Apps → **Add to the issue** | That one message becomes a comment                                                 |
+| Right-click a message → Apps → **Add to the issue** | That one message becomes a comment; an attachment becomes a link (which expires)   |
 | **Close it**                                        | Closes as _not planned_, and archives the thread                                   |
 | **Reopen it**                                       | Reopens, and brings the thread back                                                |
 | **Mark as completed**                               | Closes as _completed_. Maintainers only                                            |

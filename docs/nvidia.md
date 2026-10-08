@@ -143,8 +143,10 @@ the block, including the `Graphics` line. Add:
 
 1. The `physical device` line from the output when you launch from a terminal.
 2. `vulkaninfo --summary`, `nvidia-smi` and `cat /proc/driver/nvidia/version`.
-3. For a crash, the last twenty lines of output. For a freeze, do not kill it yet;
-   see [`analysis/nvidia-support.md`](analysis/nvidia-support.md).
+3. The archive from **Report a Problem → Save logs…**, which already holds the
+   launcher's and the client's output (the last twenty lines of a crash are in
+   it) and the engine's newest logs. For a freeze, do not kill it yet; see
+   [`analysis/nvidia-support.md`](analysis/nvidia-support.md).
 
 The catalogue of known NVIDIA failures, with issue numbers, evidence and the test
 plan, is [`analysis/nvidia-support.md`](analysis/nvidia-support.md).

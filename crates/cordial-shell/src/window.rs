@@ -609,7 +609,8 @@ pub fn build(
     let report_action = gtk::gio::SimpleAction::new("report", None);
     {
         let window = window.clone();
-        report_action.connect_activate(move |_, _| crate::report::present(&window));
+        let config = config_for_launch.clone();
+        report_action.connect_activate(move |_, _| crate::report::present(&window, &config));
     }
 
     // About: what this is, who made it, and where to get help. It no longer
@@ -620,6 +621,7 @@ pub fn build(
     let about_action = gtk::gio::SimpleAction::new("about", None);
     {
         let window = window.clone();
+        let config = config_for_launch.clone();
         about_action.connect_activate(move |_, _| {
             let dialog = adw::AboutDialog::builder()
                 .application_name(cordial_shell::branding::current().name())
@@ -648,12 +650,13 @@ pub fn build(
                 .build();
             // Stacked over the About dialog rather than the launcher, so closing
             // it lands back on About.
-            dialog.connect_activate_link(|about, uri| {
+            let config = config.clone();
+            dialog.connect_activate_link(move |about, uri| {
                 if uri != ABOUT_REPORT_LINK {
                     // Not ours: let libadwaita open it as it always did.
                     return false;
                 }
-                crate::report::present(about);
+                crate::report::present(about, &config);
                 true
             });
             dialog.present(Some(&window));

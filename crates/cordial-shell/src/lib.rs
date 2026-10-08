@@ -44,7 +44,9 @@ pub mod frame_rate_limit;
 pub mod freeze_recovery;
 pub mod host_window;
 pub mod json_highlight;
+pub mod log_export;
 pub mod runtime_session;
+pub mod session_log;
 pub mod network;
 // What Cordial does only when the GPU is NVIDIA's, and the parsing the shell and
 // the runtime both need for it. In the library half for the reason `network`

@@ -47,6 +47,16 @@ body:
     validations:
       required: true
 
+  - type: textarea
+    id: log-archive
+    attributes:
+      label: Log archive
+      description: |
+        Required. In Cordial, open the main menu → **Report a Problem** → **Save logs…**, then drag the `.zip` into this box. It holds the diagnostics, the launcher's and client's output, the engine's newest logs, and whether a core dump exists (never the dump itself). Cookies, tickets, link queries, user ids, usernames and typed text are removed before it is written. If Cordial will not start at all, say so here and attach whatever the terminal printed.
+      placeholder: Drag cordial-logs.zip here.
+    validations:
+      required: true
+
   - type: markdown
     attributes:
       value: |

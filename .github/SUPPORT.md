@@ -12,6 +12,13 @@ distribution, and how Cordial was installed — no account, no token, no
 profile name, and nothing from your home directory. It is shown on screen
 before it is copied, so read it before you paste it.
 
+The bug-shaped templates also ask for a **log archive**: **Report a Problem →
+Save logs…** writes one `.zip` with the diagnostics, the launcher's and the
+client's output, the engine's newest logs and whether a core dump exists, and
+drag it into the issue. Cookies, tickets, link queries, user ids, usernames and
+typed text are removed first; it is pattern matching, so look inside if the
+account matters to you. No core file is ever in it.
+
 Five templates, routed by shape:
 
 | Template | Use it when |

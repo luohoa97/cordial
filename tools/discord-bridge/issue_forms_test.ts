@@ -237,3 +237,20 @@ Deno.test("multi-select answers keep their separate values, commas and all", () 
   // The single-answer reader is unchanged: it joins, which is right for a dropdown.
   assertEquals(modalValues(data)["cordial-labels"], "area: a, b, gpu:amd");
 });
+
+Deno.test("the log archive field is the web form's alone, and every bug form asks for it", () => {
+  const forms = realForms();
+  const asking = forms.filter((f) => f.webOnly.some((b) => b.id === "log-archive"));
+  assertEquals(
+    asking.map((f) => f.slug).sort(),
+    ["broken_feature", "bug_report", "roblox_update"],
+    "a form that should ask for the archive stopped, or another started",
+  );
+  for (const form of forms) {
+    // A modal cannot carry a file: the field may be neither in a modal nor in
+    // the follow-up.
+    const ids = [...form.placed, ...form.dropped].map((b) => b.id);
+    assert(!ids.includes("log-archive"), `${form.slug} would show the archive field in Discord`);
+    assertEquals(form.webOnly.every((b) => b.validations?.required), true, "and on the web it is required");
+  }
+});

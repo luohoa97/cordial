@@ -1120,3 +1120,40 @@ Deno.test("with the picker off, Edit changes title and text only", async () => {
   const [update] = t.of("updateIssue");
   assertEquals(update.args[1], { title: "[Bug]: retitled" });
 });
+
+Deno.test("an attachment-only message is carried to the issue as a link, with the expiry said", async () => {
+  // The log archive is a .zip dropped into the thread. GitHub's API cannot
+  // upload it to the issue, so the comment links the Discord copy.
+  const { context, of } = fakes();
+  (context.discord as unknown as { channelName: () => Promise<string> }).channelName = () =>
+    Promise.resolve("#31 [Bug]: black window");
+
+  const { after } = await handle(
+    context,
+    messageCommand({
+      data: {
+        name: "Add to the issue",
+        type: 3,
+        target_id: "m2",
+        resolved: {
+          messages: {
+            m2: {
+              content: "",
+              author: { global_name: "Reporter" },
+              attachments: [
+                { filename: "cordial-logs.zip", url: "https://cdn.discordapp.com/attachments/1/2/cordial-logs.zip?ex=abc", size: 20480 },
+                { filename: "evil.zip", url: "javascript:alert(1)" },
+              ],
+            },
+          },
+        },
+      },
+    }),
+  );
+  await after!();
+  const [posted] = of("comment");
+  const text = posted.args[1] as string;
+  assertStringIncludes(text, "[cordial-logs.zip](https://cdn.discordapp.com/attachments/1/2/cordial-logs.zip?ex=abc) (20 KiB)");
+  assertStringIncludes(text, "expire");
+  assert(!text.includes("javascript:"), "only https links are carried");
+});

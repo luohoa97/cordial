@@ -18,6 +18,7 @@ use libadwaita as adw;
 use libadwaita::glib;
 use libadwaita::gtk;
 use libadwaita::prelude::*;
+use crate::shell_config::ShellConfig;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -57,8 +58,74 @@ pub fn issues_target(origin: &cordial_shell::version::Origin) -> (String, Option
 /// a second.
 const SAVE_NAME: &str = "cordial-diagnostics.txt";
 
+/// The file name the Save logs button offers. A `.zip` because that is what a
+/// GitHub issue accepts as an attachment without being renamed first.
+const LOGS_NAME: &str = "cordial-logs.zip";
+
+/// One line each, shared by the row and the prompt before the issue form, so
+/// the two cannot describe the archive differently.
+const LOGS_SUBTITLE: &str = "A .zip to attach to the issue: the diagnostics, this session's launcher output, \
+the last client run and the engine's newest logs. Cookies, tickets, link queries, user ids, \
+names and typed text are removed first.";
+
+/// Ask where to put the log archive, build it, write it.
+///
+/// **The build runs on a worker.** It reads up to two engine logs of a couple
+/// of megabytes each and asks `coredumpctl` a question, none of which belongs on
+/// the thread that draws this dialog. `done` is told whether a file was written,
+/// and is also called when the picker is dismissed, because the issue form
+/// opens after this whichever way it went.
+fn save_logs(
+    parent: Option<gtk::Window>,
+    toasts: adw::ToastOverlay,
+    profile: String,
+    diagnostics: String,
+    done: impl FnOnce(bool) + 'static,
+) {
+    gtk::FileDialog::builder().title("Save logs").initial_name(LOGS_NAME).build().save(
+        parent.as_ref(),
+        gtk::gio::Cancellable::NONE,
+        move |result| {
+            let Ok(file) = result else { return done(false) };
+            glib::MainContext::default().spawn_local(async move {
+                let built =
+                    gtk::gio::spawn_blocking(move || cordial_shell::log_export::export(&profile, diagnostics)).await;
+                let message = match built {
+                    Ok(Ok(bytes)) => match file.replace_contents(
+                        &bytes,
+                        None,
+                        false,
+                        gtk::gio::FileCreateFlags::NONE,
+                        gtk::gio::Cancellable::NONE,
+                    ) {
+                        Ok(_) => {
+                            done(true);
+                            "Saved. Drag the .zip into the issue."
+                        }
+                        Err(e) => {
+                            eprintln!("[cordial] could not save the logs: {e}");
+                            done(false);
+                            "The logs could not be saved."
+                        }
+                    },
+                    Ok(Err(e)) => {
+                        eprintln!("[cordial] could not build the log archive: {e}");
+                        done(false);
+                        "The logs could not be collected."
+                    }
+                    Err(_) => {
+                        done(false);
+                        "The logs could not be collected."
+                    }
+                };
+                toasts.add_toast(adw::Toast::new(message));
+            });
+        },
+    );
+}
+
 /// Builds the report screen. Nothing is shown until it is presented.
-pub fn build() -> adw::Dialog {
+pub fn build(config: Rc<RefCell<ShellConfig>>) -> adw::Dialog {
     let block = crate::diagnostics::report();
     // What Copy and Save hand over. Starts as the block alone and gains the
     // doctor's checks when they finish, so a press before that still copies
@@ -72,7 +139,7 @@ pub fn build() -> adw::Dialog {
         // One line. The block says what it contains by containing it, and the
         // reasoning about what is deliberately absent lives in `diagnostics.rs`
         // next to the code that decides it.
-        .description("Paste this into a GitHub issue.")
+        .description("Paste this into a GitHub issue, and attach the logs.")
         .build();
 
     // Monospace and selectable: the columns only line up in a fixed-width font,
@@ -146,6 +213,28 @@ pub fn build() -> adw::Dialog {
     let save_row = adw::ActionRow::builder().title("Save to a file").build();
     save_row.add_suffix(&save);
     group.add(&save_row);
+
+    // The toasts live on the dialog's own overlay, created below with the rest
+    // of the layout, and this needs them before then: both buttons that save
+    // the archive report back through it.
+    let toasts = adw::ToastOverlay::new();
+
+    // **The one thing a bug report needed that this screen did not offer.**
+    // Issue threads kept asking for terminal output, the engine's log and a
+    // coredump by hand, from people who were not running anything in a
+    // terminal. See `log_export` for what goes in and what is taken out.
+    let logs = gtk::Button::with_label("Save logs…");
+    logs.set_valign(gtk::Align::Center);
+    {
+        let (toasts, config, text) = (toasts.clone(), config.clone(), text.clone());
+        logs.connect_clicked(move |b| {
+            let parent = b.root().and_downcast::<gtk::Window>();
+            save_logs(parent, toasts.clone(), config.borrow().profile.clone(), text.borrow().clone(), |_| {});
+        });
+    }
+    let logs_row = adw::ActionRow::builder().title("Save logs").subtitle(LOGS_SUBTITLE).build();
+    logs_row.add_suffix(&logs);
+    group.add(&logs_row);
     group.add(&frame);
     page.add(&group);
 
@@ -188,32 +277,52 @@ pub fn build() -> adw::Dialog {
     };
     let issues = adw::ActionRow::builder()
         .title("Open an issue")
-        .subtitle(glib::markup_escape_text(&subtitle))
+        .subtitle(glib::markup_escape_text(&format!("{subtitle}\nSave the logs first and attach them.")))
         .activatable(true)
         .build();
     // `go-next-symbolic`, checked on disk rather than guessed: the first
     // attempt used `external-link-symbolic`, which is in no icon theme here and
     // rendered as the missing-image glyph.
     issues.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
-    // **`GtkUriLauncher`, not `cordial_plugins::urlopen`, and the difference is
-    // focus.** Both reach `org.freedesktop.portal.OpenURI`, so both work inside
-    // the Flatpak sandbox. But `urlopen` is the plugin path: a plugin has no
-    // window, so it passes an empty parent handle and no activation token, and
-    // GNOME's focus-stealing prevention answers by declining to raise the
-    // browser. This row has a window to offer, and `UriLauncher::launch` hands
-    // the portal what it needs to raise the browser properly.
-    issues.connect_activated(move |row| {
-        let parent = row.root().and_downcast::<gtk::Window>();
-        gtk::UriLauncher::new(&issues_url).launch(
-            parent.as_ref(),
-            gtk::gio::Cancellable::NONE,
-            |result| {
-                if let Err(e) = result {
-                    eprintln!("[cordial] could not open the issue tracker: {e}");
+    {
+        let (toasts, config, text) = (toasts.clone(), config.clone(), text.clone());
+        issues.connect_activated(move |row| {
+            let parent = row.root().and_downcast::<gtk::Window>();
+            // **Offered before the form opens, not after.** The form is in a
+            // browser, so there is no moment afterwards at which this window
+            // can still say "and attach the logs", and a required field that
+            // says to drag a .zip in is no help to someone who has not got one.
+            let ask = adw::AlertDialog::builder()
+                .heading("Attach the logs?")
+                .body(
+                    "A report is much easier to act on with the logs. Cordial can save them as a .zip \
+                     now, with cookies, tickets, user ids, names and typed text removed, so you can \
+                     drag it into the form.",
+                )
+                .build();
+            ask.add_responses(&[("cancel", "Cancel"), ("skip", "Open Without Logs"), ("save", "Save Logs and Open")]);
+            ask.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+            ask.set_default_response(Some("save"));
+            ask.set_close_response("cancel");
+            let (toasts, config, text, url) = (toasts.clone(), config.clone(), text.clone(), issues_url.clone());
+            let window = parent.clone();
+            ask.choose(parent.as_ref(), gtk::gio::Cancellable::NONE, move |response| match response.as_str() {
+                "skip" => open_issue_form(window.as_ref(), &url),
+                "save" => {
+                    let profile = config.borrow().profile.clone();
+                    let diagnostics = text.borrow().clone();
+                    let opener = window.clone();
+                    // Opens the form whether or not a file was written: a
+                    // picker dismissed or a full disk is no reason to strand
+                    // someone who pressed the button to report a problem.
+                    save_logs(window, toasts, profile, diagnostics, move |_| {
+                        open_issue_form(opener.as_ref(), &url)
+                    });
                 }
-            },
-        );
-    });
+                _ => {}
+            });
+        });
+    }
     where_group.add(&issues);
     page.add(&where_group);
 
@@ -221,12 +330,29 @@ pub fn build() -> adw::Dialog {
     toolbar.add_top_bar(&adw::HeaderBar::new());
     toolbar.set_content(Some(&page));
 
+    toasts.set_child(Some(&toolbar));
+
     adw::Dialog::builder()
         .title("Report a Problem")
         .content_width(520)
         .content_height(680)
-        .child(&toolbar)
+        .child(&toasts)
         .build()
+}
+
+/// **`GtkUriLauncher`, not `cordial_plugins::urlopen`, and the difference is
+/// focus.** Both reach `org.freedesktop.portal.OpenURI`, so both work inside
+/// the Flatpak sandbox. But `urlopen` is the plugin path: a plugin has no
+/// window, so it passes an empty parent handle and no activation token, and
+/// GNOME's focus-stealing prevention answers by declining to raise the
+/// browser. This row has a window to offer, and `UriLauncher::launch` hands
+/// the portal what it needs to raise the browser properly.
+fn open_issue_form(parent: Option<&gtk::Window>, url: &str) {
+    gtk::UriLauncher::new(url).launch(parent, gtk::gio::Cancellable::NONE, |result| {
+        if let Err(e) = result {
+            eprintln!("[cordial] could not open the issue tracker: {e}");
+        }
+    });
 }
 
 /// One check as a row: the finding as the title, what to do about it as the
@@ -254,8 +380,11 @@ fn check_row(check: &Check) -> adw::ActionRow {
 }
 
 /// Puts the report screen up over `parent`.
-pub fn present(parent: &impl IsA<gtk::Widget>) {
-    build().present(Some(parent));
+///
+/// `config` is read when a button is pressed, not now: the profile whose engine
+/// logs go in the archive is the one chosen at that moment.
+pub fn present(parent: &impl IsA<gtk::Widget>, config: &Rc<RefCell<ShellConfig>>) {
+    build(config.clone()).present(Some(parent));
 }
 
 #[cfg(test)]

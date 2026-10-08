@@ -150,11 +150,26 @@ export function renderIssueBody(
     `### Reported from Discord\n\n` +
       `Filed by **${submission.reporter.tag}** (\`${submission.reporter.id}\`) ` +
       `through Cordial's Discord, which is why the author of this issue is a bot. ` +
-      `Replies posted here are relayed to them in the thread.`,
+      `Replies posted here are relayed to them in the thread.` +
+      logArchiveNote(form),
   );
 
   if (threadId) parts.push(threadMarker(threadId, submission.reporter.id, form.slug));
   return parts.join("\n\n");
+}
+
+/**
+ * What the issue says about the log archive the web form requires.
+ *
+ * A modal cannot carry a file, so a Discord report never has one attached, and
+ * a maintainer reading it should know that is the channel and not an oversight.
+ * Empty for a form with no such field.
+ */
+export function logArchiveNote(form: IssueForm): string {
+  if (!form.webOnly.some((b) => b.id === "log-archive")) return "";
+  return `\n\nNo log archive is attached: a Discord form cannot carry a file. ` +
+    `The reporter can drop the \`.zip\` from Report a Problem → Save logs… into the thread, ` +
+    `and a maintainer can add a link to it here with "Add to the issue".`;
 }
 
 /**

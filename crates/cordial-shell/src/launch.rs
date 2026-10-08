@@ -285,6 +285,9 @@ fn pump(reader: impl std::io::Read + Send + 'static, tail: Tail, to_stderr: bool
                 println!("{line}");
             }
             let kept = redact(&line).map(str::to_string).unwrap_or(line);
+            // The log export keeps the last few of these; they scroll out of
+            // the 200-line tail in any game longer than a few minutes.
+            cordial_shell::session_log::health_line(&kept);
             let mut tail = tail.lock().unwrap_or_else(|e| e.into_inner());
             if tail.len() == KEPT_LINES {
                 tail.pop_front();
@@ -671,6 +674,9 @@ pub fn spawn(
         .map_err(|e| format!("Could not start {}: {e}\n\n{command_line}", loader.display()))?;
 
     let tail: Tail = Arc::new(Mutex::new(VecDeque::with_capacity(KEPT_LINES)));
+    // The same buffer the crash page reads, so the log export's "last client
+    // run" is exactly what that page would have shown.
+    cordial_shell::session_log::set_last_client(tail.clone(), &command_line);
     // Taken out of the `Child` so the pipes close when the reader threads see
     // EOF rather than being held open by a struct nobody is reading -- a child
     // whose stdout nothing drains blocks on a full pipe, which for a process

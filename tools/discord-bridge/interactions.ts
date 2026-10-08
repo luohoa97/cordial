@@ -74,6 +74,7 @@ export interface Context {
 
 interface ResolvedMessage {
   content?: string;
+  attachments?: { filename?: string; url?: string; size?: number }[];
   author?: { username?: string; global_name?: string; bot?: boolean };
   id?: string;
 }
@@ -563,6 +564,33 @@ async function fileIssue(
 }
 
 /**
+ * Links to a message's attachments, as a Markdown list, or "" if it has none.
+ *
+ * **Links, not copies, and the difference is the limit of what the bridge can
+ * do.** GitHub's REST API has no way to attach a file to an issue -- the
+ * drag-and-drop on the web form uses an endpoint that needs a browser session --
+ * so a log archive cannot be uploaded to the issue from here. A Discord link
+ * works for a maintainer who reads it soon and is signed in to the server;
+ * Discord signs these URLs and they stop working after a while, which the
+ * comment says so nobody is surprised by it. The reporter can always attach the
+ * file themselves from GitHub if they make an account.
+ */
+export function attachmentLines(
+  attachments: { filename?: string; url?: string; size?: number }[] | undefined,
+): string {
+  const lines = (attachments ?? [])
+    .filter((a) => a.url && /^https:\/\//.test(a.url))
+    .map((a) => {
+      const name = (a.filename ?? "attachment").replace(/[\[\]()`]/g, "_");
+      const size = a.size ? ` (${Math.ceil(a.size / 1024)} KiB)` : "";
+      return `- [${name}](${a.url})${size}`;
+    });
+  if (!lines.length) return "";
+  return `Attached in Discord:\n\n${lines.join("\n")}\n\n` +
+    `_Discord links expire after a while; if one has stopped working, ask the reporter to send the file again._`;
+}
+
+/**
  * Put one chosen message on the issue its thread belongs to.
  *
  * The issue number comes from the **thread's name** rather than from reading
@@ -595,11 +623,11 @@ async function addMessageToIssue(context: Context, interaction: Interaction): Pr
   const target = interaction.data?.target_id;
   const message = target ? interaction.data?.resolved?.messages?.[target] : undefined;
   const text = (message?.content ?? "").trim();
-  if (!text) {
+  const files = attachmentLines(message?.attachments);
+  if (!text && !files) {
     return await say(
       `Nothing to add: that message has no text the bot can read. If it was an ` +
-        `attachment or an embed, quote the part that matters in a reply and add ` +
-        `that instead.`,
+        `embed, quote the part that matters in a reply and add that instead.`,
     );
   }
 
@@ -609,7 +637,7 @@ async function addMessageToIssue(context: Context, interaction: Interaction): Pr
     : "";
   await context.github.comment(
     number,
-    `**${author}** in Discord:\n\n${text}${link}`,
+    `**${author}** in Discord:\n\n${[text, files].filter(Boolean).join("\n\n")}${link}`,
   );
   await say(`Added to [#${number}](${context.repoUrl}/issues/${number}).`);
 }
