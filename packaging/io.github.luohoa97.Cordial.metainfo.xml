@@ -78,6 +78,16 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.26.0" date="2026-10-08">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.26.0</url>
+      <description>
+        <p>
+          The profile switcher moves into the header bar, built-in plugins ask
+          for permission once instead of stacking dialogs, and shift lock holds
+          the cursor on Hyprland.
+        </p>
+      </description>
+    </release>
     <release version="0.25.0" date="2026-10-05">
       <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.25.0</url>
       <description>
