@@ -3266,14 +3266,22 @@ impl WaylandWindow {
         super::input::pass_mouse_move(x, y);
     }
 
-    /// Deliver a release for every button this side still thinks is down.
-    ///
-    /// Called when the pointer leaves the canvas, where no real release will
-    /// arrive. Goes through `dispatch_pointer_button` rather than clearing the
-    /// mask directly so the engine sees exactly the events it would have seen
-    /// had the user released on the canvas -- a bitmask cleared behind the
-    /// engine's back leaves the two disagreeing, which is the same bug one
-    /// layer down.
+    /// Release stranded buttons after dispatching the pending Wayland events.
+    /// A canvas leave can be followed by a toplevel lock in the same batch;
+    /// releasing inside that callback cuts off a held fire or aim button.
+    fn reconcile_pointer_buttons(&self) {
+        let owns_pointer = pointer_event_is_the_engines(
+            POINTER_ON_CANVAS.load(Ordering::Acquire),
+            POINTER_LOCK_ACTIVE.load(Ordering::Acquire),
+        );
+        if !owns_pointer || dialog_in_front(self) || self.host.0.focused() == Some(false) {
+            self.release_held_buttons();
+        }
+    }
+
+    /// Tell the engine about each release before forgetting the held mask.
+    /// Clearing only our copy leaves the engine firing or dragging after focus
+    /// loss, with no real release left to correct it.
     fn release_held_buttons(&self) {
         let held = self.pointer_buttons.load(Ordering::Relaxed);
         if held == 0 {
@@ -3288,7 +3296,7 @@ impl WaylandWindow {
         ] {
             if held & button != 0 {
                 if super::input::trace_mouse() {
-                    eprintln!("[cordial] pointer left the canvas holding {button}; releasing it");
+                    eprintln!("[cordial] pointer ownership lost holding {button}; releasing it");
                 }
                 self.dispatch_pointer_button(button, false);
             }
@@ -3457,6 +3465,41 @@ const WHEEL_AXIS_STEP: f32 = 10.0;
 /// `hide_pointer` fired for it.
 static POINTER_ON_CANVAS: AtomicBool = AtomicBool::new(false);
 
+/// Whether a pointer event delivered on Cordial's own `wl_pointer` is the
+/// engine's to receive.
+///
+/// The canvas subsurface holds pointer focus while the pointer is over it, and
+/// [`POINTER_ON_CANVAS`] records that. But a confirmed lock that constrains the
+/// *toplevel* — KWin and Hyprland, see [`constrain_toplevel`] — moves pointer
+/// focus onto the parent window, so `POINTER_ON_CANVAS` reads false for as long
+/// as shift lock or first person holds the cursor. Gating a handler on the
+/// canvas alone therefore drops events that are plainly the engine's.
+///
+/// **That has now cost three separate features, one per commit.** It dropped
+/// every relative sample, leaving the camera frozen under a lock that had
+/// confirmed (issue #56, fixed in [`relative_pointer_motion`]). The same gate
+/// in [`pointer_button`] then dropped every click — the report was shift lock
+/// "and I can't click" — and in [`pointer_axis`] every scroll notch. A
+/// confirmed lock is the stronger proof of ownership: the cursor has nowhere
+/// else to be, so the event cannot belong to the header bar it cannot reach.
+///
+/// **The click half is measured; the scroll half is `INFERRED`.** Confirmed on
+/// Hyprland 0.56.2 on 2026-10-07: with shift lock engaged, a click that this
+/// gate had been swallowing now reaches the engine and the game acts on it.
+/// Scroll rides the identical gate and is reasoned from that alone, not
+/// separately observed. The readback for a repeat is the `nativePassMouseButton`
+/// line under `CORDIAL_TRACE_MOUSE=1`; the control is
+/// `CORDIAL_POINTER_LOCK_SURFACE=canvas`, where the lock never confirms on
+/// Hyprland and the pre-fix behaviour is what runs.
+fn pointer_event_is_the_engines(on_canvas: bool, lock_active: bool) -> bool {
+    on_canvas || lock_active
+}
+
+fn route_pointer_button(owns_pointer: bool, held: i32, button: i32, press: bool) -> bool {
+    let was_down = held & button != 0;
+    if press { owns_pointer && !was_down } else { was_down }
+}
+
 /// Whether a web-view dialog of Cordial's own is in front of the engine.
 ///
 /// **Stacking and input focus are decided separately, and only stacking was
@@ -3561,29 +3604,11 @@ unsafe extern "C" fn pointer_enter(
     w.dispatch_pointer_motion(fixed_to_f32(x), fixed_to_f32(y));
 }
 unsafe extern "C" fn pointer_leave(_data: *mut c_void, _pointer: *mut c_void, _serial: u32, _surface: *mut c_void) {
-    // **Let go of anything still held, before the canvas flag drops.**
-    //
-    // Wayland sends no button release on leave, and `pointer_button` below
-    // ignores events while the pointer is off the canvas -- so a button held
-    // as the pointer leaves is a bit in `pointer_buttons` that nothing ever
-    // clears. That bit is one of the two things `sync_pointer_lock` locks the
-    // pointer for, and it is gated on being back on the canvas, so the next
-    // time the pointer comes back the drag-lock engages with no button down
-    // and the camera is captured until something happens to clear it.
-    //
-    // Reported as shift lock that "sometimes won't undo ... so you're kinda
-    // stuck with it, then it works": the "then it works" is the next press and
-    // release on the canvas clearing the stale bit. The engine is told too,
-    // not just this side's bitmask, because it received the press and would
-    // otherwise go on believing the button is down -- which is the other half
-    // of a camera that will not let go.
-    //
-    // Synthesising the release is the correct platform behaviour rather than a
-    // workaround: the protocol guarantees no real one is coming, and Android's
-    // own answer to the same situation is ACTION_CANCEL.
-    if let Some(w) = current() {
-        w.release_held_buttons();
-    }
+    // A leave is not necessarily a lost gesture: the toplevel may be taking
+    // focus for a lock. Reconcile held buttons after the event batch, once its
+    // enter/locked/unlocked callbacks have supplied the new ownership state.
+    // INFERRED as the cause of intermittent shooting loss on Hyprland; the
+    // button routing is unit-tested, but this needs an in-experience repeat.
     POINTER_ON_CANVAS.store(false, Ordering::Release);
     super::input::reset_mouse_delta();
     super::input::forget_pending_unlocked_delta();
@@ -3607,27 +3632,38 @@ unsafe extern "C" fn pointer_button(
     button: u32,
     state: u32,
 ) {
-    if !POINTER_ON_CANVAS.load(Ordering::Acquire) {
-        return;
-    }
     let Some(w) = current() else { return };
-    if dialog_in_front(&w) {
-        // Said once per press rather than per motion event, which would be a
-        // line per frame while the pointer moves over the dialog.
-        if super::input::trace_mouse() {
-            eprintln!(
-                "[cordial] click withheld from the engine: a web-view dialog is in front"
-            );
+    let Some(android_button) = linux_button_to_android(button) else { return };
+    let owns_pointer = pointer_event_is_the_engines(
+        POINTER_ON_CANVAS.load(Ordering::Acquire),
+        POINTER_LOCK_ACTIVE.load(Ordering::Acquire),
+    ) && !dialog_in_front(w);
+    // A release belongs to whoever received its press, even if the lock or
+    // focus changed meanwhile. Conversely, a release for GTK's press is not
+    // an engine event, and a duplicate press must not restart a held gesture.
+    if !route_pointer_button(
+        owns_pointer,
+        w.pointer_buttons.load(Ordering::Relaxed),
+        android_button,
+        state == 1,
+    ) {
+        if state == 1 && dialog_in_front(w) && super::input::trace_mouse() {
+            eprintln!("[cordial] click withheld from the engine: a web-view dialog is in front");
         }
         return;
     }
-    let Some(android_button) = linux_button_to_android(button) else { return };
     w.dispatch_pointer_button(android_button, state == 1);
 }
 /// The scroll wheel. Filtered by surface like every other pointer event: the
 /// header bar is GTK's, and a scroll over it is not the engine's to see.
 unsafe extern "C" fn pointer_axis(_data: *mut c_void, _pointer: *mut c_void, _time: u32, axis: u32, value: i32) {
-    if !POINTER_ON_CANVAS.load(Ordering::Acquire) {
+    // Same toplevel-lock gap as `pointer_button`: scroll while shift lock or
+    // first person holds the cursor was dropped because the canvas no longer
+    // has pointer focus. See `pointer_event_is_the_engines`.
+    if !pointer_event_is_the_engines(
+        POINTER_ON_CANVAS.load(Ordering::Acquire),
+        POINTER_LOCK_ACTIVE.load(Ordering::Acquire),
+    ) {
         return;
     }
     if let Some(w) = current() {
@@ -3951,17 +3987,18 @@ static RIGHT_DRAG_LATCH_SINCE: AtomicI64 = AtomicI64::new(0);
 /// canvas centre while it is held. Set from `sync_pointer_lock`, read when the
 /// compositor confirms the lock and when it is released.
 ///
-/// **KWin only, because it is the one compositor where it was measured.** The
-/// PR that added it showed, on Plasma, that leaving shift lock puts the cursor
-/// back at the canvas centre when the stored position is recentred while the
-/// lock is held and the hint is committed on release. Nobody has run shift lock
-/// or first person with it on Mutter, sway or Hyprland, so they keep the
-/// behaviour they had: the flag is never set there, and [`engine_owns_lock`] is
-/// where that is decided and tested.
+/// **Set only where the toplevel is the constrained surface.** The PR that
+/// added it showed, on Plasma, that leaving shift lock puts the cursor back at
+/// the canvas centre when the stored position is recentred while the lock is
+/// held and the hint is committed on release. That is now KWin and Hyprland
+/// (see [`constrain_toplevel`]). The recentre-on-release is `INFERRED` on
+/// Hyprland, because the run that settled the lock did not single that half
+/// out. On Mutter and sway the subsurface is constrained and the flag is never
+/// set, which is where [`engine_owns_lock`] is decided and tested.
 static ENGINE_OWNS_LOCK: AtomicBool = AtomicBool::new(false);
 
 /// Whether this tick's lock is the engine's to recentre. `toplevel_lock` is
-/// `constrain_toplevel()`: false everywhere but KWin unless
+/// `constrain_toplevel()`: true on KWin and Hyprland only, unless
 /// `CORDIAL_POINTER_LOCK_SURFACE` says otherwise.
 ///
 /// A right-button drag Cordial started itself is not the engine's, and
@@ -4116,7 +4153,21 @@ unsafe extern "C" fn relative_pointer_motion(
     // uses and is checked for the identical reason: nothing else here says
     // whether the movement belongs to Cordial's canvas or another window
     // entirely.
-    if !POINTER_ON_CANVAS.load(Ordering::Acquire) {
+    //
+    // **A confirmed lock skips that test, and it must.** `POINTER_ON_CANVAS` is
+    // set from Cordial's *own* secondary `wl_pointer`, while the constraint is
+    // requested against GDK's. When the constraint is on the toplevel — what
+    // Hyprland needs, see `constrain_toplevel` — the compositor can hold the
+    // lock without the canvas subsurface keeping the pointer focus this side
+    // records, and gating on it dropped every relative sample: the lock was
+    // confirmed and the camera never moved, which is issue #56's `toplevel`
+    // result. Relative motion is only emitted while a constraint is active, so
+    // `POINTER_LOCK_ACTIVE` is the stronger and correct gate. The dialog check
+    // below still applies.
+    if !pointer_event_is_the_engines(
+        POINTER_ON_CANVAS.load(Ordering::Acquire),
+        POINTER_LOCK_ACTIVE.load(Ordering::Acquire),
+    ) {
         return;
     }
     let Some(w) = current() else { return };
@@ -4478,7 +4529,10 @@ impl WaylandWindow {
         const CAMERA_BUTTONS: i32 = super::input::BUTTON_SECONDARY | super::input::BUTTON_TERTIARY;
         let dragging = !no_drag_lock()
             && self.pointer_buttons.load(Ordering::Relaxed) & CAMERA_BUTTONS != 0
-            && POINTER_ON_CANVAS.load(Ordering::Acquire);
+            && pointer_event_is_the_engines(
+                POINTER_ON_CANVAS.load(Ordering::Acquire),
+                POINTER_LOCK_ACTIVE.load(Ordering::Acquire),
+            );
         let asked = engine_wants || dragging || force_pointer_lock();
 
         // **A dialog on top of the canvas takes the cursor back, whatever the
@@ -4609,15 +4663,27 @@ impl WaylandWindow {
 
 /// Whether to constrain the GTK toplevel rather than the engine's subsurface.
 ///
-/// KWin only. KDE bug 463088 is why the toplevel is constrained at all, and the
-/// canvas being cut out of the toplevel's input region is why that was not
-/// enough -- see `lock_pointer`. On every other compositor the subsurface is the
-/// surface that actually holds pointer focus over the canvas, and constraining
-/// anything else is a lock that is granted and never activates.
+/// **Two compositors need this, for opposite reasons.** KWin activates a lock
+/// on a constrained subsurface and then still lets the physical cursor leave it
+/// (KDE bug 463088), which is why the toplevel is constrained there at all --
+/// and the canvas being cut out of the toplevel's input region is why the
+/// constraint alone was not enough; see `lock_pointer`. Hyprland is here
+/// because it never answers `locked` for a constraint on a subsurface: the
+/// engine's canvas is a `wl_subsurface` (ADR-011) and Hyprland's
+/// pointer-constraints path is toplevel-first, the same gap Godot hit and the
+/// one `hyprwm/Hyprland#16311` exists to close. On the compositors that are
+/// neither, the subsurface is the surface that actually holds pointer focus
+/// over the canvas, and constraining anything else is a lock that is granted
+/// and never activates.
 ///
 /// This is also the gate for everything the toplevel lock needed beyond the
 /// constraint itself: the canvas in the input region, recentring the engine's
 /// pointer while it holds the lock, and the hint commit on release.
+///
+/// Observed on Hyprland 0.56.2 by the reporter of #56: with the constraint on
+/// the toplevel the lock confirms and shift lock holds the cursor in the
+/// window, where before it walked out. The reasoning above came first and is
+/// left as it was written; the run is what settled it.
 fn constrain_toplevel() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
@@ -4628,8 +4694,10 @@ fn constrain_toplevel() -> bool {
         }
         let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_ascii_lowercase();
         let session = std::env::var("XDG_SESSION_DESKTOP").unwrap_or_default().to_ascii_lowercase();
-        desktop.contains("kde") || desktop.contains("plasma")
-            || session.contains("kde") || session.contains("plasma")
+        let kde = desktop.contains("kde") || desktop.contains("plasma")
+            || session.contains("kde") || session.contains("plasma");
+        let hyprland = desktop.contains("hyprland") || session.contains("hyprland");
+        kde || hyprland
     })
 }
 
@@ -4671,7 +4739,8 @@ fn constrain_toplevel() -> bool {
         // event pointer can be acknowledged as locked while the real cursor,
         // which GDK owns, stays free -- and it applies everywhere. Constraining
         // the **toplevel** is the half that is a KWin bug workaround, and it is
-        // now gated to KWin instead of imposed on every compositor.
+        // now gated to the compositors that need it -- KWin and Hyprland --
+        // instead of imposed on every compositor.
         //
         // `CORDIAL_POINTER_LOCK_SURFACE=toplevel|canvas` overrules the guess,
         // because a compositor list in a binary goes stale and the person
@@ -6245,6 +6314,7 @@ impl WaylandWindow {
         self.reconcile_stacking();
         if !engine {
             self.read_display();
+            self.reconcile_pointer_buttons();
             return;
         }
         // Polled rather than driven by an event, because the engine's own
@@ -6255,6 +6325,7 @@ impl WaylandWindow {
         // minute.
         self.sync_pointer_lock();
         self.read_display();
+        self.reconcile_pointer_buttons();
     }
 
     fn read_display(&self) {
@@ -6721,6 +6792,49 @@ mod tests {
         assert!(!release_commits_parent(true, true));
         assert!(!release_commits_parent(false, false));
         assert!(!release_commits_parent(false, true));
+    }
+
+    #[test]
+    fn a_confirmed_lock_makes_a_pointer_event_the_engines() {
+        // On the canvas is the engine's whether or not a lock is held.
+        assert!(pointer_event_is_the_engines(true, false));
+        assert!(pointer_event_is_the_engines(true, true));
+        // Off the canvas with a lock confirmed is the toplevel-lock case: the
+        // focus moved to the parent window but the cursor is captured, so the
+        // event is still the engine's. This is the one that used to return
+        // false and drop the click.
+        assert!(pointer_event_is_the_engines(false, true));
+        // Off the canvas with no lock is the header bar's click, which is what
+        // the flag was added to keep the engine from seeing.
+        assert!(!pointer_event_is_the_engines(false, false));
+    }
+
+    #[test]
+    fn a_release_follows_its_press_across_pointer_ownership_changes() {
+        use super::super::input::{BUTTON_PRIMARY, BUTTON_SECONDARY};
+        let mut held = 0;
+        let mut event = |owns, button, press| {
+            let routed = route_pointer_button(owns, held, button, press);
+            if routed {
+                if press { held |= button; } else { held &= !button; }
+            }
+            routed
+        };
+        assert!(event(true, BUTTON_PRIMARY, true));
+        assert!(event(true, BUTTON_SECONDARY, true));
+        // Losing focus between aim/fire and release must finish both presses.
+        assert!(event(false, BUTTON_SECONDARY, false));
+        assert!(event(false, BUTTON_PRIMARY, false));
+        assert!(!event(false, BUTTON_PRIMARY, false));
+        // A titlebar press and its release must both stay with GTK, even if
+        // the pointer reaches the canvas between the two.
+        assert!(!event(false, BUTTON_PRIMARY, true));
+        assert!(!event(true, BUTTON_PRIMARY, false));
+        // A later gesture must still start, once, and end normally.
+        assert!(event(true, BUTTON_PRIMARY, true));
+        assert!(!event(true, BUTTON_PRIMARY, true));
+        assert!(event(true, BUTTON_PRIMARY, false));
+        assert_eq!(held, 0);
     }
 
     #[test]

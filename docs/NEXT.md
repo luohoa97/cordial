@@ -21,6 +21,30 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## Pending in-game verification: held mouse buttons across toplevel locks, 2026-10-07
+
+The click gate added for Hyprland accepts a confirmed toplevel lock, but
+`pointer_leave` still released every held button immediately, and camera drags
+still required canvas focus. Both disagreed with that gate. Held buttons are
+now reconciled after dispatching pending Wayland events, so a canvas-to-lock
+handoff within that batch preserves them. Right and middle drags also recognise
+a confirmed lock. Real releases follow accepted presses even after ownership
+changes; unmatched releases and duplicate presses are discarded.
+
+**INFERRED** as an explanation for intermittent shooting loss. This is not a
+claim that Hyprland delivers the relevant events in one batch, or that the
+reported game symptom is fixed. If confirmation arrives in a later batch, the
+buttons can still be released. Repeat in an experience with
+`CORDIAL_TRACE_MOUSE=1`, holding fire while toggling shift lock and aiming,
+then losing and regaining window focus. Compare against the build before this
+change; record `nativePassMouseButton` and lock transitions alongside the
+visible behaviour. The MCP click verb bypasses these Wayland handlers and
+cannot test this change.
+
+The button-routing regression test passes; restoring the old ownership gate
+makes it fail on the secondary-button release after focus changes. This
+control checks routing, not compositor event ordering or engine behaviour.
+
 ## Cordial picks GTK's cairo renderer itself when Vulkan is not working, 2026-10-01
 
 The remaining half of #53. `cordial_shell::gtk_renderer` decides from the Vulkan
