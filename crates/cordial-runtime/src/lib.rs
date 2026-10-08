@@ -67,6 +67,7 @@ pub mod guest_xr;
 mod xr_runtime_pin;
 pub mod headless;
 pub mod identity;
+pub mod control;
 pub mod linking;
 pub mod live_settings;
 pub mod permissions;

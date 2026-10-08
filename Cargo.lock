@@ -346,6 +346,7 @@ dependencies = [
  "cordial-guest",
  "cordial-linker-sys",
  "cordial-plugins",
+ "cordial-protocol",
  "cordial-shell",
  "cordial-update",
  "gtk4",

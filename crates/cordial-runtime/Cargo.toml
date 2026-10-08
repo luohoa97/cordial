@@ -59,6 +59,10 @@ zstd = "0.13"
 # with its parent. ADR-002 already accepted core taking a GTK dependency; this
 # is where the runtime takes it too.
 cordial-shell = { path = "../cordial-shell" }
+# The wire between this runtime and the launcher (ADR-055): framing, typed
+# messages, the bounded event queue and the socket helper. `MIT OR Apache-2.0`,
+# and the one dependency here that is not GPL.
+cordial-protocol = { path = "../cordial-protocol" }
 # Only for `instr_close_window`, which is how the window-close shutdown path is
 # driven from a scripted run — see `wayland::instr_close_window`. The window
 # itself is `cordial-shell`'s and stays there; this is the one GTK *call* the
@@ -94,3 +98,7 @@ zbus = { version = "5.18.0", features = ["blocking"] }
 # `mi_option_get`/`mi_option_set`/`mi_version`, which is the shape the option
 # dump in the DFLog line implies the engine queries by.
 libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
+
+[dev-dependencies]
+# The shared conformance cases, run against the real server in `control`'s tests.
+cordial-protocol = { path = "../cordial-protocol", features = ["conformance"] }

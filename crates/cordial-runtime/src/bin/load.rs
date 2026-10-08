@@ -549,6 +549,10 @@ fn enter_run_dir(opt: &mut Options) {
     // The live-settings socket, unlike the one above, is always on: it can only
     // set four hot-path values and lives in a private directory (ADR-044).
     cordial_runtime::live_settings::start();
+    // The same place, for `cordial.runtime/1` (ADR-055): the launcher's channel
+    // to this process, which replaces the socket above. Nothing is asked of the
+    // engine and nothing before it moves.
+    cordial_runtime::control::start();
 
     let root = cordial_runtime::profile::engine_root().join("run");
     if let Err(e) = std::fs::create_dir_all(root.join("exe")) {

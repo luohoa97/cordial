@@ -8,6 +8,7 @@ pub mod manifest;
 pub mod msg;
 pub mod queue;
 pub mod settings;
+pub mod socket;
 pub mod v0;
 pub mod version;
 

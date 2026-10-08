@@ -94,6 +94,18 @@ impl EventQueue {
         Self::take(&mut inner)
     }
 
+    /// A number for an event that does not go through the queue, so it takes its
+    /// place in the same sequence. `bye` is the case: it goes straight to a
+    /// controller that is being replaced, not to the one the pump writes to, and
+    /// a counter that went backwards across it would look like a fault to a
+    /// launcher checking `n`.
+    pub fn take_number(&self) -> u64 {
+        let mut inner = self.lock();
+        let n = inner.next_n;
+        inner.next_n += 1;
+        n
+    }
+
     fn take(inner: &mut Inner) -> Option<Event> {
         let (ev, p) = if inner.dropped > 0 {
             let count = std::mem::take(&mut inner.dropped);
@@ -148,6 +160,16 @@ mod tests {
         assert_eq!(rest, vec![json!(0), json!(1), json!(2), json!(3)]);
         // Reported once, not every time.
         assert!(q.pop().is_none());
+    }
+
+    #[test]
+    fn an_event_sent_outside_the_queue_takes_the_next_number() {
+        let q = EventQueue::new();
+        q.push("a", json!(1));
+        assert_eq!(q.pop().unwrap().n, 1);
+        assert_eq!(q.take_number(), 2, "bye, say, sent straight to a controller");
+        q.push("b", json!(2));
+        assert_eq!(q.pop().unwrap().n, 3, "the queue carries on from it, with no gap and no repeat");
     }
 
     #[test]

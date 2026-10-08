@@ -131,7 +131,7 @@ pub fn handle(line: &str) -> Reply {
 
 /// Applies one update. The `Some` is something worth telling the shell about
 /// that is not a failure: a sink change with nothing playing has nothing to move.
-fn apply(update: &Update) -> Option<String> {
+pub fn apply(update: &Update) -> Option<String> {
     let note = match update {
         Update::PointerAcceleration(a) => {
             crate::android::wayland::set_pointer_acceleration(*a == Accel::Always);
@@ -155,7 +155,7 @@ fn apply(update: &Update) -> Option<String> {
         }
         Update::AudioOutput(name) => {
             let (moved, note) = audio::set_output(name);
-            println!("  live: audio_output: {moved} playing stream(s) moved");
+            narrate(&format!("audio_output: {moved} playing stream(s) moved"));
             (!note.is_empty()).then_some(note)
         }
         // The microphone. Re-links a capture stream that is open and otherwise
@@ -163,7 +163,7 @@ fn apply(update: &Update) -> Option<String> {
         // change in Settings cannot light the desktop's recording indicator.
         Update::AudioInput(name) => {
             let (moved, note) = audio::set_input(name);
-            println!("  live: audio_input: {moved} recording stream(s) moved");
+            narrate(&format!("audio_input: {moved} recording stream(s) moved"));
             (!note.is_empty()).then_some(note)
         }
         // A request to gamemoded, made on the spot. The note is whatever the
@@ -187,8 +187,15 @@ fn apply(update: &Update) -> Option<String> {
     };
     // Narrated because this project debugs by reading the client's output, and
     // "the setting reached the process" is the fact worth being able to see.
-    println!("  live: {} -> {}", update.key(), value_word(update));
+    narrate(&format!("{} -> {}", update.key(), value_word(update)));
     note
+}
+
+/// A `  live:` line on the client's own stdout that cannot panic. `println!`
+/// does when stdout has gone away, and settings now arrive on a connection that
+/// is meant to outlive the launcher whose pipe that stdout is (spec section 2).
+fn narrate(line: &str) {
+    let _ = writeln!(std::io::stdout().lock(), "  live: {line}");
 }
 
 fn value_word(update: &Update) -> String {
@@ -313,7 +320,7 @@ fn frame_rate_limit_word() -> String {
 }
 
 /// What is in force now, in the wire's own words.
-fn current() -> BTreeMap<String, Value> {
+pub fn current() -> BTreeMap<String, Value> {
     use crate::android::input::{throttle_policy, ThrottleWhen};
     let mut m = BTreeMap::new();
     m.insert(

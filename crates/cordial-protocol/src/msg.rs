@@ -169,7 +169,10 @@ pub fn reply_ok<T: Serialize>(id: u64, payload: &T) -> Reply {
     Reply::ok(id, to_value(payload))
 }
 
-fn to_value<T: Serialize>(t: &T) -> Value {
+/// A payload as the JSON value a frame carries. Public so a runtime that queues
+/// events by name and value (see [`crate::queue::EventQueue`]) need not depend on
+/// `serde` itself to build the value.
+pub fn to_value<T: Serialize>(t: &T) -> Value {
     serde_json::to_value(t).expect("a payload always serialises")
 }
 

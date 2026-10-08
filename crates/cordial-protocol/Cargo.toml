@@ -20,6 +20,7 @@ include = [
     "src/**",
     "vectors/**",
     "tests/**",
+    "examples/**",
     "Cargo.toml",
     "README.md",
     "LICENSE-MIT",
@@ -42,4 +43,8 @@ serde_json = "1"
 
 [[test]]
 name = "conformance"
+required-features = ["conformance"]
+
+[[example]]
+name = "check_runtime"
 required-features = ["conformance"]
