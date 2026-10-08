@@ -103,16 +103,16 @@ struct MemoryAllocateInfo {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct MemoryType {
-    property_flags: u32,
-    heap_index: u32,
+    pub property_flags: u32,
+    pub heap_index: u32,
 }
 
 #[repr(C)]
 pub struct PhysicalDeviceMemoryProperties {
-    memory_type_count: u32,
-    memory_types: [MemoryType; 32],
-    memory_heap_count: u32,
-    memory_heaps: [[u64; 2]; 16],
+    pub memory_type_count: u32,
+    pub memory_types: [MemoryType; 32],
+    pub memory_heap_count: u32,
+    pub memory_heaps: [[u64; 2]; 16],
 }
 
 #[repr(C)]

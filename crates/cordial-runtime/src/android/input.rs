@@ -270,6 +270,7 @@ pub fn deliver_mouse(
     if no_agdk_touch() {
         return;
     }
+    let (x, y) = super::render_scale::to_engine(x, y);
     match cordial_linker_sys::game_activity::touch(
         handle,
         action,
@@ -296,6 +297,7 @@ fn deliver_scroll(handle: i64, x: f32, y: f32, hscroll: f32, vscroll: f32, event
     if no_agdk_touch() {
         return;
     }
+    let (x, y) = super::render_scale::to_engine(x, y);
     match cordial_linker_sys::game_activity::scroll(handle, x, y, hscroll, vscroll, event_time_ms) {
         Ok(Some(consumed)) => super::trace(format_args!(
             "onTouchEventNative(ACTION_SCROLL h={hscroll} v={vscroll}) -> {consumed}"
@@ -2170,6 +2172,9 @@ pub fn pass_mouse_move_delta(x: f32, y: f32, dx: f32, dy: f32) {
         report_unregistered("nativePassMouseMove");
         return;
     }
+    // CORDIAL_RENDER_SCALE: the engine's pixels are the scaled ones. The delta
+    // is left as it is; it is a distance the user moved, not a place.
+    let (x, y) = super::render_scale::to_engine(x, y);
     // SAFETY: `f` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
     let r = unsafe { cordial_linker_sys::game_activity::pass_mouse_move(f, x, y, dx, dy) };
     if trace_mouse() {
@@ -2195,6 +2200,7 @@ pub fn pass_mouse_button(x: f32, y: f32, down: bool, android_button: i32) {
         report_unregistered("nativePassMouseButton");
         return;
     }
+    let (x, y) = super::render_scale::to_engine(x, y);
     // SAFETY: `f` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
     let r = unsafe { cordial_linker_sys::game_activity::pass_mouse_button(f, x, y, down, button) };
     if trace_mouse() {
@@ -2241,6 +2247,7 @@ pub fn wheel(handle: i64, x: f32, y: f32, hscroll: f32, vscroll: f32, event_time
     if f.is_null() {
         report_unregistered("nativePassMouseWheel");
     }
+    let (x, y) = super::render_scale::to_engine(x, y);
     // SAFETY: `f` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
     let passed = (!f.is_null()).then(|| unsafe { cordial_linker_sys::game_activity::pass_mouse_wheel(f, x, y, v) });
     if trace_wheel() {

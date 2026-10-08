@@ -2479,11 +2479,14 @@ impl WaylandWindow {
         self.host.0.set_text_overlay(Some(cordial_shell::host_window::TextOverlay {
             text,
             caret_chars: caret,
-            x: info.x,
-            y: info.y,
-            width: info.width,
-            height: info.height,
-            font_size,
+            // A rectangle the engine reported is in its pixels, which are the
+            // window's divided by CORDIAL_RENDER_SCALE; the fallback bar is
+            // already in the window's.
+            x: if placed == Placed::Fallback { info.x } else { super::render_scale::to_window(info.x) },
+            y: if placed == Placed::Fallback { info.y } else { super::render_scale::to_window(info.y) },
+            width: if placed == Placed::Fallback { info.width } else { super::render_scale::to_window(info.width) },
+            height: if placed == Placed::Fallback { info.height } else { super::render_scale::to_window(info.height) },
+            font_size: if placed == Placed::Fallback { font_size } else { super::render_scale::to_window(font_size) },
             text_color: info.text_color as u32,
             font_family: face.as_ref().map(|(_, f)| f.family.as_str()),
             font_weight: face.as_ref().map_or(400, |(_, f)| f.weight),
@@ -2693,10 +2696,12 @@ impl WaylandWindow {
             return true;
         }
         const MARGIN: f32 = 8.0;
-        info.x >= -MARGIN
-            && info.y >= -MARGIN
-            && info.x + info.width <= canvas_w as f32 + MARGIN
-            && info.y + info.height <= canvas_h as f32 + MARGIN
+        // CORDIAL_RENDER_SCALE: the engine reports in its own (scaled) pixels.
+        let w = super::render_scale::to_window;
+        w(info.x) >= -MARGIN
+            && w(info.y) >= -MARGIN
+            && w(info.x + info.width) <= canvas_w as f32 + MARGIN
+            && w(info.y + info.height) <= canvas_h as f32 + MARGIN
     }
 
     /// Where the focused box is, from the best source that will answer.

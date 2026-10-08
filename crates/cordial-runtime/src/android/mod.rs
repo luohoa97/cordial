@@ -25,6 +25,7 @@ pub mod gl;
 pub mod glcount;
 pub mod input;
 pub mod looper;
+pub mod render_scale;
 pub mod surface_params;
 pub mod system;
 pub mod vulkan;

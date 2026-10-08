@@ -238,6 +238,53 @@ compiled only by the OpenXR layout test, not into any binary.
 
 ---
 
+## Snapdragon Game Super Resolution 1 — BSD-3-Clause
+
+The upscale filter behind `CORDIAL_RENDER_SCALE` (ADR-057) is a port of
+`sgsr/v1/include/glsl/sgsr1_shader_mobile.frag` from
+[`SnapdragonStudios/snapdragon-gsr`](https://github.com/SnapdragonStudios/snapdragon-gsr),
+translated from GLSL ES 3.0 to Vulkan GLSL with its viewport uniform turned into
+a push constant and its operation mode, edge threshold and edge sharpness fixed
+at the shipped defaults. It lives in
+[`crates/cordial-runtime/shaders/render_scale/`](crates/cordial-runtime/shaders/render_scale),
+source beside the SPIR-V compiled from it. The shader's own header reads
+"Copyright (c) 2025, Qualcomm Innovation Center, Inc."; the repository's licence
+file, reproduced here, is dated 2023.
+
+```
+Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+SPDX-License-Identifier: BSD-3-Clause
+```
+
+---
+
 ## What is *not* here
 
 **Roblox.** Cordial contains no Roblox code, APK, asset or decompiled material,

@@ -497,6 +497,13 @@ extern "C" fn vk_get_instance_proc_addr(instance: *mut c_void, name: *const c_ch
             let p = unsafe { (h.get_instance_proc_addr)(instance, name) };
             destroy_swapchain_entry(p)
         }
+        b"vkGetSwapchainImagesKHR" if super::render_scale::scale().is_some() => {
+            HOST_GET_SWAPCHAIN_IMAGES.store(
+                unsafe { (h.get_instance_proc_addr)(instance, name) } as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            vk_get_swapchain_images_khr as *const () as *mut c_void
+        }
         // Roblox compatibility wrapper; see [`vk_acquire_next_image_khr`].
         b"vkAcquireNextImageKHR" => {
             HOST_ACQUIRE_NEXT_IMAGE.store(
@@ -594,6 +601,10 @@ extern "C" fn vk_get_device_proc_addr(device: *mut c_void, name: *const c_char) 
             vk_create_swapchain_khr as *const () as *mut c_void
         }
         b"vkDestroySwapchainKHR" => destroy_swapchain_entry(host(device, name)),
+        b"vkGetSwapchainImagesKHR" if super::render_scale::scale().is_some() => {
+            HOST_GET_SWAPCHAIN_IMAGES.store(host(device, name) as usize, std::sync::atomic::Ordering::Relaxed);
+            vk_get_swapchain_images_khr as *const () as *mut c_void
+        }
         b"vkAcquireNextImageKHR" => {
             HOST_ACQUIRE_NEXT_IMAGE
                 .store(host(device, name) as usize, std::sync::atomic::Ordering::Relaxed);
@@ -609,6 +620,26 @@ extern "C" fn vk_get_device_proc_addr(device: *mut c_void, name: *const c_char) 
             super::vulkan_etc::hook(bytes, p, device).unwrap_or(p)
         }
     }
+}
+
+static HOST_GET_SWAPCHAIN_IMAGES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `vkGetSwapchainImagesKHR`, answered with the proxies the engine renders
+/// into when the swapchain has them (`CORDIAL_RENDER_SCALE`), and with the
+/// driver's own answer otherwise. Only handed out when the variable is set.
+extern "C" fn vk_get_swapchain_images_khr(device: *mut c_void, swapchain: u64, count: *mut u32, images: *mut u64) -> i32 {
+    if !count.is_null() {
+        if let Some(rc) = super::render_scale::images(swapchain, count, images) {
+            return rc;
+        }
+    }
+    let f = HOST_GET_SWAPCHAIN_IMAGES.load(std::sync::atomic::Ordering::Relaxed);
+    if f == 0 {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    // SAFETY: resolved from the host loader for exactly this name.
+    let f: extern "C" fn(*mut c_void, u64, *mut u32, *mut u64) -> i32 = unsafe { std::mem::transmute(f) };
+    f(device, swapchain, count, images)
 }
 
 /// The real `vkAcquireNextImageKHR`, interposed for one status code and nothing
@@ -714,6 +745,14 @@ extern "C" fn vk_queue_present_khr(queue: *mut c_void, info: *const c_void) -> i
     // finished rendering it and left it in `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`.
     // Once the present has been forwarded the image belongs to the driver and
     // reading it is a race.
+    // CORDIAL_RENDER_SCALE: the upscale goes first, so that a capture below
+    // reads the window-sized image the user sees, and the present waits on it.
+    let mut patch = super::render_scale::PresentPatch::default();
+    let info = if super::render_scale::scale().is_some() && super::render_scale::before_present(queue as u64, info, &mut patch) {
+        patch.as_ptr()
+    } else {
+        info
+    };
     if super::capture::pending() {
         take_capture(queue, info);
     }
@@ -1413,6 +1452,65 @@ extern "C" fn vk_create_swapchain_khr(
     allocator: *const c_void,
     swapchain_out: *mut u64,
 ) -> i32 {
+    let (Some(scale), Some(info)) = (super::render_scale::scale(), unsafe { create_info.as_ref() }) else {
+        return vk_create_swapchain_khr_real(device, create_info, allocator, swapchain_out);
+    };
+    // CORDIAL_RENDER_SCALE. The engine asked for a swapchain at the extent it
+    // was told; the window gets one at its own size, with the usage a pass
+    // drawing into it and a screenshot reading it need, and the engine gets
+    // proxies of the size it asked for (`render_scale::attach`).
+    let real_extent = super::render_scale::real_extent_for(
+        info.surface,
+        (info.image_extent.width, info.image_extent.height),
+        scale,
+    );
+    let mut real_info = *info;
+    real_info.image_extent = VkExtent2D { width: real_extent.0, height: real_extent.1 };
+    let want = super::render_scale::USAGE_COLOR_ATTACHMENT | super::render_scale::USAGE_TRANSFER_SRC;
+    let allowed = surface_capabilities(info.surface).map_or(want, |c| c.supported_usage_flags);
+    real_info.image_usage |= want & allowed;
+    let rc = vk_create_swapchain_khr_real(device, &real_info, allocator, swapchain_out);
+    if rc != VK_SUCCESS || swapchain_out.is_null() {
+        return rc;
+    }
+    // SAFETY: the driver has just written the handle.
+    let swapchain = unsafe { *swapchain_out };
+    let gdpa = HOST_GET_DEVICE_PROC_ADDR.load(std::sync::atomic::Ordering::Relaxed);
+    let attached = if gdpa == 0 {
+        Err("vkGetDeviceProcAddr was never resolved".to_string())
+    } else {
+        super::render_scale::attach(
+            device as u64,
+            swapchain,
+            &super::render_scale::EngineRequest {
+                format: info.image_format as u32,
+                usage: info.image_usage,
+                flags: info.flags,
+                extent: (info.image_extent.width, info.image_extent.height),
+            },
+            real_extent,
+            super::capture::QUEUE_FAMILY.load(std::sync::atomic::Ordering::Relaxed) as u32,
+            // SAFETY: resolved from the host loader for exactly this name.
+            unsafe { std::mem::transmute::<usize, extern "C" fn(u64, *const c_char) -> *mut c_void>(gdpa) },
+            PHYSICAL_DEVICE.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    };
+    if let Err(e) = attached {
+        // A swapchain whose images are not the size the engine was told is
+        // worse than none: refuse, and the engine reports a failed create.
+        println!("[android] render-scale: could not build the upscale pass ({e}); failing the swapchain");
+        vk_destroy_swapchain_host(device, swapchain, allocator);
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    rc
+}
+
+extern "C" fn vk_create_swapchain_khr_real(
+    device: *mut c_void,
+    create_info: *const VkSwapchainCreateInfoKHR,
+    allocator: *const c_void,
+    swapchain_out: *mut u64,
+) -> i32 {
     // In an OpenXR session the engine never presents to this swapchain, and
     // the window mirror (`xr_mirror`) blits the left eye into it, which needs
     // `TRANSFER_DST` in its usage. Added only when an XR session exists --
@@ -1532,6 +1630,34 @@ extern "C" fn vk_create_swapchain_khr(
     rc
 }
 
+/// The host's `vkDestroySwapchainKHR`, for the render-scale wrapper below.
+static HOST_DESTROY_SWAPCHAIN_SCALED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// With `CORDIAL_RENDER_SCALE` on, a destroy must also drop the proxies and the
+/// pass that belong to the swapchain; with it off the driver's own entry
+/// point is returned, exactly as before.
+fn scaled_destroy_entry(host: *mut c_void) -> *mut c_void {
+    if host.is_null() || super::render_scale::scale().is_none() {
+        return host;
+    }
+    HOST_DESTROY_SWAPCHAIN_SCALED.store(host as usize, std::sync::atomic::Ordering::Relaxed);
+    vk_destroy_swapchain_scaled as *const () as *mut c_void
+}
+
+extern "C" fn vk_destroy_swapchain_scaled(device: *mut c_void, swapchain: u64, allocator: *const c_void) {
+    super::render_scale::forget(swapchain);
+    vk_destroy_swapchain_host(device, swapchain, allocator);
+}
+
+fn vk_destroy_swapchain_host(device: *mut c_void, swapchain: u64, allocator: *const c_void) {
+    let f = HOST_DESTROY_SWAPCHAIN_SCALED.load(std::sync::atomic::Ordering::Relaxed);
+    if f != 0 {
+        // SAFETY: resolved from the host loader for exactly this name.
+        let f: extern "C" fn(*mut c_void, u64, *const c_void) = unsafe { std::mem::transmute(f) };
+        f(device, swapchain, allocator);
+    }
+}
+
 #[cfg(feature = "vr")]
 static HOST_DESTROY_SWAPCHAIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -1542,13 +1668,13 @@ static HOST_DESTROY_SWAPCHAIN: std::sync::atomic::AtomicUsize = std::sync::atomi
 /// Without the `vr` feature there is no mirror, so nothing is interposed.
 #[cfg(not(feature = "vr"))]
 fn destroy_swapchain_entry(host: *mut c_void) -> *mut c_void {
-    host
+    scaled_destroy_entry(host)
 }
 
 #[cfg(feature = "vr")]
 fn destroy_swapchain_entry(host: *mut c_void) -> *mut c_void {
     if host.is_null() || crate::profile::build() != crate::profile::Build::Quest {
-        return host;
+        return scaled_destroy_entry(host);
     }
     HOST_DESTROY_SWAPCHAIN.store(host as usize, std::sync::atomic::Ordering::Relaxed);
     vk_destroy_swapchain_khr as *const () as *mut c_void
@@ -2299,6 +2425,37 @@ extern "C" fn vk_create_shader_module(
 /// Mesa's honestly-correct-per-spec-but-Android-shaped-code-hostile answer,
 /// keeps that one source of truth rather than adding a second.
 extern "C" fn vk_get_physical_device_surface_capabilities_khr(
+    physical_device: *mut c_void,
+    surface: *mut c_void,
+    out: *mut VkSurfaceCapabilitiesKHR,
+) -> i32 {
+    let rc = vk_get_physical_device_surface_capabilities_khr_unscaled(physical_device, surface, out);
+    let Some(scale) = super::render_scale::scale() else { return rc };
+    // SAFETY: `out` is the caller's own out-parameter, completely written by
+    // the driver when `rc` is success.
+    let Some(caps) = (unsafe { out.as_mut() }).filter(|_| rc == VK_SUCCESS) else { return rc };
+    if caps.current_extent.width == VK_WHOLE_SIZE_UNDEFINED_EXTENT || caps.current_extent.height == VK_WHOLE_SIZE_UNDEFINED_EXTENT {
+        return rc;
+    }
+    // CORDIAL_RENDER_SCALE: tell the engine the surface is smaller than it is.
+    // The minimum is lowered with it, because an engine that clamps its own
+    // extent into [min, max] would otherwise put the real size straight back
+    // (X11 reports min == max == current).
+    let real = (caps.current_extent.width, caps.current_extent.height);
+    super::render_scale::note_real_extent(surface as u64, real);
+    let (w, h) = super::render_scale::scaled(real, scale);
+    caps.current_extent = VkExtent2D { width: w, height: h };
+    caps.min_image_extent = VkExtent2D { width: caps.min_image_extent.width.min(w), height: caps.min_image_extent.height.min(h) };
+    caps.max_image_extent = VkExtent2D { width: caps.max_image_extent.width.max(w), height: caps.max_image_extent.height.max(h) };
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let packed = ((w as u64) << 32) | h as u64;
+    if LAST.swap(packed, std::sync::atomic::Ordering::Relaxed) != packed {
+        println!("[android] render-scale: reporting surface extent {w}x{h} to the engine for a {}x{} window", real.0, real.1);
+    }
+    rc
+}
+
+extern "C" fn vk_get_physical_device_surface_capabilities_khr_unscaled(
     physical_device: *mut c_void,
     surface: *mut c_void,
     out: *mut VkSurfaceCapabilitiesKHR,
