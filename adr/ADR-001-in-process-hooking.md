@@ -4,7 +4,13 @@ title: "ADR-001: In-process hooking of the Roblox process"
 **Status:** Rejected
 **Date:** 2026-07-31
 **Supersedes:** nothing
-**Related:** architecture spec §1.2, §4, §7.3, §9b
+**Related:** architecture spec §1.2, §4, §7.3, §9b, [ADR-053](/adr/ADR-053-vr-is-a-mode-of-the-android-runtime)
+
+> ADR-053's VR mode runs the Quest build's arm64 engine in an in-process
+> translator. It stays inside this record because the engine's code runs
+> unmodified and the translator dispatches only on Cordial's own stub
+> addresses, never on an engine address; `cordial-guest` refuses any other
+> key, and its tests fail if that refusal is removed.
 
 ---
 
