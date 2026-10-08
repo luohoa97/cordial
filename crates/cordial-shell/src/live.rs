@@ -256,7 +256,15 @@ impl State {
     }
 
     fn needs_link(t: &Target) -> bool {
-        !t.superseded && t.link.as_ref().map_or(true, |l| !l.alive())
+        // A link that ended because a newer controller took over is not one to
+        // replace. Asked of the link as well as the flag, because the link learns
+        // it on its reader thread before the worker has looked: reconnecting in
+        // that gap would take control straight back, and the two launchers would
+        // then do it to each other for as long as both ran.
+        if t.superseded || t.link.as_ref().is_some_and(|l| l.superseded()) {
+            return false;
+        }
+        t.link.as_ref().map_or(true, |l| !l.alive())
     }
 
     fn outstanding(&self) -> bool {
@@ -490,6 +498,15 @@ fn connect(job: &Job) -> Option<Arc<Link>> {
 }
 
 fn deliver_once() {
+    {
+        let mut s = state();
+        for t in s.targets.iter_mut().filter(|t| !t.superseded) {
+            if t.link.as_ref().is_some_and(|l| l.superseded()) {
+                t.superseded = true;
+                println!("  shell: pid {}: another controller took over this runtime; leaving it", t.pid);
+            }
+        }
+    }
     let plan = state().plan();
     for job in plan {
         let link = match job.link.clone() {
@@ -506,10 +523,6 @@ fn deliver_once() {
             },
         };
         if link.superseded() {
-            if let Some(t) = state().targets.iter_mut().find(|t| t.pid == job.pid) {
-                t.superseded = true;
-            }
-            println!("  shell: pid {}: another controller took over this runtime; leaving it", job.pid);
             continue;
         }
         let diff = {
@@ -761,14 +774,16 @@ pub fn start(config_path: &Path, current: &ShellConfig) -> Option<FileWatch> {
     adopt_running();
     let path = config_path.to_path_buf();
     // What the last successful read said, so an unchanged save (the shell
-    // rewrites the whole file for any row) sends nothing.
-    let seen = Rc::new(RefCell::new(live_updates(current)));
+    // rewrites the whole file for any row) sends nothing. The whole document and
+    // not just the live keys: a change to a next-launch key sends nothing either,
+    // but it is worth a line saying the running game will not take it yet.
+    let seen = Rc::new(RefCell::new(serde_json::to_value(current).unwrap_or(Value::Null)));
     let announced_bad = Rc::new(Cell::new(false));
     let watch_path = path.clone();
     let result = watch_file(&watch_path, move || match read_strict(&path) {
         Some(config) => {
             announced_bad.set(false);
-            let now = live_updates(&config);
+            let now = serde_json::to_value(&config).unwrap_or(Value::Null);
             if *seen.borrow() != now {
                 *seen.borrow_mut() = now;
                 want(&config);
