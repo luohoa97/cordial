@@ -713,10 +713,31 @@ fn loadable(soname: &str) -> bool {
     true
 }
 
+/// The directories the Vulkan loader reads ICD manifests from when no
+/// `VK_DRIVER_FILES` names them, in the order it reads them.
+///
+/// `/run/opengl-driver/share` is NixOS's: its drivers are not in
+/// `XDG_DATA_DIRS` or `/usr/share`, and the loader nixpkgs builds adds that
+/// directory itself (INFERRED from nixpkgs's packaging, not run on NixOS). A
+/// 0.23.0 diagnostics report from a NixOS machine said "a Vulkan loader but
+/// no Vulkan driver" in the same listing that named its RTX 3080 with Vulkan
+/// 1.4, because this list stopped at the FHS paths.
+fn vulkan_icd_dirs(data_home: Option<PathBuf>, data_dirs: &str) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(home) = data_home {
+        dirs.push(home.join("vulkan/icd.d"));
+    }
+    dirs.extend(data_dirs.split(':').filter(|d| !d.is_empty()).map(|d| Path::new(d).join("vulkan/icd.d")));
+    dirs.extend(
+        ["/etc/vulkan/icd.d", "/etc/xdg/vulkan/icd.d", "/usr/share/vulkan/icd.d", "/run/opengl-driver/share/vulkan/icd.d"]
+            .map(PathBuf::from),
+    );
+    dirs
+}
+
 /// The ICD manifests the Vulkan loader would read, by file name, from the
 /// places its documentation says it looks.
 fn vulkan_drivers() -> Vec<String> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
     for var in ["VK_DRIVER_FILES", "VK_ICD_FILENAMES"] {
         if let Some(list) = std::env::var_os(var) {
             return std::env::split_paths(&list)
@@ -725,15 +746,11 @@ fn vulkan_drivers() -> Vec<String> {
                 .collect();
         }
     }
-    if let Some(home) = std::env::var_os("XDG_DATA_HOME")
+    let data_home = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-    {
-        dirs.push(home.join("vulkan/icd.d"));
-    }
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
     let data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
-    dirs.extend(data_dirs.split(':').filter(|d| !d.is_empty()).map(|d| Path::new(d).join("vulkan/icd.d")));
-    dirs.extend(["/etc/vulkan/icd.d", "/etc/xdg/vulkan/icd.d", "/usr/share/vulkan/icd.d"].map(PathBuf::from));
+    let dirs = vulkan_icd_dirs(data_home, &data_dirs);
     let mut found: Vec<String> = Vec::new();
     for dir in dirs {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
@@ -1112,6 +1129,13 @@ mod tests {
         let found = vulkan_drivers();
         std::env::remove_var("VK_DRIVER_FILES");
         assert_eq!(found, vec!["test_icd.json".to_string()]);
+    }
+
+    #[test]
+    fn nixos_driver_directory_is_searched() {
+        let dirs = vulkan_icd_dirs(Some(PathBuf::from("/home/a/.local/share")), "/usr/local/share:/usr/share");
+        assert!(dirs.contains(&PathBuf::from("/run/opengl-driver/share/vulkan/icd.d")));
+        assert_eq!(dirs[0], PathBuf::from("/home/a/.local/share/vulkan/icd.d"), "the user's own directory is read first");
     }
 
     #[test]
