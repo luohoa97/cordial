@@ -665,6 +665,10 @@ struct WlClient {
     /// should be given when creating one — see the text-input section of the
     /// module doc for what a guess cost here.
     get_version: unsafe extern "C" fn(*mut c_void) -> u32,
+    /// For giving the canvas a `GdkSurface` to answer to; see
+    /// [`attach_touch_stand_in`] for why a surface GDK did not create has to
+    /// carry one.
+    set_user_data: unsafe extern "C" fn(*mut c_void, *mut c_void),
     /// Set once the connection is unusable. Non-zero means every later request
     /// is discarded and every dispatch fails, so a run that reaches this is
     /// over whatever it does next; `pump` reports it rather than letting the
@@ -770,6 +774,7 @@ impl WlClient {
             marshal_flags: sym!("wl_proxy_marshal_flags"),
             add_listener: sym!("wl_proxy_add_listener"),
             get_version: sym!("wl_proxy_get_version"),
+            set_user_data: sym!("wl_proxy_set_user_data"),
             get_error: sym!("wl_display_get_error"),
             get_protocol_error: sym!("wl_display_get_protocol_error"),
             registry_interface: sym!("wl_registry_interface"),
@@ -1079,11 +1084,25 @@ struct HostWindowCell(cordial_shell::host_window::HostWindow);
 unsafe impl Send for HostWindowCell {}
 unsafe impl Sync for HostWindowCell {}
 
+/// The unmapped `GdkSurface` [`attach_touch_stand_in`] makes. GTK refcounts
+/// non-atomically, so this is main-thread-only like `HostWindowCell`; nothing
+/// ever touches it again after `open` stores it, and it is never dropped,
+/// because `WINDOW` lives for the whole process.
+struct TouchStandIn(#[allow(dead_code)] gtk4::gdk::Surface);
+// SAFETY: see above -- created on the thread that called `open`, never used
+// again, and not dropped before the process exits.
+unsafe impl Send for TouchStandIn {}
+unsafe impl Sync for TouchStandIn {}
+
 pub struct WaylandWindow {
     wl: WlClient,
     egl: Option<WlEgl>,
     display: *mut c_void,
     host: HostWindowCell,
+    /// The `GdkSurface` the canvas answers to for GDK's touch handler. Held
+    /// only so it lives as long as the canvas does; see
+    /// [`attach_touch_stand_in`].
+    _touch_stand_in: TouchStandIn,
     // Kept named and typed even though only `surface`/`subsurface`/`compositor`
     // are read again after construction — the rest are still owned proxies for
     // the life of this one-window-per-process runtime (the same scope
@@ -1388,6 +1407,68 @@ unsafe extern "C" fn registry_global_remove(_data: *mut c_void, _registry: *mut 
 static REGISTRY_LISTENER: RegistryListener =
     RegistryListener { global: registry_global, global_remove: registry_global_remove };
 
+/// Give the canvas `wl_surface` something GDK's touch handler can hold.
+///
+/// **Issue #36: any touch on the engine's canvas killed the client with
+/// SIGSEGV in `gdk_surface_handle_event`, reproduced on GTK 4.22.4 with a touch
+/// injected by `tools/touch-compositor`.** GDK's `touch_handle_down` stores
+/// `wl_surface_get_user_data(surface)` as the contact's surface and builds a
+/// `GDK_TOUCH_BEGIN` on it without asking whether it is a `GdkSurface`.
+/// `pointer_handle_enter` and `keyboard_handle_enter` both do ask, which is why
+/// the canvas -- a plain `wl_surface` this file made, with no user data --
+/// has never troubled the pointer. A touch on it therefore queued an event
+/// whose surface was NULL (**INFERRED** from the 4.22 source; the fault site
+/// and the cure are measured), and the main loop dereferenced it on the next
+/// iteration, inside `HostWindow::pump`. `CORDIAL_NO_TOUCH=1` cannot prevent
+/// it: that stops this file binding its own `wl_touch`, and GDK binds one
+/// regardless -- the crash was reproduced with it set.
+///
+/// The stand-in is a toplevel `GdkSurface` that is never presented. GTK has
+/// no widget for it, so a touch on the canvas is queued against it and
+/// dropped, which is what ought to happen to a contact on a surface GTK does
+/// not draw; the engine still gets the touch from this file's own `wl_touch`,
+/// which filters by `wl_surface` pointer and never consults the user data.
+///
+/// **What this does to the pointer, measured.** The canvas used to fail GDK's
+/// `GDK_IS_SURFACE` check on pointer enter and be ignored. With a user data it
+/// passes, so GDK now takes pointer focus on the stand-in while the pointer is
+/// over the canvas, and drops the events that follow because GTK has no widget
+/// for it. The one visible difference is on the wire:
+/// `tools/touch-compositor/touch-e2e.py --pointer-only` records the
+/// `wl_pointer.set_cursor` requests, and where only this file's pointer sent one
+/// over the canvas before, GDK's pointer now sends one as well, after it. That
+/// is why the stand-in carries the `none` cursor: GDK attaches a NULL buffer for
+/// it, so both requests hide the cursor. **INFERRED for a real cursor theme:**
+/// the headless sway used for the measurement draws no arrow in any state, so
+/// the two outcomes could not be told apart there, and the claim rests on GDK's
+/// `_gdk_wayland_cursor_get_buffer` returning NULL for `none`.
+///
+/// The alternatives were worse. The toplevel's own `GdkSurface` would have GTK
+/// hit-test canvas coordinates against the header bar and click whatever sits
+/// under them. An empty input region on the canvas is the change
+/// `set_engine_stacking` records as reverted, because a click then falls
+/// through to the window behind.
+fn attach_touch_stand_in(
+    wl: &WlClient,
+    host: &cordial_shell::host_window::HostWindow,
+    canvas: *mut c_void,
+) -> TouchStandIn {
+    use gtk4::glib::prelude::ObjectType;
+    use gtk4::prelude::{SurfaceExt, WidgetExt};
+    let stand_in = gtk4::gdk::Surface::new_toplevel(&host.window().display());
+    // Hidden, because GDK sets the cursor for whichever surface holds its
+    // pointer focus and a surface with none gets the default arrow -- which
+    // lands after this file's own `hide_pointer` and puts the system cursor
+    // back over the engine's own.
+    stand_in.set_cursor(gtk4::gdk::Cursor::from_name("none", None).as_ref());
+    // SAFETY: `canvas` is the live `wl_surface` proxy created in `open`, and
+    // the pointer stored is the `GdkSurface` just made, which `TouchStandIn`
+    // keeps alive for the life of the process. GDK only ever compares and
+    // dereferences it as a `GdkSurface`.
+    unsafe { (wl.set_user_data)(canvas, stand_in.as_ptr() as *mut c_void) };
+    TouchStandIn(stand_in)
+}
+
 pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWindow, String> {
     if let Some(w) = WINDOW.get() {
         return Ok(w);
@@ -1623,6 +1704,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     if surface.is_null() {
         return Err("wl_compositor.create_surface failed".into());
     }
+    let touch_stand_in = attach_touch_stand_in(&wl, &host, surface);
     let subsurface = unsafe {
         (wl.marshal_flags)(
             subcompositor,
@@ -1810,6 +1892,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         egl,
         display,
         host: HostWindowCell(host),
+        _touch_stand_in: touch_stand_in,
         compositor,
         subcompositor,
         surface,

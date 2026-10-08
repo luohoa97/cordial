@@ -82,7 +82,9 @@ From the [0.23.2 release notes](releases/v0.23.2.md), the newest list:
   dropped it because the window had no keyboard focus. Every key is printed,
   including ones typed into a password box, so trim the paste to the W lines.
 - **A touchscreen can crash the client**
-  ([#36](https://github.com/luohoa97/cordial/issues/36)).
+  ([#36](https://github.com/luohoa97/cordial/issues/36)). Fixed on `main` after
+  0.26.0, so it ships in the next release; checked with a touch injected into a
+  nested compositor, not yet on a real touchscreen.
 - **A Roblox version released only for ARM64 is not shown on x86_64 machines.**
 - **Some games show the mobile (touch) interface.**
 
