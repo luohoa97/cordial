@@ -20,7 +20,7 @@ order a newcomer would want it.
 | [`vr.md`](vr.md) | Play in VR: getting Roblox off your own Quest, choosing the OpenXR runtime, updating after Roblox updates, and what is still broken |
 | [`nvidia.md`](nvidia.md) | NVIDIA graphics: what is known, what Cordial does, the Flatpak driver extension, and how to report a problem. Two users' NVIDIA reports so far |
 | [`plugins.md`](plugins.md) | Installing a plugin from an archive, and why Cordial fetches Deno |
-| [`runtime-spec.md`](runtime-spec.md) | Draft `cordial.runtime/1`: what a runtime implements for Cordial's launcher features. Nothing implements it yet |
+| [`runtime-spec.md`](runtime-spec.md) | Draft `cordial.runtime/1`: the protocol between the launcher and a runtime. Nothing implements it yet |
 | [`architecture.md`](architecture.md) | How the pieces fit, as a diagram: shell, linker, symbol table, JNI, framework, plugins |
 | [`HANDOVER.md`](HANDOVER.md) | Written for whoever takes this on: every open thread, which claims are `INFERRED`, and the traps |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | What changed between releases, retractions included. [Releases](https://github.com/luohoa97/cordial/releases) |
@@ -85,9 +85,10 @@ All 53. Status is marked where it is not plain "accepted"; [`HANDOVER.md`](HANDO
 | [ADR-049](adr/ADR-049-etc2-is-emulated-where-the-driver-lacks-it.md) | ETC2/EAC is decoded on the CPU where the driver lacks the feature, gated on the feature and not the vendor id; supersedes the "nothing is translated" half of ADR-042 |
 | [ADR-050](adr/ADR-050-other-runtimes-are-launched-not-built.md) | Other runtimes (Mac O' Blox) are detected and launched, never built into Cordial; parked until after 1.0. Launching design superseded in part by ADR-052 |
 | [ADR-051](adr/ADR-051-overrides-are-reapplied-after-the-engines-refresh.md) | The profile's flag overrides are handed to the engine again after each of its own settings refreshes, triggered by its log |
-| [ADR-052](adr/ADR-052-the-runtime-spec.md) | Launcher features reach runtimes through a published spec, `cordial.runtime/1`; Cordial lists only its own runtime for now; supersedes ADR-050's launching design in part |
+| [ADR-052](adr/ADR-052-the-runtime-spec.md) | Launcher features reach runtimes through a published spec, `cordial.runtime/1`; Cordial lists only its own runtime for now; supersedes ADR-050's launching design in part; decision 4 superseded by ADR-055 |
 | [ADR-053](adr/ADR-053-vr-is-a-mode-of-the-android-runtime.md) | VR is a launch mode of the Android runtime: the Quest build, user-supplied and keyed by ABI in the store, run under an in-process translator; the OpenXR runtime is passed per launch; a profile shares its sign-in and lock across both builds and keeps their engine storage apart. Supersedes ADR-043's "Quest is rejected" |
 | [ADR-054](adr/ADR-054-cordial-owns-its-roblox-builds.md) | Cordial owns its Roblox builds: launches resolve from a store of verified builds, each profile follows Latest or a pinned version, and Sober's copy is an explicit import |
+| [ADR-055](adr/ADR-055-the-launcher-and-the-runtime-are-two-programs.md) | The launcher and the runtime are two programs speaking `cordial.runtime/1`; plugins and hot-swap stay in the launcher; a separately packaged runtime is a Flatpak extension. Proposed |
 
 ## Design notes
 
@@ -103,6 +104,7 @@ All 53. Status is marked where it is not plain "accepted"; [`HANDOVER.md`](HANDO
 | [`design/rpm-repository.md`](design/rpm-repository.md) | The dnf repository: `$releasever` layout, the key, and why official Fedora is a different question |
 | [`design/pacman-repository.md`](design/pacman-repository.md) | The pacman repository: the key, Chaotic-AUR and the AUR as separate routes |
 | [`analysis/macos-runtime.md`](analysis/macos-runtime.md) | Spike: how Mac O' Blox runs the macOS client, what Metal on Vulkan would cost, and the draft runtime spec. Read-only, nothing run |
+| [`analysis/runtime-protocol-review.md`](analysis/runtime-protocol-review.md) | Review of the draft runtime spec against the code, the Flatpak and crate recommendations, and the commit order for ADR-055. Read-only, nothing run |
 | [`analysis/desktop-integration-audit.md`](analysis/desktop-integration-audit.md) | What is already native-feeling about the `.desktop` entry, icons and deep links, and what is not |
 
 Writing a plugin rather than installing one: [`plugins/README.md`](../plugins/README.md).

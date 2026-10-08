@@ -1,6 +1,6 @@
 # ADR-052: Launcher features reach runtimes through a published spec, and Cordial lists only its own
 
-**Status:** accepted as design; implementation not started.
+**Status:** accepted as design; implementation not started. Decision 4 (the built-in runtime is in-process) is superseded by [ADR-055](ADR-055-the-launcher-and-the-runtime-are-two-programs.md); the rest stands.
 **Date:** 2026-10-01
 **Supersedes:** the launching design in [ADR-050](ADR-050-other-runtimes-are-launched-not-built.md) ("launch only, features do not carry over"). ADR-050's reasoning about why Cordial builds no macOS runtime stands.
 **Related:** [ADR-001](ADR-001-in-process-hooking.md), [ADR-003](ADR-003-plugin-isolation.md), [ADR-007](ADR-007-host-resources-are-brokered.md), [ADR-012](ADR-012-profiles-and-instances.md), [ADR-019](ADR-019-development-control-surface.md), [ADR-039](ADR-039-a-runtime-backend-seam-and-why-macos-waits.md), [ADR-043](ADR-043-the-roblox-build-is-the-binarys-architecture.md), [ADR-044](ADR-044-settings-reach-a-running-game.md)

@@ -150,7 +150,8 @@
           "adr/ADR-051-overrides-are-reapplied-after-the-engines-refresh",
           "adr/ADR-052-the-runtime-spec",
           "adr/ADR-053-vr-is-a-mode-of-the-android-runtime",
-          "adr/ADR-054-cordial-owns-its-roblox-builds"
+          "adr/ADR-054-cordial-owns-its-roblox-builds",
+          "adr/ADR-055-the-launcher-and-the-runtime-are-two-programs"
         ]
       }
     ]

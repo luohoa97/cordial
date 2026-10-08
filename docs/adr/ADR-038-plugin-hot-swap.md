@@ -1,6 +1,6 @@
 # ADR-038: A running client reconciles its plugin set; nothing pushes to it
 
-**Status:** accepted
+**Status:** accepted. Where the reconciler runs is amended by [ADR-055](ADR-055-the-launcher-and-the-runtime-are-two-programs.md): in the launcher, not the client. Everything else here stands.
 **Related:** [ADR-003](ADR-003-plugin-isolation.md), [ADR-007](ADR-007-host-resources-are-brokered.md),
 [ADR-008](ADR-008-plugins-are-typescript-on-deno.md), [ADR-012](ADR-012-profiles-and-instances.md),
 [ADR-013](ADR-013-per-profile-configuration.md), [ADR-021](ADR-021-everything-is-a-plugin.md)
