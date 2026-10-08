@@ -1,6 +1,6 @@
 # ADR-055: The launcher and the runtime are two programs, and plugins stay in the launcher
 
-**Status:** proposed. The `cordial-protocol` crate and the `live_wire` move (steps 2 and 3 of the plan) are done; nothing else is implemented.
+**Status:** accepted for the transport, 2026-10-08: the launcher and `cordial-run` speak `cordial.runtime/1` and it is the only channel between them. **The plugin host move, the flag resolver move, `assets.overlay`, manifest discovery and the Flatpak extension are still proposed** and nothing in them is built.
 **Date:** 2026-10-08
 **Supersedes:** [ADR-052](ADR-052-the-runtime-spec.md) decision 4 ("the built-in Android runtime is the first implementation, in-process") and `docs/runtime-spec.md` section 8 as first written. The rest of ADR-052, including the listing policy, stands.
 **Amends:** [ADR-038](ADR-038-plugin-hot-swap.md) on *where* the reconciler runs (the launcher, not the client); its reasoning about polling and about never restarting a plugin for a re-grant stands. [ADR-044](ADR-044-settings-reach-a-running-game.md): the live or next-launch classification becomes a per-runtime declaration, with today's table as the built-in runtime's.
@@ -43,7 +43,8 @@ spec's section 8 said. Read for this ADR:
    `cordial.runtime/1` over a Unix socket.** The built-in runtime, `cordial-run`,
    stays a separate process and implements the protocol in place of the
    in-process channel ADR-052 described. It is the conformance suite. The
-   version-0 sockets stay as an alias until the launcher no longer needs them.
+   version-0 settings socket was removed when the transport landed (see
+   "Update: the transport is built").
 2. **The launcher owns the plugin host, with hot-swap.** Grants, the broker, the
    Discord socket, the flag layer resolver and write grants, and the reconciler
    of ADR-038 move to the launcher. There is one host per runtime session
@@ -191,15 +192,105 @@ repository's text is `LICENSE`, corrected in the same change as this ADR.)
 
 Docs, then a pure refactor, then additive wiring, then the move. Each commit
 keeps the single-binary path working; the numbered plan is in the review note.
-**Nothing before the 1.0 gates (the signed-in startup freeze and the text
-boxes) touches `window.rs`, the start or publish sites in `load.rs`, the native
-shims or the startup path.** The crate skeleton and the `live_wire` move are
-the only code that qualifies, and `flags.rs`, `profile.rs` and the plugin host
-wait. Both are done: the launcher's live-settings client (`live.rs`) builds and
-parses messages with the crate's own types and its bounded line reader, and
-`cordial_shell::live_wire` is a set of `pub use` re-exports so the server side in
-`cordial-runtime` is unchanged until that crate depends on `cordial-protocol`
-itself, a later step.
+**This section originally held the transport back until after the 1.0 gates
+(the signed-in startup freeze and the text boxes): nothing before them was to
+touch `window.rs`, the start or publish sites in `load.rs`, the native shims or
+the startup path.** The maintainer decided on 2026-10-08 that the shell and the
+runtime speak the protocol fully and that this is how they talk, which
+supersedes that ordering for the transport and for the transport only. What
+survives of the restriction is the part the startup-freeze work depends on: the
+startup sequence in `load.rs` is unchanged, and the only edit there is one call
+beside the one it replaces. The plugin host move, the flag resolver move and
+everything after them still wait, and the plugin host moving into the launcher is
+the next step.
+
+## Update: the transport is built
+
+Written the same day, from the code that landed. Everything here was read from
+the tree or measured in the runs listed in the commit messages; where it was
+not, it says so.
+
+**The runtime serves.** `cordial_runtime::control` listens on
+`<profile>/runtime/<session>/ctl.sock`, a `0700` directory the launcher makes
+before the spawn and names with eight hex characters, and tells the runtime in
+`CORDIAL_SESSION_DIR`. A runtime started by hand makes its own. A path that does
+not fit `sun_path`'s 108 bytes is bound and reached through
+`/proc/self/fd/<dirfd>/ctl.sock` on both sides (`cordial_protocol::socket`). It
+offers `lifecycle`, `events.core`, `events.presence`, `state` and `settings`, and
+nothing else: `flags`, `assets.overlay` and `diagnostics` have no code behind them
+and a request for one is `unsupported`. The server is started where
+`live_settings::start` was, and `lifecycle.stop` goes to `looper::request_quit`,
+the same door the window's close button uses.
+
+**The launcher connects and stays connected.** One `Link` per running client,
+opened with retry after the spawn, held until the client exits, reconnected with
+`reattach:true` if it drops, and not reconnected if the runtime says it was
+superseded. Settings go as `settings.set`; what the runtime reports in
+`settings.get` replaces the launcher's assumption about what the launch
+environment gave it. A key the runtime declares `next-launch` is reported as
+applying at the next launch and not sent. Exit and crash are still synthesised
+from `child_watch`; freeze recovery still reads the engine's log; stdout is still
+the log and the crash page's source.
+
+**The launcher adopts a runtime it finds.** On startup it looks for
+`runtime/*/ctl.sock` under every profile and takes control of any that answers.
+That is the only case in which "reopening the launcher reattaches" does work:
+closing the launcher's window leaves the same process holding the same
+connection (ADR-031), so nothing needs finding. **A launcher process that dies
+still takes a client it started with it**, through the piped stdout, exactly as
+ADR-031 recorded; the runtime survives the socket closing and not its stdout
+closing. A client whose output goes elsewhere, which is every client started by
+hand, survives it. Fixing the pipe means the log-file shape ADR-031 sketched, and
+is not done.
+
+**Removed.** `live/settings.sock`, the version-0 codec (`cordial_protocol::v0`)
+and `cordial_shell::live_wire`. Nothing in `tools/`, the MCP, the docs or any test
+outside those used them; `tools/cordial-mcp.py` talks to devctl, which is
+untouched.
+
+**Events.** `game.joined`, `game.left` and `session.state` come from the
+log watcher's updates; `engine.version` and `game.presence` are mirrored from
+`plugin_host::publish_core`, so the launcher is told the same thing a plugin is.
+They go through the bounded drop-and-count queue and a pump thread of their
+own; none blocks an engine thread. `session.state` is `{signed_in:true}` on a
+join that names a user, and nothing ever says signed out, because nothing in the
+runtime knows. `lifecycle.ready` and `health` are not sent. The launcher records
+the events, folds them into a snapshot and logs them; **nothing in the launcher
+uses them yet**, because the consumer is the plugin host, which has not moved.
+
+### What was measured
+
+Signed out, in a nested headless sway, with the shell's own `XDG_*` directories
+redirected to scratch, release build `1e774ac89-dirty` plus the commit after it:
+
+- **Conformance, against a real `cordial-run` with no launcher attached:** 16
+  passed, 0 failed, 1 skipped (`diagnostics.get`, not offered). With a launcher
+  attached and `--stop`: 17 passed, 0 failed, 1 skipped, then the client exited 0
+  and removed its session directory. **The first run of the second kind failed 5
+  cases**, because the launcher reconnected to a runtime that had just
+  superseded it and took control back mid-run; the launcher no longer does.
+- **Every live key, changed by editing `shell.json` the way Settings saves it,
+  reached the client** in the same second, once each, and the client's own line
+  (`live: throttle -> off`) followed the shell's (`live settings -> pid N:
+  throttle`). A `present_mode` change produced `applies at next launch (... declares
+  it)` and no `settings.set`; a shell-only key and an unchanged re-save produced
+  nothing.
+- **Closing the launcher window** left the shell process and the client running
+  and `cordial_info` presents rising (1322, then 1326). A second `cordial-shell`
+  handed over to the running one and a later setting change went down the same
+  connection: one `controller attached` line in the client's log, no reattach.
+- **A launcher started after a client it did not spawn adopted it** (`found ...
+  running as pid N ... reattached`), applied a settings change, was killed, and the
+  client carried on (presents 562, then 1138); a second launcher reattached and
+  applied another.
+- **Killing a launcher that had spawned its client killed the client**, through the
+  piped stdout, as ADR-031 said it would. That is the control for the paragraph
+  above about what is not fixed.
+- Not measured: the session path over `sun_path`'s limit with a real client (the
+  runtime's was 101 bytes; the fallback is covered by `cordial_protocol::socket`'s
+  tests only), and any signed-in run, so `game.joined`, `session.state` and
+  `game.presence` were exercised by unit tests and not by a real join.
+
 
 ## What is not decided
 

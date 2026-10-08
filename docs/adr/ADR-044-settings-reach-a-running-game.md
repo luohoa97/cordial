@@ -1,8 +1,8 @@
 # ADR-044: Settings that can change reach a running game
 
-**Status:** accepted
+**Status:** accepted; the transport in decisions 2, 3 and 5 is superseded by [ADR-055](ADR-055-the-launcher-and-the-runtime-are-two-programs.md) (2026-10-08). The classification below, the reasons in it, and everything after it stand.
 **Date:** 2026-09-30
-**Related:** [ADR-003](ADR-003-plugin-isolation.md), [ADR-007](ADR-007-host-resources-are-brokered.md), [ADR-012](ADR-012-profiles-and-instances.md), [ADR-019](ADR-019-development-control-surface.md), [ADR-038](ADR-038-plugin-hot-swap.md)
+**Related:** [ADR-055](ADR-055-the-launcher-and-the-runtime-are-two-programs.md), [ADR-003](ADR-003-plugin-isolation.md), [ADR-007](ADR-007-host-resources-are-brokered.md), [ADR-012](ADR-012-profiles-and-instances.md), [ADR-019](ADR-019-development-control-surface.md), [ADR-038](ADR-038-plugin-hot-swap.md)
 
 ## Decision
 
@@ -34,6 +34,36 @@
    half a minute, then left until the wanted values change. A client registers
    with the values its environment carried, so a change made while it loads is
    delivered when its socket appears.
+
+## What replaced the socket (2026-10-08)
+
+Decision 2's socket, `<profile>/live/settings.sock` with its connect-per-request
+`set` and `get`, is gone. The same two operations are `settings.set` and
+`settings.get` on the persistent `cordial.runtime/1` connection the client
+serves at `<profile>/runtime/<session>/ctl.sock`, in a `0700` directory the
+launcher makes (ADR-055, `docs/runtime-spec.md`). What did not change:
+
+- **The closed key set** is `cordial_protocol::settings::KEYS`, ten keys, and
+  nothing runs, reads a file, or reaches the engine. An unknown key is named in
+  the reply's `ignored` and the rest apply; a known key with a bad value refuses
+  the whole message. The code that applies a key is `live_settings::apply`,
+  moved nowhere, so every test of it carries over.
+- **One trigger** (decision 3). The launcher watches `shell.json`, debounces,
+  parses strictly and sends what moved.
+- **Delivery is retried** (decision 5): the connection is opened once a second
+  for about half a minute after the spawn, and a settings change made while the
+  client loads is sent when the connection is up.
+
+What changed: the launcher **asks first**. On connecting it reads `settings.get`
+and diffs against what the client says it is running, not against what the
+launch environment was assumed to have given it. And the client **declares** how
+each key reaches it. The table below is now that declaration for the built-in
+runtime, `cordial_runtime::control::declared_settings`: the ten wire keys `live`,
+and `graphics`, `graphics_optimization_mode`, `present_mode`, `mangohud`,
+`vkbasalt` and `unpacked_plugins` `next-launch`. The launcher reports a changed
+next-launch key as applying at the next launch and does not send it; the
+launcher's own copy, `live::CLASSIFICATION`, is the fallback for a runtime that
+did not answer and the check that no `shell.json` key was left undecided.
 
 ## Classification
 

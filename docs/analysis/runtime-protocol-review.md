@@ -136,3 +136,15 @@ The first block is the only code before the 1.0 gates, and it touches none of `w
 ## 6. What was not checked
 
 Nothing was run or built, and no Flatpak was built. Not looked at: how `host_window` would be split out of `cordial-shell` for the last step; whether `cordial_runtime::profile` and `cordial_shell::profile` can merge; how often `live/settings.sock` is used by anything other than the shell (`tools/` was not searched). The sizes of a resolved `flags.json` were not measured, which is why the draft passes it as a file and not as a line. The Flatpak extension behaviour is inferred (section 3).
+
+## 7. As built, steps 6 to 8 and the part of 12 that did not need the plugin host
+
+Added 2026-10-08, after the maintainer decided the transport is not held for the
+1.0 gates. This is what the code does, which differs from section 5 in four ways.
+
+1. **Steps 6 and 8 were one change, and there is no flag.** `CORDIAL_RUNTIME_PROTOCOL=1`, default off, was never added: a second code path in the launcher that nobody runs is how the old one would have stayed. The launcher speaks the protocol, and `ctl.sock` replaced `live/settings.sock` outright. The control the plan wanted ("the same settings set both ways in one session produce the same `values`") is covered by moving the handler, not the behaviour: `live_settings::apply` is unchanged and every test of it carried over.
+2. **Step 7's A/B control was dropped for the same reason.** The in-process plugin host is unchanged, and `publish_core` mirrors to the protocol, so the launcher is told what a plugin is told from one call site. There is no second publisher to compare against.
+3. **Step 12 is done for the settings socket and for nothing else.** ADR-044's table became the runtime's declaration. `live_wire`, `v0` and the socket are removed.
+4. **The launcher adopts.** The plan said a restarted launcher "finds the same runtime again"; it did not say how. It scans `runtime/*/ctl.sock` under each profile. The mapping in section 2 of this note stands, with `health` unimplemented and `session.state` sent only on a join that names a user.
+
+What section 5 got wrong and this found: the runtime does **not** survive a closed stdout, so a launcher that dies takes its client with it (ADR-031 said so; section 3 and the spec said the runtime survives it). That claim is corrected in the spec. The review also said `window.rs` was untouched by the plan; the launcher side needed one call there, registering a session where it registered a socket.
