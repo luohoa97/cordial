@@ -52,7 +52,7 @@ use std::time::{Duration, Instant};
 pub const BUILTIN_RUNTIME_ID: &str = "io.github.luohoa97.cordial.android";
 
 /// How long a request may go unanswered before it is a failure. The same two
-/// seconds the version-0 client used.
+/// seconds the per-request client before it used.
 pub const REPLY_WITHIN: Duration = Duration::from_secs(2);
 
 /// What this launcher can serve, offered in `hello`. The live set is the

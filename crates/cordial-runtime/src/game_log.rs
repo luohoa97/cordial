@@ -342,7 +342,7 @@ fn logs_dir() -> PathBuf {
 /// have no use for the home screen afterwards. Somebody who did not ask and
 /// meets it once has lost their session to a setting they did not know existed.
 ///
-/// The environment gives the starting value; the shell's live-settings socket
+/// The environment gives the starting value; the shell's `settings.set`
 /// can change it afterwards ([`set_close_on_leave`], ADR-044), which is safe to
 /// read on the log poll's schedule because it is one relaxed atomic load.
 fn close_on_leave() -> bool {

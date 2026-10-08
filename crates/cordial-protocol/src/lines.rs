@@ -53,7 +53,8 @@ impl<R: Read> LineReader<R> {
         Self::with_cap(inner, MAX_LINE)
     }
 
-    /// A reader with a different cap, for the version-0 socket (1,024 bytes).
+    /// A reader with a different cap, for a peer that wants a tighter bound than
+    /// the protocol's.
     pub fn with_cap(inner: R, cap: usize) -> Self {
         LineReader { inner, cap, buf: Vec::new(), overflowed: false, chunk: [0; 4096], pos: 0, end: 0 }
     }

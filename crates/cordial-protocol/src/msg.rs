@@ -360,8 +360,7 @@ pub struct StateSnapshot {
 // ---- settings ---------------------------------------------------------------
 
 /// `settings.set`: a key-to-value object over Cordial's closed key set, the same
-/// words and values the launch environment uses and the version-0 socket
-/// carries.
+/// words and values the launch environment uses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsSet {
     pub updates: Vec<Update>,
@@ -381,7 +380,8 @@ impl SettingsSet {
     }
 
     /// Read a received payload. A known key with an unusable value refuses the
-    /// whole message, as it does on version 0.
+    /// whole message: half-applying one would leave the sender believing one thing
+    /// and the receiver another.
     pub fn from_payload(p: &Value) -> Result<Self, Violation> {
         let Value::Object(map) = crate::frame::object_or_empty(p) else {
             return Err(Violation::new("p", "settings.set takes an object"));

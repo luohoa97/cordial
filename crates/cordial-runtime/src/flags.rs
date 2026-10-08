@@ -709,9 +709,9 @@ pub const FRAME_RATE_LIMIT_ENV: &str = "CORDIAL_FRAME_RATE_LIMIT";
 /// out before anything reaches Roblox's settings document.
 pub const FRAME_RATE_LIMIT_KEY: &str = "CordialFrameRateLimit";
 
-/// What the shell's live-settings socket last asked for, if it has asked
-/// (ADR-044). Beats the environment, because the environment is only what the
-/// client was launched with and the socket is the user changing their mind.
+/// What the shell's `settings.set` last asked for, if it has asked (ADR-044).
+/// Beats the environment, because the environment is only what the client was
+/// launched with and the message is the user changing their mind.
 static LIVE_FRAME_RATE_LIMIT: std::sync::Mutex<Option<FrameRateLimit>> = std::sync::Mutex::new(None);
 
 /// Records a live choice and returns whether it differs from the one in force

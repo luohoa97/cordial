@@ -546,12 +546,11 @@ fn enter_run_dir(opt: &mut Options) {
     // because `profile::active()` has latched by now, and the socket belongs
     // inside the profile so ADR-012's one-instance lock already covers it.
     cordial_runtime::devctl::start();
-    // The live-settings socket, unlike the one above, is always on: it can only
-    // set four hot-path values and lives in a private directory (ADR-044).
-    cordial_runtime::live_settings::start();
-    // The same place, for `cordial.runtime/1` (ADR-055): the launcher's channel
-    // to this process, which replaces the socket above. Nothing is asked of the
-    // engine and nothing before it moves.
+    // `cordial.runtime/1` (ADR-055): the launcher's channel to this process, and
+    // unlike the socket above it is always on. It can only apply the closed set
+    // of settings in `cordial_protocol::settings` and lives in a private
+    // directory inside the profile (ADR-044). It replaced the version-0 settings
+    // socket that was started here; nothing is asked of the engine.
     cordial_runtime::control::start();
 
     let root = cordial_runtime::profile::engine_root().join("run");

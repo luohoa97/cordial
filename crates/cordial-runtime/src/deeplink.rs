@@ -414,7 +414,7 @@ pub enum Translated {
 /// not one to make for them, which is why there is a switch in Settings rather
 /// than a better default.
 ///
-/// The environment gives the starting value; the shell's live-settings socket
+/// The environment gives the starting value; the shell's `settings.set`
 /// can change it afterwards ([`set_carry_ticket`], ADR-044). It is consulted
 /// each time a link is translated, so a change applies to the next link and
 /// not to one already handed to the engine.

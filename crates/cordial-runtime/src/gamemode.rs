@@ -18,7 +18,7 @@
 //! and that is the control: it is the only way to show, in the same session,
 //! that a timing difference came from this and not from something else.
 //!
-//! **This lived in `load.rs` and moved here so the live-settings socket can
+//! **This lived in `load.rs` and moved here so a live `settings.set` can
 //! reach it (ADR-044).** The setting is a request to a daemon and registration
 //! is per pid, so it can be made and withdrawn at any time; the only thing that
 //! ever made it launch-only was that nothing outside the binary could call it.
@@ -31,8 +31,9 @@ const SERVICE: &str = "com.feralinteractive.GameMode";
 const OBJECT: &str = "/com/feralinteractive/GameMode";
 
 /// How long a live change waits for gamemoded's answer before reporting that it
-/// is still waiting. The live socket's peer gives up after two seconds and the
-/// socket serves one request at a time, so a daemon that hangs must not hold it.
+/// is still waiting. The launcher gives up on a request after two seconds and a
+/// connection serves one request at a time, so a daemon that hangs must not hold
+/// it.
 const LIVE_WAIT: Duration = Duration::from_millis(1500);
 
 /// Held for the life of the process rather than opened per call. Not because

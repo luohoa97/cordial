@@ -23,8 +23,10 @@ What is in the crate:
   `{socket}`-style placeholders into single arguments.
 - **Event queue**: `EventQueue`, the bounded drop-and-count queue a runtime puts
   between its engine threads and the socket.
-- **Version 0**: `v0` and `settings`, the older single-request settings socket the
-  built-in runtime still serves.
+- **Settings**: `settings`, the closed key set `settings.set` carries and the
+  types behind it.
+- **Socket**: `socket`, where `ctl.sock` lives and how both sides reach it when
+  the path is too long for `sun_path`.
 - **Conformance** (feature `conformance`): shared accept and reject line vectors
   and a harness either side can run against a peer over any `Read` and `Write`.
 

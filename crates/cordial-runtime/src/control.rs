@@ -14,8 +14,8 @@
 //!   anything outside it is `unsupported`. A request before `hello` is
 //!   `not_ready`.
 //! * `settings.set` and `settings.get` over the closed key set, through
-//!   [`crate::live_settings::apply`], which is the same code the version-0
-//!   socket reached, so one setting has one implementation however it arrives.
+//!   [`crate::live_settings::apply`], the table that used to sit behind the
+//!   version-0 settings socket, so one setting has one implementation.
 //!   `settings.get` carries the per-key declaration (`live` or `next-launch`),
 //!   which ADR-044's table used to hold only in the launcher.
 //! * `lifecycle.stop`, mapped to [`crate::android::looper::request_quit`], the

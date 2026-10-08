@@ -8,9 +8,8 @@
 //!
 //! Values travel as the same words the launch environment already uses
 //! (`CORDIAL_POINTER_ACCEL=unlocked`, `CORDIAL_THROTTLE=off`), so a setting has
-//! one spelling whether it arrives at spawn or afterwards. The version-0 line
-//! protocol that carries these is in [`crate::v0`]; the version-1 verb
-//! `settings.set` carries the same keys as its payload.
+//! one spelling whether it arrives at spawn or afterwards. The verb that carries
+//! them is `settings.set`, whose payload is the key-to-value object itself.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -130,7 +129,7 @@ impl TitleBar {
 /// sets the flag to it, and `cordial_runtime::flag_reapply` puts it back after
 /// each of the engine's own settings refreshes, which would otherwise revert it
 /// to Roblox's value a couple of minutes in (ADR-051). The row is live: the
-/// choice reaches a running client over the settings socket and is applied at
+/// choice reaches a running client as a `settings.set` and is applied at
 /// once (ADR-044).
 ///
 /// **Separate from `PresentMode`, not a replacement for it.** `fastflags.md`
@@ -185,7 +184,7 @@ impl FrameRateLimit {
     }
 
     /// The word `cordial_runtime::flags::FrameRateLimit::parse` takes, out of
-    /// `CORDIAL_FRAME_RATE_LIMIT` at launch and over the live socket afterwards,
+    /// `CORDIAL_FRAME_RATE_LIMIT` at launch and as `settings.set` afterwards,
     /// so a choice has one spelling either way.
     pub fn as_env(self) -> &'static str {
         match self {
@@ -371,8 +370,7 @@ pub struct SetBody {
     pub ignored: Vec<String>,
 }
 
-/// The key-to-value object a `set` carries, for both the version-0 line and the
-/// version-1 `settings.set` payload. A `BTreeMap`, so the keys come out sorted
+/// The key-to-value object a `settings.set` carries. A `BTreeMap`, so the keys come out sorted
 /// whether or not another crate in the build turned on `serde_json`'s
 /// `preserve_order`: the bytes on the wire must not depend on the build graph.
 pub fn set_body(updates: &[Update]) -> BTreeMap<String, Value> {
