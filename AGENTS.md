@@ -607,7 +607,12 @@ Both the shell's profile root and the client's data directory derive from
 first launch moves an old build store from `$XDG_CACHE_HOME/cordial/builds`
 into `$XDG_DATA_HOME/cordial/builds` (ADR-054). On 2026-10-08 an agent that
 redirected only `XDG_DATA_HOME` had the host's real store moved into its scratch
-directory, then deleted it with the rest of its scratch. Redirect all three. Use a path on disk — `/tmp` is tmpfs
+directory, then deleted it with the rest of its scratch. Redirect all three. And start the shell under its own `dbus-run-session`: it is a
+`GApplication` named `io.github.luohoa97.Cordial`, so a test shell left on the
+real session bus owns that name, and the user's own Cordial then hands its
+activation to it and exits in a tenth of a second -- on 2026-10-08 an agent's
+leftover shell, displaying into a nested sway nobody could see, made the
+maintainer's Flatpak look like it would not start. Use a path on disk — `/tmp` is tmpfs
 and comes out of RAM — and delete it when you are done. `CORDIAL_PROFILE_ROOT`
 redirects `profile.rs` only, which is what the unit tests use; it does **not**
 move the client, which still hardcodes its own path.
