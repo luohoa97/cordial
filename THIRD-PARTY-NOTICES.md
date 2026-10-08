@@ -1,7 +1,8 @@
 # Third-party notices
 
-Cordial as a whole is GPL-3.0-or-later (see [`LICENSE`](LICENSE)). It
-incorporates the components below, each under its own licence, and each of those
+Cordial as a whole is GPL-3.0-or-later (see [`LICENSE`](LICENSE)), except the
+first-party crate [`crates/cordial-protocol`](crates/cordial-protocol), which is
+`MIT OR Apache-2.0` (texts beside it) and needs no entry here. It incorporates the components below, each under its own licence, and each of those
 licences requires its notice to travel with the software — in source *and* in
 binary form. This file exists so that obligation is met by anyone redistributing
 Cordial, including from the Flatpak, which installs this file to

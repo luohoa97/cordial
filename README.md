@@ -272,7 +272,9 @@ Questions and help: [Discord](https://discord.gg/qJzU3Xfr9b).
 
 ## Licence
 
-GPL-3.0-or-later. See [`LICENSE`](LICENSE).
+GPL-3.0-or-later. See [`LICENSE`](LICENSE). The one exception is
+[`crates/cordial-protocol`](crates/cordial-protocol), the wire protocol other
+launchers and runtimes implement, which is `MIT OR Apache-2.0`.
 
 Third-party components keep their own licences, reproduced in
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md): `third_party/libbadcpu`

@@ -3,6 +3,11 @@ Copyright 2026 the Cordial contributors
 
 Licensed under the GNU General Public License v3.0. See LICENSE.
 
+The one exception is crates/cordial-protocol, the wire protocol other launchers
+and runtimes implement, which is licensed MIT OR Apache-2.0. Its texts are
+crates/cordial-protocol/LICENSE-MIT and crates/cordial-protocol/LICENSE-APACHE.
+It is first-party, so it is not listed below.
+
 This product includes software developed by third parties, listed below with
 the licence each is distributed under. Apache-2.0 is one-way compatible with
 GPL-3.0, so Apache-licensed work may be incorporated here; the reverse is not

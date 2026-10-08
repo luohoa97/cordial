@@ -98,7 +98,9 @@ Dependencies: `serde`, `serde_json`. No `libc`, no GTK, nothing that links nativ
 
 Both sets run over a `Link` that is either an in-process pair or a Unix socket, so the same cases cover the codec and the transport.
 
-**Publishing.** Only `cordial-protocol` is a candidate for crates.io, after the split lands; all other crates stay `publish = false` (each links the AOSP linker or GTK). Its licence is **GPL-3.0-or-later**, the workspace's, because `LICENSE` is the GPL text and `CONTRIBUTING.md` says "The licence is settled" and declines a permissive carve-out. `NOTICE` and `THIRD-PARTY-NOTICES.md` need no entry for a first-party crate. The tension with ADR-052's "a trait with no wire form forces a runtime into Cordial's licence" is real for a Rust runtime that links the crate, and is left for the maintainer; the wire spec is the licence-neutral contract. `NOTICE` pointed at `COPYING`, which does not exist; it is `LICENSE`, and is corrected with this change.
+**Publishing.** Only `cordial-protocol` is a candidate for crates.io, after the split lands; all other crates stay `publish = false` (each links the AOSP linker or GTK). **Correction, 2026-10-08:** this paragraph said the crate's licence is GPL-3.0-or-later and left the tension with ADR-052 for the maintainer. The maintainer decided it the other way: the crate is `MIT OR Apache-2.0`, the single named exception in `CONTRIBUTING.md`, recorded in [ADR-055](../adr/ADR-055-the-launcher-and-the-runtime-are-two-programs.md). `NOTICE` pointed at `COPYING`, which does not exist; it is `LICENSE`, and is corrected with this change.
+
+**As built (steps 2 and 3).** The layout above is close to what exists. Differences: version-0 types live in `v0.rs` and `settings.rs` (`TitleBar` and `FrameRateLimit` moved whole, because they are also the Settings row types); `msg.rs` holds payloads and the name-to-capability table; vectors are `vectors/accept.jsonl` and `vectors/reject.jsonl`; the harness takes a connector closure per case, so one set of cases runs over an in-process pair or a Unix socket. The ambiguities the spec left are listed in its section 9.
 
 ## 5. Order of work
 

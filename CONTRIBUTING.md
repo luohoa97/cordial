@@ -121,6 +121,17 @@ to Apache-2.0, to dual-licence, to carve out an exception for one downstream —
 are declined, and the issue is closed with a link to this section rather than
 argued out.
 
+There is **one exception, and it is named so that it is not an opening**:
+`crates/cordial-protocol` is `MIT OR Apache-2.0`. It is the interface other
+runtimes and launchers implement (the message types, the codec, the manifest type
+and the conformance cases, with nothing of the client in it), and a protocol
+crate that a program under another licence cannot link is not doing its job.
+Contributions to that directory are under that licence, which the crate's
+`Cargo.toml` and its two licence files state. Everything else in the repository, every other crate included, is still
+GPL-3.0-or-later. A request to move a second crate or the client itself is the
+request this section declines. Why, and what the crate may not grow into:
+[ADR-055](docs/adr/ADR-055-the-launcher-and-the-runtime-are-two-programs.md).
+
 That is a rule, not a verdict on whoever asked. The argument has no new form
 left: it has been had, the answer has not moved, and each fresh round costs an
 evening that would otherwise go on the client. A maintainer closing one of these
@@ -319,7 +330,8 @@ Before opening a pull request:
 - the client still launches — repeatedly, not once
 - your commit message says what you **measured**, not just what you changed
 
-Licensed GPL-3.0-or-later. By contributing you agree your work ships under it.
+Licensed GPL-3.0-or-later. By contributing you agree your work ships under it,
+except in `crates/cordial-protocol`, where it ships under `MIT OR Apache-2.0`.
 Third-party notices live in
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) and must be kept accurate;
 MIT and Apache-2.0 obligations are satisfied only while those notices travel
