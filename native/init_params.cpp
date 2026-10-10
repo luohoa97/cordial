@@ -1797,7 +1797,9 @@ public:
 
     static std::shared_ptr<InitParams> Create(ENV* env, const char* assets, int width, int height) {
         auto p = std::make_shared<InitParams>();
-        p->baseURL = S("https://www.roblox.com");
+        // The Android client includes the trailing slash in the engine's
+        // observed base URL (docs/traces/waydroid-roblox-startup.log.gz, #2).
+        p->baseURL = S("https://www.roblox.com/");
         p->buildVariant = S("release");
         // See `build_user_agent`. The literal that used to be here was
         // invented, and the comment beside it claimed the opposite.

@@ -812,7 +812,12 @@ mod tests {
         assert!(dir.join("plugin.json").is_file());
         assert_eq!(std::fs::read_to_string(dir.join("main.ts")).unwrap().trim(), "console.log('hello');");
         let mode = std::fs::metadata(dir.join("main.ts")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o644, "nothing in a plugin is ever executed directly");
+        // The host umask may remove group/other read bits (for example 0077),
+        // but no archive may add execute bits or make a plugin file writable
+        // by another user. Those are the properties the unpacker promises.
+        assert_eq!(mode & 0o111, 0, "nothing in a plugin is ever executed directly");
+        assert_eq!(mode & 0o022, 0, "plugin files must not be writable by others");
+        assert_ne!(mode & 0o400, 0, "the installing user must be able to read the file");
     }
 
     #[test]

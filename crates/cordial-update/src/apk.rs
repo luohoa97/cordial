@@ -527,11 +527,13 @@ mod tests {
         assert_eq!(std::fs::read(&out).unwrap(), b"\x7fELF pretend this is the engine");
         assert!(!into.join("libroblox.so.partial").exists());
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            std::fs::metadata(&out).unwrap().permissions().mode() & 0o777,
-            0o644,
-            "nothing executes the engine as a program"
-        );
+        // A restrictive umask may remove read access for other users; that is
+        // not an extraction failure. What matters here is that the engine is
+        // readable by its owner, never executable, and never writable by others.
+        let mode = std::fs::metadata(&out).unwrap().permissions().mode();
+        assert_ne!(mode & 0o400, 0, "the engine must be readable by its owner");
+        assert_eq!(mode & 0o111, 0, "nothing executes the engine as a program");
+        assert_eq!(mode & 0o022, 0, "other users cannot modify the engine");
     }
 
     #[test]
