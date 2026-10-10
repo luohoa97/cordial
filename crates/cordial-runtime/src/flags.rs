@@ -832,10 +832,14 @@ pub fn physical_cores() -> usize {
             }
         }
     }
+    // Cgroups and affinity can give this process fewer runnable threads than
+    // the host-wide sysfs topology reports. Do not size engine worker pools
+    // above that effective limit (which can be smaller than physical cores).
+    let available = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     if seen.is_empty() {
-        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+        available
     } else {
-        seen.len()
+        seen.len().min(available)
     }
 }
 
