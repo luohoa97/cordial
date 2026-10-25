@@ -1189,16 +1189,51 @@ pub fn deliver_gamepad_disconnect(id: i32) {
     }
 }
 
+/// What `nativeGamepadButtonEvent` wants in its third argument: 1 while the
+/// button is held, 0 once it is released.
+///
+/// **Not** Android's `KeyEvent` action, although the JNI parameter is called
+/// `action`. Measured on 2026-10-25 against the Roblox in-game menu on build
+/// 2.741.0.1061 (the engine flag at `0x7334cb0` reads 0, so the legacy path
+/// runs): a lone `action=0` left the menu untouched, and a lone `action=1`
+/// toggled it, twice over, for `B` and for `Start`. The engine stores the
+/// argument as the event's `value` and its input pipeline reads a non-zero
+/// value as held; the legacy path also derives a `2*isDown` flag from it, but
+/// nothing observable follows that flag.
+///
+/// Sending Android's convention instead holds every button from its release
+/// until its next press. Games read that as a stuck button: #113's "the
+/// buttons start pressing on their own", and a character that jumps on release
+/// and never stops, which is what a mobile jump button does while it is held.
+const GAMEPAD_VALUE_HELD: i32 = 1;
+const GAMEPAD_VALUE_RELEASED: i32 = 0;
+
+/// Translate one Android `KeyEvent` action into the value the engine expects.
+pub fn gamepad_button_value(action: i32) -> i32 {
+    if action == ACTION_DOWN {
+        GAMEPAD_VALUE_HELD
+    } else {
+        GAMEPAD_VALUE_RELEASED
+    }
+}
+
+/// `nativeGamepadButtonEvent`. `action` is Android's `KeyEvent` action, the
+/// convention every caller here uses; the value the engine actually wants is
+/// derived by [`gamepad_button_value`].
 pub fn deliver_gamepad_button(id: i32, key_code: i32, action: i32) {
     let f = GAMEPAD_BUTTON.load(std::sync::atomic::Ordering::Relaxed);
     if f.is_null() {
         report_unregistered("nativeGamepadButtonEvent");
         return;
     }
+    let value = gamepad_button_value(action);
     // SAFETY: `f` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
-    let r = unsafe { cordial_linker_sys::game_activity::gamepad_button(f, id, key_code, action) };
+    let r = unsafe { cordial_linker_sys::game_activity::gamepad_button(f, id, key_code, value) };
     if trace_gamepad() {
-        eprintln!("[cordial] nativeGamepadButton(id={id}, key={key_code}, action={action}) -> {r:?}");
+        eprintln!(
+            "[cordial] nativeGamepadButton(id={id}, key={key_code}, action={action}, \
+             value={value}) -> {r:?}"
+        );
     }
 }
 
@@ -3719,6 +3754,16 @@ mod tests {
     }
 
     use super::*;
+
+    /// `nativeGamepadButtonEvent` takes a held value, not Android's action: a
+    /// press is 1 and a release is 0. Delivering the action instead leaves
+    /// every button held from its release until its next press, which games
+    /// read as a stuck button (#113).
+    #[test]
+    fn a_gamepad_button_is_delivered_as_a_held_value_not_an_android_action() {
+        assert_eq!(gamepad_button_value(ACTION_DOWN), 1, "a press is held");
+        assert_eq!(gamepad_button_value(ACTION_UP), 0, "a release is not held");
+    }
 
     /// `devctl text` with no box focused must still release every key it
     /// pressed. It used to skip the release, leaving the key in `KEYS_HELD`.
