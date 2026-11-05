@@ -677,6 +677,9 @@ pub enum Outcome {
     /// On the engine's message bus. Whether the app shell acts on it is
     /// reported later, by [`tick`].
     Published,
+    /// Held back until the late `nativeRetryInit` has run and the app shell is
+    /// ready again; [`tick`] publishes it then. See [`hold_until_settled`].
+    Held,
     /// The build exports none of it — a Roblox update moved the natives, which
     /// is a different problem from a link nobody wanted.
     NoSurface,
@@ -690,6 +693,11 @@ pub enum Outcome {
 /// the message until there is something to act on it. Publishing again after
 /// the shell is up produces a *second* `Game.launch` with a second
 /// `joinAttemptId`, so it is done once, here.
+///
+/// Unless the late `nativeRetryInit` is still to come: then the link is held
+/// and published once, by [`tick`], after the start-up the retry causes,
+/// because that start-up tears down a join already under way. See
+/// [`hold_until_settled`].
 ///
 /// Placed after `nativeAppBridgeV2InitWithParams` for the same reason the
 /// cookie restore is: the protocol machinery it talks to does not exist until
@@ -799,6 +807,16 @@ pub fn deliver(lib: linker::Library, url: &JoinUrl) -> Outcome {
     // `experiences/start?`, carrying `placeid`, `linkCode`, `accessCode`,
     // `launchData` and the rest — so the URL is parsed inside the engine and
     // Cordial does not have to understand it.
+    if hold_until_settled() {
+        if lib.symbol("Java_com_roblox_universalapp_messagebus_MessageBus_publishRaw").is_none() {
+            println!("[deeplink] MessageBus.publishRaw is not exported by this build");
+            return if any_surface { Outcome::Published } else { Outcome::NoSurface };
+        }
+        *HELD.lock().expect("no other thread panics holding this") = Some((lib, url.clone()));
+        linker::game_activity::app_ready_set_sink(Some(on_app_ready));
+        println!("[deeplink] held until the late retry has run and the app shell is ready again");
+        return Outcome::Held;
+    }
     if publish_url(lib, url, "cold start") {
         any_surface = true;
     }
@@ -850,6 +868,7 @@ pub fn tick() {
     if !APP_READY.load(std::sync::atomic::Ordering::Acquire) {
         return;
     }
+    publish_held();
     let taken = ARMED.lock().expect("no other thread panics holding this").take();
     let Some((lib, _url)) = taken else { return };
 
@@ -881,6 +900,102 @@ pub fn tick() {
             "[deeplink] the app shell is up and nothing asked to launch an experience — this \
              link did not reach an experience. Signing in is required before a join can proceed"
         ),
+    }
+}
+
+/// Whether a join link waits for the late `nativeRetryInit` before it is
+/// published.
+///
+/// Measured on 2.746.0.1266, signed in: a link published at cold start makes
+/// the app shell start the join (`launchUGCGame`, `join: initialized`), and the
+/// engine's second `initializeWithAppStarter`, which follows the late retry,
+/// then forces the experience coordinator to finalize and returns to the Lua
+/// app. The click lands on Home. Published after that second start-up, the
+/// same link is not torn down. `CORDIAL_DEEPLINK_EARLY=1` restores the cold
+/// start publish, and with the late retry switched off there is nothing to
+/// wait for.
+fn hold_until_settled() -> bool {
+    std::env::var_os("CORDIAL_DEEPLINK_EARLY").is_none()
+        && std::env::var("CORDIAL_LATE_RETRY").map_or(true, |v| v != "off")
+}
+
+/// The link [`deliver`] held back, waiting for [`publish_held`].
+static HELD: std::sync::Mutex<Option<(linker::Library, JoinUrl)>> = std::sync::Mutex::new(None);
+
+/// When the late retry returned, or `None` until it has.
+static SETTLED_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// When the first `APP_READY` was seen with a link still held, for the fallback.
+static FIRST_READY_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// The second start-up the retry causes reaches `initializeWithAppStarter`
+/// about 600 ms after the retry returns (measured, signed in), so an
+/// `APP_READY` sooner than this may still belong to the first start-up.
+const SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// A launch where the late retry never runs must still join, so a held link
+/// is published anyway this long after the first `APP_READY`.
+const HOLD_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Called from `load.rs` once the late `nativeRetryInit` has returned, or
+/// failed. Clears `APP_READY`, so only an `APP_READY` from the start-up the
+/// retry caused releases the held link.
+pub fn startup_settled() {
+    *SETTLED_AT.lock().expect("no other thread panics holding this") = Some(std::time::Instant::now());
+    APP_READY.store(false, std::sync::atomic::Ordering::Release);
+}
+
+/// The same link in the `roblox://experiences/start?` form.
+///
+/// Measured, signed in: published to an app shell that is already up,
+/// `roblox://placeId=N` produces no launch at all. The `experiences/start`
+/// form is the one [`publish_hybrid_game_launch`] builds for a click in a
+/// running client. A link already in that form, or one
+/// that the rewrite makes invalid, is returned unchanged.
+fn running_app_form(url: &JoinUrl) -> JoinUrl {
+    let raw = url.expose();
+    let Some(rest) = raw.strip_prefix("roblox://") else {
+        return url.clone();
+    };
+    if rest.to_ascii_lowercase().starts_with("experiences/start") {
+        return url.clone();
+    }
+    validate(&format!("roblox://experiences/start?{rest}")).unwrap_or_else(|_| url.clone())
+}
+
+/// Publishes the held link once the app shell is ready after the late retry.
+/// Runs on the looper thread, from [`tick`], after an `APP_READY`.
+fn publish_held() {
+    let mut held = HELD.lock().expect("no other thread panics holding this");
+    if held.is_none() {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let settled = *SETTLED_AT.lock().expect("no other thread panics holding this");
+    let first_ready = *FIRST_READY_AT
+        .lock()
+        .expect("no other thread panics holding this")
+        .get_or_insert(now);
+    let why = match settled {
+        Some(at) if now.duration_since(at) >= SETTLE_DELAY => "after the late retry",
+        None if now.duration_since(first_ready) >= HOLD_LIMIT => {
+            "the late retry never ran, so publishing anyway"
+        }
+        // Too soon. `APP_READY` stays raised, so the next looper pass asks
+        // again; `startup_settled` lowers it, so after the retry only a fresh
+        // `APP_READY` gets here.
+        _ => return,
+    };
+    let Some((lib, url)) = held.take() else { return };
+    drop(held);
+    let url = running_app_form(&url);
+    println!("[deeplink] publishing the held link: {why}");
+    if publish_url(lib, &url, "app ready") {
+        // Not armed for `tick`'s report: the launch arrives on the engine's
+        // own thread after this returns, so a read-back here says "nothing
+        // asked to launch" for a join that then succeeds (measured). The
+        // engine's log says `launchUGCGame` and `Joining game` when it works.
+        println!("[deeplink] handed to the running app shell; the engine's log reports the join");
     }
 }
 
