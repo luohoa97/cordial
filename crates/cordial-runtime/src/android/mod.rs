@@ -25,6 +25,7 @@ pub mod gl;
 pub mod glcount;
 pub mod input;
 pub mod looper;
+pub mod media;
 pub mod surface_params;
 pub mod system;
 pub mod text_geometry;
@@ -432,6 +433,7 @@ pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
     let mut v = asset::overrides();
     v.extend(config::overrides());
     v.extend(looper::overrides());
+    v.extend(media::overrides());
     // Only the selected backend's ANativeWindow_*/EGL overrides are
     // registered — registering both would mean whichever one is NOT hosting
     // the window still answers `ANativeWindow_getWidth` and the rest with
