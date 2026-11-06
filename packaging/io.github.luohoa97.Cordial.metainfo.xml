@@ -78,6 +78,14 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.34.1" date="2026-11-06">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.34.1</url>
+      <description>
+        <p>
+          Loads Roblox 2.746, which stopped at startup with a missing AImageReader symbol.
+        </p>
+      </description>
+    </release>
     <release version="0.34.0" date="2026-10-16">
       <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.34.0</url>
       <description>
