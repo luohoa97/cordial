@@ -1104,3 +1104,12 @@ libzstd-jni-1.5.7-6.so	ZSTD_trace_compress_begin
 libzstd-jni-1.5.7-6.so	ZSTD_trace_compress_end
 libzstd-jni-1.5.7-6.so	ZSTD_trace_decompress_begin
 libzstd-jni-1.5.7-6.so	ZSTD_trace_decompress_end
+libroblox.so	AHardwareBuffer_acquire
+libroblox.so	AHardwareBuffer_release
+libroblox.so	AImageReader_acquireNextImage
+libroblox.so	AImageReader_delete
+libroblox.so	AImageReader_getWindow
+libroblox.so	AImageReader_newWithUsage
+libroblox.so	AImage_delete
+libroblox.so	AImage_getHardwareBuffer
+libroblox.so	AImage_getTimestamp
