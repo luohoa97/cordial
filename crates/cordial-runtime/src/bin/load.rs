@@ -4940,6 +4940,7 @@ fn main() -> ExitCode {
                                                                     Err(e) => println!("  late retry failed: {e}"),
                                                                 },
                                                             }
+                                                            cordial_runtime::deeplink::startup_settled();
                                                         }
                                                     });
                                                 }
@@ -5068,6 +5069,7 @@ fn main() -> ExitCode {
                                                                 Err(e) => println!("  late retry failed: {e}"),
                                                             },
                                                         }
+                                                        cordial_runtime::deeplink::startup_settled();
                                                     }
                                                 }
                                                 // `setInputConnectionNative`: on real
