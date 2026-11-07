@@ -373,32 +373,21 @@ pub fn build(host_libc: bool, imports: &crate::elf::Imports) -> SymbolTable {
 
     // Vulkan is `dlopen`ed, not linked — it contributes no undefined symbols to
     // `libroblox.so` and so never reaches the per-symbol classification above.
-    // Register it as its own virtual library, exporting only
-    // `vkGetInstanceProcAddr`; everything else is fetched dynamically through
-    // it. See `android::vulkan`. When the host has no Vulkan at all, both
-    // sonames are left unregistered and Roblox's `dlopen` fails exactly as it
-    // does today — a clean fall-through to GLES.
-    match crate::android::vulkan::get_instance_proc_addr_symbol() {
-        Some(addr) => {
-            for name in crate::android::vulkan::LIBRARY_NAMES {
-                table.libraries.entry(name).or_default().push(Entry {
-                    symbol: "vkGetInstanceProcAddr",
-                    address: addr,
-                    source: Source::Cordial,
-                });
-                table.stats.entry(name).or_default().record(Source::Cordial);
-            }
-        }
-        None => table.missing_host_libs.push("libvulkan.so.1"),
-    }
+    //
+    // It is deliberately never registered. The virtual `libvulkan.so` and
+    // `libvulkan.so.1` sonames do not exist in this table, so the engine's
+    // `dlopen` of them fails and it takes its own documented fall-through to
+    // GLES3. That is the whole of the graphics backend decision in this fork,
+    // and it is baked in: no environment variable, flag or setting offers
+    // Vulkan, and the interposition that used to answer it is gone. See
+    // `android::vulkan` for the sentinel that fires if a path still reaches.
 
-    // mimalloc, the same shape as Vulkan above: `libroblox.so` contributes no
-    // undefined `mi_` symbols (nothing DT_NEEDS it), so it is never reached by
-    // the per-symbol classification loop and has to be registered as its own
-    // virtual library for whatever `dlopen`s it to find. See `mimalloc_lib`
-    // for why this links the real allocator rather than stubbing its option
-    // getters, and for what is and is not confirmed about whether the engine
-    // ever asks for it.
+    // mimalloc: `libroblox.so` contributes no undefined `mi_` symbols (nothing
+    // DT_NEEDS it), so it is never reached by the per-symbol classification
+    // loop and has to be registered as its own virtual library for whatever
+    // `dlopen`s it to find. See `mimalloc_lib` for why this links the real
+    // allocator rather than stubbing its option getters, and for what is and
+    // is not confirmed about whether the engine ever asks for it.
     {
         let mimalloc = table
             .libraries
@@ -542,7 +531,7 @@ impl Default for DlInfo {
 
 // The *host* dynamic loader, not the bionic one. Declared directly rather than
 // taking a dependency on the `libc` crate for two functions.
-extern "C" {
+unsafe extern "C" {
     #[link_name = "dlopen"]
     fn host_dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
     #[link_name = "dlsym"]

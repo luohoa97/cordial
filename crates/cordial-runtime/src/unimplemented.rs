@@ -118,7 +118,7 @@ pub fn placeholder(what: &str, returned: &str) {
 /// # Safety
 /// `detail` must be a NUL-terminated C string valid for the duration of the
 /// call. It is copied before returning.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cordial_unimplemented_record(kind: u32, detail: *const c_char) {
     if detail.is_null() {
         return;
