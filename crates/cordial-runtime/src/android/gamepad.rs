@@ -207,16 +207,51 @@ pub fn current_enabled() -> bool {
 /// and disconnecting an id it has not heard of is the kind of call that has no
 /// reason to be safe.
 ///
-/// `disconnect` is a parameter only so the test does not need an engine.
-fn withdraw(pads: &mut Vec<Pad>, mut disconnect: impl FnMut(i32)) -> usize {
+/// `button` and `disconnect` are parameters only so the test does not need an
+/// engine; `button` is the release that has to go out before the disconnect.
+fn withdraw(
+    pads: &mut Vec<Pad>,
+    mut button: impl FnMut(i32, i32, i32),
+    mut disconnect: impl FnMut(i32),
+) -> usize {
     let mut sent = 0;
-    for pad in pads.drain(..) {
+    for mut pad in pads.drain(..) {
         if pad.announced {
+            // **A release the pad never got to send has to be sent for it.**
+            // This is the path where the device is still there and Cordial
+            // simply stops reading it, so the kernel does not help: it emits
+            // releases for held keys when a device is *destroyed* (an unplug or
+            // a uinput teardown), and closing the file is not that. The engine
+            // is left with the button down, and the game acts on it -- a
+            // character that keeps jumping with the controllers switched off is
+            // what that looks like. INFERRED: that the engine keeps button
+            // state across a disconnect. Sending the release first is correct
+            // either way, and it costs one call per held button.
+            release_held(&mut pad, &mut button);
             disconnect(pad.id);
             sent += 1;
         }
     }
     sent
+}
+
+/// Tell the engine that every button this pad still has down has come up.
+///
+/// Called on every path that drops a pad, *before* the disconnect. On an unplug
+/// the kernel has already emitted these releases itself (measured: a uinput pad
+/// destroyed with A held arrives as `key=96, action=1` before `ENODEV`), so this
+/// is usually a no-op. It is the paths that close the file without destroying
+/// the device -- the controllers switch in Settings -- where the release would
+/// otherwise never be sent.
+fn release_held(pad: &mut Pad, button: &mut impl FnMut(i32, i32, i32)) {
+    let mut held = std::mem::take(&mut pad.held);
+    while held != 0 {
+        let index = held.trailing_zeros() as u8;
+        held &= held - 1;
+        if let Some(code) = pad.layout.button(index) {
+            button(pad.id, code, ACTION_UP);
+        }
+    }
 }
 
 /// The gate's decision, separated from where it reads it.
@@ -347,6 +382,20 @@ struct Pad {
     /// What the axes last said, so that one stick's two axes can go to the engine
     /// together. See [`AxisState`].
     sticks: AxisState,
+    /// The joydev button indices this pad has told the engine are down, one bit
+    /// each.
+    ///
+    /// **Kept so the release can be sent when Cordial lets go of the pad.** The
+    /// engine holds a button until it is told the button came up. An unplug gets
+    /// that release from the kernel, which emits one for every held key when a
+    /// device is destroyed -- measured here, and it arrives before `ENODEV`. But
+    /// switching controllers off in Settings only closes the file, and then
+    /// nothing sends the release: the engine keeps the button pressed for the
+    /// rest of the run, which in a game reads as the button "pressing itself"
+    /// long after it was let go. A bitmask rather than a list because the release
+    /// is then a loop over set bits, and `u32` because joydev indices are small:
+    /// no pad here declares more than sixteen buttons.
+    held: u32,
 }
 
 static PADS: std::sync::Mutex<Vec<Pad>> = std::sync::Mutex::new(Vec::new());
@@ -1166,11 +1215,44 @@ fn drain(pad: &mut Pad) -> bool {
                     // input pump. No real pad has 256 buttons, but "no real
                     // device does that" is not a reason to let a byte off a
                     // character device decide whether the client stays up.
-                    (true, JS_EVENT_BUTTON) => init_buttons = init_buttons.max(index.saturating_add(1)),
-                    (true, JS_EVENT_AXIS) => init_axes = init_axes.max(index.saturating_add(1)),
-                    (false, k) if pad.announced => {
-                        dispatch(pad.id, k, index, value, &pad.layout, &mut pad.sticks)
+                    (true, JS_EVENT_BUTTON) => {
+                        init_buttons = init_buttons.max(index.saturating_add(1));
+                        // **A button held when the device opens is really
+                        // held, and the engine has to be told so.** The init
+                        // burst is the pad's current state, not a press: it is
+                        // read here as the starting state of a pad that has
+                        // just been opened, and a pad can be opened under a
+                        // finger. Forwarding the pressed ones after the
+                        // announcement is what stops a re-opened pad from
+                        // being out of step with the engine -- a button the
+                        // engine has down with nothing left to release it, or
+                        // (with the release on the way out) one the engine has
+                        // up while the pad has it down. Zero values are
+                        // dropped: every pad opens with most buttons up, and
+                        // eleven no-op releases per plug-in are noise in the
+                        // trace, not information.
+                        if let Some(record) = replay_init(JS_EVENT_BUTTON, index, value) {
+                            deferred.push(record);
+                        }
                     }
+                    (true, JS_EVENT_AXIS) => {
+                        init_axes = init_axes.max(index.saturating_add(1));
+                        // Axes are left out on purpose. A stick that is
+                        // already off centre when the pad opens corrects
+                        // itself on its next event, and the init value of a
+                        // trigger at rest is a full-scale number on some pads
+                        // -- sending that as a trigger pull would be a worse
+                        // guess than waiting.
+                    }
+                    (false, k) if pad.announced => dispatch(
+                        pad.id,
+                        k,
+                        index,
+                        value,
+                        &pad.layout,
+                        &mut pad.sticks,
+                        &mut pad.held,
+                    ),
                     (false, k) => deferred.push((k, index, value)),
                     _ => {}
                 }
@@ -1188,7 +1270,15 @@ fn drain(pad: &mut Pad) -> bool {
         announce(pad.id, pad.node, init_buttons, init_axes, &pad.layout);
         pad.announced = true;
         for (k, index, value) in deferred {
-            dispatch(pad.id, k, index, value, &pad.layout, &mut pad.sticks);
+            dispatch(
+                pad.id,
+                k,
+                index,
+                value,
+                &pad.layout,
+                &mut pad.sticks,
+                &mut pad.held,
+            );
         }
     } else if !pad.announced && !deferred.is_empty() {
         // Events arriving from a device that never sent an init burst, which
@@ -1210,20 +1300,69 @@ fn drain(pad: &mut Pad) -> bool {
     true
 }
 
-fn dispatch(id: i32, kind: u8, index: u8, value: i16, layout: &Layout, sticks: &mut AxisState) {
+fn dispatch(
+    id: i32,
+    kind: u8,
+    index: u8,
+    value: i16,
+    layout: &Layout,
+    sticks: &mut AxisState,
+    held: &mut u32,
+) {
     match kind {
         JS_EVENT_BUTTON => {
             if let Some(code) = layout.button(index) {
+                let down = value != 0;
+                track_button(held, index, down);
                 input::deliver_gamepad_button(
                     id,
                     code,
-                    if value != 0 { ACTION_DOWN } else { ACTION_UP },
+                    if down { ACTION_DOWN } else { ACTION_UP },
                 );
             }
         }
         JS_EVENT_AXIS => send_axis(id, index, value, layout, sticks),
         _ => {}
     }
+}
+
+/// Record what the engine has just been told about one button.
+///
+/// The bitmask is this side's record of the engine's state, so it follows the
+/// event that was actually sent rather than the device: a button whose code the
+/// layout cannot name is never sent, and must not be released later either.
+/// Indices past 31 are not tracked -- joydev's init burst can in principle
+/// declare that many, no pad here does, and dropping the bit only means that
+/// button would not be released when the pad goes away.
+fn track_button(held: &mut u32, index: u8, down: bool) {
+    let Some(bit) = 1u32.checked_shl(index.into()) else {
+        return;
+    };
+    if down {
+        *held |= bit;
+    } else {
+        *held &= !bit;
+    }
+}
+
+/// What an init-burst record is still worth sending once the pad is announced.
+///
+/// **A button held when the device opens is really held**, and the engine has to
+/// be told: the pad can be opened under a finger, or re-opened under a new node
+/// after a re-enumeration, and a pad that is out of step with the engine has a
+/// button down that nothing will release (or, after a release was sent on the
+/// way out, a button up that the pad has down). The init burst is the pad's
+/// current state, so the pressed buttons are replayed as ordinary events after
+/// the declaration. Zero values are dropped: every pad opens with most buttons
+/// up, and eleven no-op releases per plug-in are noise in the trace, not
+/// information.
+///
+/// Axes are left out on purpose. A stick that is already off centre when the pad
+/// opens corrects itself on its next event, and a trigger at rest reads as a
+/// full-scale value on some pads -- sending that as a trigger pull would be a
+/// worse guess than waiting.
+fn replay_init(kind: u8, index: u8, value: i16) -> Option<(u8, u8, i16)> {
+    (kind == JS_EVENT_BUTTON && value != 0).then_some((kind, index, value))
 }
 
 /// One tick's worth of gamepad, called from [`super::looper::pump`] beside
@@ -1244,7 +1383,11 @@ pub fn poll() {
     if !enabled() {
         if WITHDRAW.swap(false, Ordering::Relaxed) {
             let mut pads = PADS.lock().unwrap_or_else(|e| e.into_inner());
-            let n = withdraw(&mut pads, input::deliver_gamepad_disconnect);
+            let n = withdraw(
+                &mut pads,
+                input::deliver_gamepad_button,
+                input::deliver_gamepad_disconnect,
+            );
             if n > 0 {
                 eprintln!(
                     "[cordial] gamepad: switched off; {n} controller(s) disconnected from the engine"
@@ -1298,6 +1441,7 @@ pub fn poll() {
                     announced: false,
                     layout: read_layout(node),
                     sticks: AxisState::default(),
+                    held: 0,
                 });
             }
         }
@@ -1311,6 +1455,12 @@ pub fn poll() {
     }
     for id in gone {
         let node = pads.iter().find(|p| p.id == id).map(|p| p.node);
+        // The device is gone, so the release events it owes the engine will
+        // never arrive. Sending them now is the only thing that keeps a button
+        // held at unplug time from staying pressed for the rest of the run.
+        if let Some(pad) = pads.iter_mut().find(|p| p.id == id) {
+            release_held(pad, &mut input::deliver_gamepad_button);
+        }
         pads.retain(|p| p.id != id);
         input::deliver_gamepad_disconnect(id);
         if input::trace_gamepad() {
@@ -1375,7 +1525,7 @@ pub fn synthetic_axis(id: i32, index: u8, value: i16) {
 
 #[cfg(test)]
 mod tests {
-    use super::{enabled_for, free_slot, js_node, withdraw, Pad};
+    use super::{enabled_for, free_slot, js_node, release_held, withdraw, Pad};
 
     fn pad(id: i32, announced: bool) -> Pad {
         // A real file descriptor that never produces an event; `withdraw` only
@@ -1387,6 +1537,7 @@ mod tests {
             announced,
             layout: super::Layout::standard(),
             sticks: super::AxisState::default(),
+            held: 0,
         }
     }
 
@@ -1417,7 +1568,7 @@ mod tests {
     fn switching_off_disconnects_each_announced_pad_once_and_lets_go_of_all() {
         let mut pads = vec![pad(0, true), pad(1, false), pad(2, true)];
         let mut told = Vec::new();
-        let n = withdraw(&mut pads, |id| told.push(id));
+        let n = withdraw(&mut pads, |_, _, _| {}, |id| told.push(id));
         assert_eq!(told, vec![0, 2], "pad 1 was never announced, so the engine has never heard of it");
         assert_eq!(n, 2);
         assert!(pads.is_empty(), "the device files are released, not kept open while off");
@@ -1425,8 +1576,101 @@ mod tests {
         // Control: nothing held, nothing sent. A second tick while still off is
         // a no-op rather than a second disconnect for the same ids.
         let mut again = Vec::new();
-        assert_eq!(withdraw(&mut pads, |id| again.push(id)), 0);
+        assert_eq!(withdraw(&mut pads, |_, _, _| {}, |id| again.push(id)), 0);
         assert!(again.is_empty());
+    }
+
+    /// **A button held when Cordial lets go of the pad has to be released.**
+    ///
+    /// The engine holds a button until it is told the button came up. An unplug
+    /// gets that from the kernel; switching controllers off in Settings does not,
+    /// because the device is not destroyed, only closed. Order matters too: the
+    /// release has to reach the engine before the disconnect, and the pad's id
+    /// may be reused by the next pad. INFERRED: that the engine keeps button
+    /// state across a disconnect.
+    #[test]
+    fn a_button_held_when_the_pad_goes_away_is_released_before_the_disconnect() {
+        let mut held = pad(3, true);
+        // Indices 0 and 2 down, 1 up: only the two down ones may be released.
+        held.held = 0b101;
+        let mut pads = vec![held];
+        // One log behind a `RefCell` because `withdraw` takes both callbacks at
+        // once and the ordering between them is the point.
+        let log = std::cell::RefCell::new(Vec::<String>::new());
+        withdraw(
+            &mut pads,
+            |id, key, action| log.borrow_mut().push(format!("button {id} {key} {action}")),
+            |id| log.borrow_mut().push(format!("disconnect {id}")),
+        );
+        assert_eq!(
+            log.into_inner(),
+            vec![
+                // The standard layout's buttons 0 and 2 are KEYCODE_BUTTON_A
+                // and _C; ACTION_UP is 1.
+                "button 3 96 1".to_string(),
+                "button 3 98 1".to_string(),
+                "disconnect 3".to_string(),
+            ],
+            "the held buttons are released, once each, before the disconnect"
+        );
+        assert!(pads.is_empty());
+    }
+
+    /// The release loop is driven by the bitmask, not by the layout, so an
+    /// index the layout cannot name is skipped rather than sent as a wrong key.
+    #[test]
+    fn release_held_sends_one_up_per_named_button_and_clears_the_mask() {
+        let mut p = pad(1, true);
+        p.held = (1 << 20) | 1; // index 0, and one past the standard table's 15
+        let mut calls: Vec<(i32, i32, i32)> = Vec::new();
+        release_held(&mut p, &mut |id, key, action| calls.push((id, key, action)));
+        assert_eq!(calls, vec![(1, 96, super::ACTION_UP)], "only the named button is sent");
+        assert_eq!(p.held, 0, "cleared, so a second path cannot release the same button twice");
+
+        // Control: nothing held, nothing sent.
+        let mut again = Vec::new();
+        release_held(&mut p, &mut |id, key, action| again.push((id, key, action)));
+        assert!(again.is_empty());
+    }
+
+    /// The bitmask has to follow the events the engine is sent, in both
+    /// directions, or the release on the way out names the wrong buttons.
+    #[test]
+    fn a_button_bit_follows_the_press_and_the_release() {
+        use super::track_button;
+        let mut held = 0u32;
+        track_button(&mut held, 0, true);
+        assert_eq!(held, 1, "button 0 down is bit 0");
+        track_button(&mut held, 3, true);
+        assert_eq!(held, 0b1001);
+        track_button(&mut held, 0, false);
+        assert_eq!(held, 0b1000, "only the button that came up is cleared");
+        track_button(&mut held, 3, false);
+        assert_eq!(held, 0);
+        // Control: an index past the mask cannot set a bit, and must not wrap
+        // into one that a release would then send for the wrong button.
+        track_button(&mut held, 32, true);
+        track_button(&mut held, 255, true);
+        assert_eq!(held, 0);
+    }
+
+    /// The init burst is the pad's state at open, and the pressed buttons are
+    /// the part of it that has to reach the engine -- a pad re-opened under a
+    /// finger must not be out of step with it. Zero values and axes are dropped.
+    #[test]
+    fn an_init_burst_replays_only_the_buttons_that_are_down() {
+        use super::{replay_init, JS_EVENT_AXIS, JS_EVENT_BUTTON};
+        assert_eq!(replay_init(JS_EVENT_BUTTON, 2, 1), Some((JS_EVENT_BUTTON, 2, 1)));
+        assert_eq!(
+            replay_init(JS_EVENT_BUTTON, 2, 0),
+            None,
+            "a button that is up at open needs no release sent"
+        );
+        assert_eq!(
+            replay_init(JS_EVENT_AXIS, 1, -32767),
+            None,
+            "an axis at open is left to its next event"
+        );
     }
 
     /// The setting is a real switch now, in both directions, and the launch
