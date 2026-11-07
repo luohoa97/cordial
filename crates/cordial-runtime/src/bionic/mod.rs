@@ -16,7 +16,6 @@
 //! Everything here is deliberately small. The real bionic surface is a shim's
 //! job; see docs/base-evaluation.md §4.
 
-use crate::ffi_util::{borrow_request, lossy_or_null, write_response};
 use std::ffi::{c_char, c_int, c_void, CStr};
 
 pub mod pthread;
@@ -39,7 +38,6 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
         // FORTIFY wrappers.
         f!("__strlen_chk", strlen_chk),
         f!("__strchr_chk", strchr_chk),
-        f!("__strrchr_chk", strrchr_chk),
         f!("__strncpy_chk2", strncpy_chk2),
         f!("__write_chk", write_chk),
         f!("__umask_chk", umask_chk),
@@ -105,14 +103,14 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
     // see `thread_overrides` and `native/thread_trace.cpp`.
     v.extend(thread_overrides());
     if std::env::var_os("CORDIAL_TRACE_PATHS").is_some() {
-        extern "C" {
+        unsafe extern "C" {
             fn cordial_set_path_trace(on: c_int);
         }
         // SAFETY: sets one bool in system_paths.cpp.
         unsafe { cordial_set_path_trace(1) };
     }
     if std::env::var_os("CORDIAL_TRACE_THREADS").is_some() {
-        extern "C" {
+        unsafe extern "C" {
             fn cordial_set_thread_trace(on: c_int);
         }
         // SAFETY: sets one bool in thread_trace.cpp.
@@ -212,11 +210,10 @@ pub fn stack_chk_guard() -> u64 {
     STACK_CHK_GUARD as u64
 }
 
-extern "C" {
+unsafe extern "C" {
     fn __errno_location() -> *mut c_int;
     fn strlen(s: *const c_char) -> usize;
     fn strchr(s: *const c_char, c: c_int) -> *mut c_char;
-    fn strrchr(s: *const c_char, c: c_int) -> *mut c_char;
     fn strncpy(dst: *mut c_char, src: *const c_char, n: usize) -> *mut c_char;
     // glibc's `strerror_r` is the GNU one: it returns `char*` and may leave
     // `buf` untouched. The XSI one bionic's plain `strerror_r` means is
@@ -272,27 +269,16 @@ pub struct BionicMallinfo {
 /// `size_t` slots would report a heap over 2 GB as whatever it wrapped to.
 fn host_mallinfo2() -> Option<extern "C" fn() -> BionicMallinfo> {
     static FOUND: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
-    let addr = (*FOUND.get_or_init(|| host_symbol(c"mallinfo2")))?;
+    let addr = (*FOUND.get_or_init(|| {
+        // SAFETY: a plain symbol lookup in the already-loaded host libc.
+        let p = unsafe {
+            libc_dlsym(std::ptr::null_mut(), c"mallinfo2".as_ptr())
+        };
+        if p.is_null() { None } else { Some(p as usize) }
+    }))?;
     // SAFETY: `mallinfo2` takes no arguments and returns the ten-`size_t`
     // struct `BionicMallinfo` mirrors exactly.
     Some(unsafe { std::mem::transmute::<usize, extern "C" fn() -> BionicMallinfo>(addr) })
-}
-
-/// The address of `name` in the already-loaded host libc, or `None` if the
-/// host has no such symbol.
-fn host_symbol(name: &CStr) -> Option<usize> {
-    // SAFETY: a plain symbol lookup with the default handle and a C string the
-    // borrow guarantees is NUL-terminated.
-    let p = unsafe { libc_dlsym(std::ptr::null_mut(), name.as_ptr()) };
-    (!p.is_null()).then_some(p as usize)
-}
-
-impl BionicMallinfo {
-    /// What a host without `mallinfo2` reports: all zeroes, never a guess.
-    const ZERO: BionicMallinfo = BionicMallinfo {
-        arena: 0, ordblks: 0, smblks: 0, hblks: 0, hblkhd: 0,
-        usmblks: 0, fsmblks: 0, uordblks: 0, fordblks: 0, keepcost: 0,
-    };
 }
 
 /// **Reports the host allocator's arena, which may not be the engine's.**
@@ -304,7 +290,13 @@ impl BionicMallinfo {
 /// engine only uses this for telemetry -- no behaviour change was observed when
 /// it went from a stub to this.
 extern "C" fn bionic_mallinfo() -> BionicMallinfo {
-    host_mallinfo2().map_or(BionicMallinfo::ZERO, |f| f())
+    match host_mallinfo2() {
+        Some(f) => f(),
+        None => BionicMallinfo {
+            arena: 0, ordblks: 0, smblks: 0, hblks: 0, hblkhd: 0,
+            usmblks: 0, fsmblks: 0, uordblks: 0, fordblks: 0, keepcost: 0,
+        },
+    }
 }
 
 /// `__cxa_thread_atexit_impl` — **not a divergence, simply absent.**
@@ -335,46 +327,25 @@ extern "C" fn bionic_errno() -> *mut c_int {
     unsafe { __errno_location() }
 }
 
-/// Set this thread's `errno`.
-fn set_errno(value: c_int) {
-    // SAFETY: glibc's per-thread errno slot, valid for this thread's lifetime.
-    unsafe { *__errno_location() = value };
-}
-
-/// An argument string for a diagnostic.
-///
-/// # Safety
-/// `p` is either null or a NUL-terminated C string.
+/// SAFETY: `p` is either null or a NUL-terminated C string.
 unsafe fn cstr(p: *const c_char) -> String {
-    // SAFETY: the contract is the caller's; the helper checks for null.
-    lossy_or_null(unsafe { borrow_request(p) })
-}
-
-/// What `__assert` prints, as one block, before the process is stopped.
-fn assert_report(file: &str, line: c_int, msg: &str) -> String {
-    format!("\n*** Roblox assertion failed ***\n    {file}:{line}: {msg}")
-}
-
-/// What `__assert2` prints: the same banner, with the function and the failed
-/// expression on their own lines.
-fn assert2_report(file: &str, line: c_int, function: &str, failed: &str) -> String {
-    format!(
-        "\n*** Roblox assertion failed ***\n    {file}:{line} in {function}\n    assertion: {failed}"
-    )
-}
-
-/// Say why, show which stubs were hit on the way (a failed assertion with
-/// corrupt state behind it is usually downstream of one), and stop.
-fn die_with(report: &str) -> ! {
-    eprintln!("{report}");
-    crate::stubs::report();
-    std::process::abort();
+    if p.is_null() {
+        "(null)".into()
+    } else {
+        // SAFETY: non-null per the check above; NUL-termination is this
+        // function's own contract, stated above.
+        unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+    }
 }
 
 extern "C" fn bionic_assert(file: *const c_char, line: c_int, msg: *const c_char) -> ! {
     // SAFETY: bionic passes NUL-terminated strings or null.
-    let (file, msg) = unsafe { (cstr(file), cstr(msg)) };
-    die_with(&assert_report(&file, line, &msg))
+    unsafe {
+        eprintln!("\n*** Roblox assertion failed ***");
+        eprintln!("    {}:{}: {}", cstr(file), line, cstr(msg));
+    }
+    crate::stubs::report();
+    std::process::abort();
 }
 
 extern "C" fn bionic_assert2(
@@ -384,8 +355,13 @@ extern "C" fn bionic_assert2(
     failed: *const c_char,
 ) -> ! {
     // SAFETY: bionic passes NUL-terminated strings or null.
-    let (file, function, failed) = unsafe { (cstr(file), cstr(function), cstr(failed)) };
-    die_with(&assert2_report(&file, line, &function, &failed))
+    unsafe {
+        eprintln!("\n*** Roblox assertion failed ***");
+        eprintln!("    {}:{} in {}", cstr(file), line, cstr(function));
+        eprintln!("    assertion: {}", cstr(failed));
+    }
+    crate::stubs::report();
+    std::process::abort();
 }
 
 /// bionic's GNU-flavoured `strerror_r`, which returns `char*` rather than int.
@@ -414,29 +390,12 @@ extern "C" fn bionic_strerror_r(errnum: c_int, buf: *mut c_char, buflen: usize) 
     unsafe { __xpg_strerror_r(errnum, buf.cast(), buflen) }
 }
 
-// The FORTIFY wrappers below are forwarded as they are, on purpose. Each is its
-// unchecked counterpart minus a bound, and the contract that matters is the
-// host function's own: a null `s` is as much a fault in `strlen` here as it
-// was on Android. Turning that into a quiet 0 or an `EINVAL` would make a
-// caller's bug look like an answer, which is the kind of lie a stub must not
-// tell, so they are validated by the host and not re-validated here.
-
 extern "C" fn strlen_chk(s: *const c_char, _bound: usize) -> usize {
-    // SAFETY: the caller's NUL-terminated string, forwarded to the host.
     unsafe { strlen(s) }
 }
 
 extern "C" fn strchr_chk(s: *const c_char, c: c_int, _bound: usize) -> *mut c_char {
-    // SAFETY: the caller's NUL-terminated string, forwarded to the host.
     unsafe { strchr(s, c) }
-}
-
-/// Absent until Roblox 2.702.0.622, whose `libroblox.so` imports it: glibc has
-/// no `__strrchr_chk`, so the load stopped at "cannot locate symbol" before a
-/// single engine instruction ran. Same contract as `__strchr_chk`.
-extern "C" fn strrchr_chk(s: *const c_char, c: c_int, _bound: usize) -> *mut c_char {
-    // SAFETY: the caller's NUL-terminated string, forwarded to the host.
-    unsafe { strrchr(s, c) }
 }
 
 extern "C" fn strncpy_chk2(
@@ -446,22 +405,18 @@ extern "C" fn strncpy_chk2(
     _dst_len: usize,
     _src_len: usize,
 ) -> *mut c_char {
-    // SAFETY: the caller's buffers, forwarded with the caller's own count.
     unsafe { strncpy(dst, src, n) }
 }
 
 extern "C" fn write_chk(fd: c_int, buf: *const c_void, count: usize, _bound: usize) -> isize {
-    // SAFETY: the caller's buffer and count; the kernel reports a bad one as EFAULT.
     unsafe { write(fd, buf, count) }
 }
 
 extern "C" fn umask_chk(mode: u32) -> u32 {
-    // SAFETY: a plain scalar.
     unsafe { umask(mode) }
 }
 
 extern "C" fn poll_chk(fds: *mut c_void, nfds: u64, timeout: c_int, _bound: usize) -> c_int {
-    // SAFETY: the caller's `struct pollfd` array, identical in both libcs.
     unsafe { poll(fds, nfds, timeout) }
 }
 
@@ -471,7 +426,6 @@ extern "C" fn readlink_chk(
     size: usize,
     _bound: usize,
 ) -> isize {
-    // SAFETY: the caller's path and buffer, forwarded with the caller's own size.
     unsafe { readlink(path, buf, size) }
 }
 
@@ -482,7 +436,6 @@ extern "C" fn fread_chk(
     stream: *mut c_void,
     _bound: usize,
 ) -> usize {
-    // SAFETY: the caller's buffer and `FILE*`, forwarded with the caller's own counts.
     unsafe { fread(ptr, size, n, stream) }
 }
 
@@ -543,12 +496,17 @@ extern "C" fn android_get_device_api_level() -> c_int {
 /// bionic's `__system_property_get(name, value)`. `value` is a caller buffer of
 /// `PROP_VALUE_MAX` (92) bytes; the return is the length written.
 extern "C" fn system_property_get(name: *const c_char, value: *mut c_char) -> c_int {
+    const PROP_VALUE_MAX: usize = 92;
     if value.is_null() {
         return 0;
     }
     // SAFETY: bionic's contract is a NUL-terminated name and a 92-byte buffer.
     let key = unsafe { cstr(name) };
-    let found = property_value(&key);
+    let found = PROPERTIES
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| *v)
+        .unwrap_or("");
 
     // `CORDIAL_TRACE_PROPS=1` names every property the engine asks for and what
     // it was told.
@@ -566,43 +524,21 @@ extern "C" fn system_property_get(name: *const c_char, value: *mut c_char) -> c_
         );
     }
 
-    // The reply is at most PROP_VALUE_MAX bytes, NUL included, so the helper's
-    // own length check is satisfied by the buffer the ABI promises. It writes
-    // the reply and its NUL and nothing past them, as the hand-rolled copy did.
-    let reply = property_reply(found);
-    if !write_response(&reply, value, PROP_VALUE_MAX) {
-        return 0;
+    let bytes = found.as_bytes();
+    let n = bytes.len().min(PROP_VALUE_MAX - 1);
+    // SAFETY: `value` has at least PROP_VALUE_MAX bytes per the ABI, and n < that.
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), value as *mut u8, n);
+        *value.add(n) = 0;
     }
-    (reply.len() - 1) as c_int
-}
-
-/// `PROP_VALUE_MAX`: the size of the buffer bionic's callers pass, NUL included.
-const PROP_VALUE_MAX: usize = 92;
-
-/// The value Cordial reports for `key`, or the empty string every unset
-/// Android property reads as.
-fn property_value(key: &str) -> &'static str {
-    PROPERTIES
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, v)| *v)
-        .unwrap_or("")
-}
-
-/// `value` as `__system_property_get` leaves it in the caller's buffer:
-/// truncated to `PROP_VALUE_MAX - 1` bytes and NUL-terminated.
-fn property_reply(value: &str) -> Vec<u8> {
-    let bytes = value.as_bytes();
-    let mut reply = bytes[..bytes.len().min(PROP_VALUE_MAX - 1)].to_vec();
-    reply.push(0);
-    reply
+    n as c_int
 }
 
 // ---------------------------------------------------------------------- sysconf
 
 pub mod sysconf_table;
 
-extern "C" {
+unsafe extern "C" {
     fn sysconf(name: c_int) -> i64;
 }
 
@@ -614,47 +550,29 @@ extern "C" {
 /// power of two, so the allocator that asked aborts. Nothing about that failure
 /// points back at `sysconf`, which is why the translation is worth its table.
 extern "C" fn bionic_sysconf(name: c_int) -> i64 {
-    match classify_sysconf(name) {
-        // SAFETY: `glibc` came from the generated table and is a valid selector.
-        Sysconf::Host(glibc) => unsafe { sysconf(glibc) },
-        Sysconf::Unsupported(sym) => {
-            eprintln!("[bionic] sysconf({sym}) has no glibc equivalent; returning -1");
-            -1
-        }
-        Sysconf::Unknown => {
-            eprintln!("[bionic] sysconf({name}) is not a selector bionic defines; returning -1");
-            -1
-        }
-    }
-}
-
-/// What a bionic `sysconf` selector means on this host.
-#[derive(Debug, PartialEq, Eq)]
-enum Sysconf {
-    /// Ask the host, with this glibc selector.
-    Host(c_int),
-    /// A bionic selector glibc has nothing for, by its `_SC_*` name.
-    Unsupported(&'static str),
-    /// Not a selector bionic defines at all.
-    Unknown,
-}
-
-fn classify_sysconf(name: c_int) -> Sysconf {
     if let Some(&(_, glibc, _)) = sysconf_table::SYSCONF_MAP
         .iter()
         .find(|(bionic, _, _)| *bionic == name)
     {
-        return Sysconf::Host(glibc);
+        // SAFETY: `glibc` came from the generated table and is a valid selector.
+        return unsafe { sysconf(glibc) };
     }
-    match sysconf_table::UNSUPPORTED.iter().find(|(bionic, _)| *bionic == name) {
-        Some(&(_, sym)) => Sysconf::Unsupported(sym),
-        None => Sysconf::Unknown,
+
+    if let Some((_, sym)) = sysconf_table::UNSUPPORTED
+        .iter()
+        .find(|(bionic, _)| *bionic == name)
+    {
+        eprintln!("[bionic] sysconf({sym}) has no glibc equivalent; returning -1");
+        return -1;
     }
+
+    eprintln!("[bionic] sysconf({name}) is not a selector bionic defines; returning -1");
+    -1
 }
 
 // --------------------------------------------------------------------- pathconf
 
-extern "C" {
+unsafe extern "C" {
     #[link_name = "pathconf"]
     fn host_pathconf(path: *const c_char, name: c_int) -> i64;
 }
@@ -700,21 +618,17 @@ const PATHCONF_MAP: &[(c_int, c_int)] = &[
 /// asking about `/system` would want `system_paths.cpp`'s redirection, but
 /// nothing has been seen to, and redirecting on a guess is worse than not.
 extern "C" fn bionic_pathconf(path: *const c_char, name: c_int) -> i64 {
-    match pathconf_selector(name) {
+    match PATHCONF_MAP.iter().find(|(bionic, _)| *bionic == name) {
         // SAFETY: `path` is the caller's C string, forwarded as-is to the host
         // function with the same signature; `glibc` is a valid selector.
-        Some(glibc) => unsafe { host_pathconf(path, glibc) },
+        Some(&(_, glibc)) => unsafe { host_pathconf(path, glibc) },
         None => {
             // What bionic itself does for a selector it does not know.
-            set_errno(22); // EINVAL
+            // SAFETY: glibc's per-thread errno slot.
+            unsafe { *__errno_location() = 22 }; // EINVAL
             -1
         }
     }
-}
-
-/// glibc's `_PC_*` for a bionic one, or `None` if bionic defines no such selector.
-fn pathconf_selector(bionic: c_int) -> Option<c_int> {
-    PATHCONF_MAP.iter().find(|(b, _)| *b == bionic).map(|&(_, glibc)| glibc)
 }
 
 /// bionic's `isxdigit`. The ASCII answer, which is bionic's whatever the
@@ -722,227 +636,6 @@ fn pathconf_selector(bionic: c_int) -> Option<c_int> {
 /// letting the host's locale decide what a hex digit is for the guest.
 extern "C" fn bionic_isxdigit(c: c_int) -> c_int {
     u8::try_from(c).is_ok_and(|b| b.is_ascii_hexdigit()) as c_int
-}
-
-#[cfg(test)]
-mod fortify_tests {
-    use super::*;
-
-    #[test]
-    fn strrchr_chk_is_provided_and_finds_the_last_match() {
-        let overrides = function_overrides();
-        assert!(
-            overrides.iter().any(|(name, _)| *name == "__strrchr_chk"),
-            "2.702.0.622 imports __strrchr_chk and glibc does not define it"
-        );
-        let path = c"/a/b/c.txt";
-        let got = strrchr_chk(path.as_ptr(), b'/' as c_int, path.to_bytes_with_nul().len());
-        // SAFETY: `got` points into `path`.
-        assert_eq!(unsafe { CStr::from_ptr(got) }, c"/c.txt");
-        assert!(strrchr_chk(path.as_ptr(), b'z' as c_int, 11).is_null());
-    }
-}
-
-#[cfg(test)]
-mod inner_tests {
-    use super::*;
-
-    #[test]
-    fn the_assertion_reports_name_file_line_and_text() {
-        assert_eq!(
-            assert_report("a.cpp", 12, "x > 0"),
-            "\n*** Roblox assertion failed ***\n    a.cpp:12: x > 0"
-        );
-        assert_eq!(
-            assert2_report("a.cpp", 12, "run", "x > 0"),
-            "\n*** Roblox assertion failed ***\n    a.cpp:12 in run\n    assertion: x > 0"
-        );
-        // A null argument prints as such rather than faulting while the process
-        // is already on its way out.
-        // SAFETY: null is explicitly allowed by `cstr`.
-        let null = unsafe { cstr(std::ptr::null()) };
-        assert_eq!(assert_report(&null, 0, &null), "\n*** Roblox assertion failed ***\n    (null):0: (null)");
-        // SAFETY: a literal is NUL-terminated.
-        assert_eq!(unsafe { cstr(c"file.cpp".as_ptr()) }, "file.cpp");
-    }
-
-    #[test]
-    fn a_property_reply_is_truncated_to_fit_the_buffer_and_always_terminated() {
-        assert_eq!(property_reply("33"), b"33\0");
-        assert_eq!(property_reply(""), b"\0");
-        let long = "x".repeat(300);
-        let reply = property_reply(&long);
-        assert_eq!(reply.len(), PROP_VALUE_MAX, "91 bytes and the NUL");
-        assert_eq!(reply.last(), Some(&0));
-        assert!(reply[..PROP_VALUE_MAX - 1].iter().all(|&b| b == b'x'));
-    }
-
-    #[test]
-    fn every_reported_property_fits_a_prop_value_max_buffer_untruncated() {
-        for (key, value) in PROPERTIES {
-            assert!(value.len() < PROP_VALUE_MAX, "{key} would be cut short");
-            assert_eq!(property_value(key), *value);
-        }
-        assert_eq!(property_value("ro.soc.manufacturer"), "", "deliberately absent, see the table");
-        assert_eq!(property_value("no.such.property"), "");
-    }
-
-    #[test]
-    fn property_get_writes_the_value_and_its_nul_and_not_a_byte_more() {
-        let mut buf = [0xAAu8; 100];
-        let n = system_property_get(c"ro.build.version.sdk".as_ptr(), buf.as_mut_ptr() as *mut c_char);
-        assert_eq!(n, 2);
-        assert_eq!(&buf[..4], b"33\0\xAA", "the byte after the NUL is the caller's");
-
-        // An unknown name is the empty string, as an unset Android property is.
-        let mut unknown = [0xAAu8; 8];
-        assert_eq!(system_property_get(c"nope".as_ptr(), unknown.as_mut_ptr() as *mut c_char), 0);
-        assert_eq!(&unknown[..2], b"\0\xAA");
-
-        // And a null name is looked up as the string "(null)", which is not set.
-        let mut null_name = [0xAAu8; 8];
-        assert_eq!(system_property_get(std::ptr::null(), null_name.as_mut_ptr() as *mut c_char), 0);
-        assert_eq!(null_name[0], 0);
-    }
-
-    #[test]
-    fn a_property_with_nowhere_to_go_is_zero_and_touches_nothing() {
-        assert_eq!(system_property_get(c"ro.build.version.sdk".as_ptr(), std::ptr::null_mut()), 0);
-    }
-
-    #[test]
-    fn a_sysconf_selector_is_classified_by_the_table_it_came_from() {
-        // 39 is bionic's _SC_PAGESIZE and glibc's _SC_BC_STRING_MAX is also 39:
-        // the case the translation exists for.
-        assert_eq!(classify_sysconf(39), Sysconf::Host(30));
-        assert_eq!(classify_sysconf(99_999), Sysconf::Unknown);
-        for &(bionic, _) in sysconf_table::UNSUPPORTED {
-            assert!(
-                matches!(classify_sysconf(bionic), Sysconf::Unsupported(_)),
-                "{bionic} is in the unsupported list"
-            );
-        }
-        // The two lists never overlap, or the mapped one would win silently
-        // over a selector the generator also marked unsupported.
-        for &(bionic, _) in sysconf_table::UNSUPPORTED {
-            assert!(
-                !sysconf_table::SYSCONF_MAP.iter().any(|(b, _, _)| *b == bionic),
-                "{bionic} is both mapped and unsupported"
-            );
-        }
-    }
-
-    #[test]
-    fn sysconf_answers_the_page_size_in_the_hosts_terms() {
-        // SAFETY: glibc's own selector, 30 = _SC_PAGESIZE.
-        let host = unsafe { sysconf(30) };
-        assert!(host > 0 && (host & (host - 1)) == 0, "a power of two, or the allocator aborts");
-        assert_eq!(bionic_sysconf(39), host);
-        assert_eq!(bionic_sysconf(99_999), -1);
-    }
-
-    #[test]
-    fn pathconf_has_twenty_distinct_selectors_and_no_others() {
-        let mut targets: Vec<c_int> = (0..20).map(|b| pathconf_selector(b).expect("defined")).collect();
-        targets.sort_unstable();
-        targets.dedup();
-        assert_eq!(targets.len(), 20, "no two bionic selectors may share a glibc one");
-        assert_eq!(pathconf_selector(20), None);
-        assert_eq!(pathconf_selector(-1), None);
-    }
-
-    #[test]
-    fn mallinfo_reports_the_host_arena_or_nothing_and_never_garbage() {
-        let _keep_the_heap_non_empty = vec![0u8; 4096];
-        let info = bionic_mallinfo();
-        if host_mallinfo2().is_some() {
-            assert!(info.uordblks > 0, "a running test process has allocated memory");
-        } else {
-            assert_eq!(info.uordblks, 0);
-        }
-        assert_eq!(BionicMallinfo::ZERO.arena, 0);
-    }
-
-    #[test]
-    fn a_host_symbol_is_found_or_reported_missing() {
-        assert!(host_symbol(c"getpid").is_some());
-        assert!(host_symbol(c"cordial_no_such_symbol_anywhere").is_none());
-    }
-
-    #[test]
-    fn the_fortify_wrappers_forward_to_the_host_unchanged() {
-        let s = c"hello/world";
-        assert_eq!(strlen_chk(s.as_ptr(), 12), 11);
-        // SAFETY: both results point into `s`.
-        unsafe {
-            assert_eq!(CStr::from_ptr(strchr_chk(s.as_ptr(), b'/' as c_int, 12)), c"/world");
-        }
-        let mut dst = [0x7f as c_char; 8];
-        let out = strncpy_chk2(dst.as_mut_ptr(), c"abc".as_ptr(), 8, 8, 4);
-        assert_eq!(out, dst.as_mut_ptr());
-        assert_eq!(dst[..4], [b'a' as c_char, b'b' as c_char, b'c' as c_char, 0]);
-
-        let mut link = [0 as c_char; 4096];
-        let n = readlink_chk(c"/proc/self/exe".as_ptr(), link.as_mut_ptr(), link.len(), link.len());
-        assert!(n > 0, "readlink of our own executable");
-        assert_eq!(readlink_chk(c"/".as_ptr(), link.as_mut_ptr(), link.len(), link.len()), -1);
-    }
-
-    // ----------------------------------------------------- native symbol tables
-
-    unsafe extern "C" fn fake_table(count: *mut usize) -> *const Symbol {
-        struct Table([Symbol; 3]);
-        // SAFETY: the fixture holds pointers to string literals and to nothing
-        // that is ever written through, so sharing it is sound.
-        unsafe impl Sync for Table {}
-        static TABLE: Table = Table([
-            Symbol { name: c"first".as_ptr(), addr: 0x10 as *mut c_void },
-            Symbol { name: c"second".as_ptr(), addr: 0x20 as *mut c_void },
-            // Not UTF-8: the name reads as empty rather than stopping the load.
-            Symbol { name: b"\xff\xfe\0".as_ptr() as *const c_char, addr: 0x30 as *mut c_void },
-        ]);
-        // SAFETY: the real accessors do exactly this with their own count.
-        unsafe { *count = TABLE.0.len() };
-        TABLE.0.as_ptr()
-    }
-
-    unsafe extern "C" fn null_table(count: *mut usize) -> *const Symbol {
-        // SAFETY: as above. A native side with nothing to say reports zero.
-        unsafe { *count = 0 };
-        std::ptr::null()
-    }
-
-    #[test]
-    fn a_native_table_becomes_name_and_address_pairs() {
-        let got = symbol_table(fake_table);
-        assert_eq!(
-            got,
-            vec![
-                ("first", 0x10 as *mut c_void),
-                ("second", 0x20 as *mut c_void),
-                ("", 0x30 as *mut c_void),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_null_native_table_is_an_empty_one() {
-        assert!(symbol_table(null_table).is_empty());
-    }
-
-    #[test]
-    fn the_real_native_tables_are_all_non_empty_and_named() {
-        for (what, table) in [
-            ("liblog", liblog_overrides()),
-            ("system_paths", system_path_overrides()),
-            ("thread_trace", thread_overrides()),
-            ("netdb", netdb_overrides()),
-            ("foreign_alloc", alloc_overrides()),
-        ] {
-            assert!(!table.is_empty(), "{what} registered nothing");
-            assert!(table.iter().all(|(n, a)| !n.is_empty() && !a.is_null()), "{what}");
-        }
-    }
 }
 
 #[cfg(test)]
@@ -978,43 +671,6 @@ mod pathconf_tests {
     }
 }
 
-// ------------------------------------------------------------- native tables
-
-/// One entry of a symbol table exported by `native/*.cpp`.
-#[repr(C)]
-struct Symbol {
-    name: *const c_char,
-    addr: *mut c_void,
-}
-
-/// The native side's accessor for its table: the entry count goes out through
-/// the argument and the first entry is returned.
-type SymbolFetch = unsafe extern "C" fn(count: *mut usize) -> *const Symbol;
-
-/// Read a table of `(name, address)` pairs a C++ translation unit exports.
-///
-/// Seven copies of this lived inline, one per table, each with its own pair of
-/// raw-pointer reads. A null table is an empty one, as every copy treated it,
-/// and a name that is not UTF-8 reads as `""` rather than stopping the load.
-fn symbol_table(fetch: SymbolFetch) -> Vec<(&'static str, *mut c_void)> {
-    let mut count = 0usize;
-    // SAFETY: each table is a static in its `.cpp` and outlives the process.
-    let table = unsafe { fetch(&mut count) };
-    if table.is_null() {
-        return Vec::new();
-    }
-    // SAFETY: `table` points at `count` initialised entries with static names.
-    let entries = unsafe { std::slice::from_raw_parts(table, count) };
-    entries
-        .iter()
-        .map(|e| {
-            // SAFETY: each `name` is a string literal in the `.cpp`.
-            let name = unsafe { CStr::from_ptr(e.name) }.to_str().unwrap_or("");
-            (name, e.addr)
-        })
-        .collect()
-}
-
 // ----------------------------------------------------------------------- liblog
 
 /// Android's `liblog`, implemented in `native/liblog.cpp`.
@@ -1023,10 +679,31 @@ fn symbol_table(fetch: SymbolFetch) -> Vec<(&'static str, *mut c_void)> {
 /// every later failure from silent into explained. Implemented in C++ because
 /// three of the six are variadic.
 pub fn liblog_overrides() -> Vec<(&'static str, *mut c_void)> {
-    extern "C" {
+    #[repr(C)]
+    struct Symbol {
+        name: *const c_char,
+        addr: *mut c_void,
+    }
+    unsafe extern "C" {
         fn cordial_liblog_symbols(count: *mut usize) -> *const Symbol;
     }
-    symbol_table(cordial_liblog_symbols)
+
+    let mut count = 0usize;
+    // SAFETY: the table is a static in liblog.cpp and outlives the process.
+    let table = unsafe { cordial_liblog_symbols(&mut count) };
+    if table.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `table` points at `count` initialised entries with static names.
+    let entries = unsafe { std::slice::from_raw_parts(table, count) };
+    entries
+        .iter()
+        .map(|e| {
+            // SAFETY: each `name` is a string literal in liblog.cpp.
+            let name = unsafe { CStr::from_ptr(e.name) }.to_str().unwrap_or("");
+            (name, e.addr)
+        })
+        .collect()
 }
 
 // -------------------------------------------------------------------- OpenSL
@@ -1046,10 +723,31 @@ pub fn liblog_overrides() -> Vec<(&'static str, *mut c_void)> {
 /// specific reason than "nothing is implemented yet". See `opensles.cpp` and
 /// `pipewire_backend.cpp` for the split.
 pub fn opensles_overrides() -> Vec<(&'static str, *mut c_void)> {
-    extern "C" {
+    #[repr(C)]
+    struct Symbol {
+        name: *const c_char,
+        addr: *mut c_void,
+    }
+    unsafe extern "C" {
         fn cordial_opensles_symbols(count: *mut usize) -> *const Symbol;
     }
-    symbol_table(cordial_opensles_symbols)
+
+    let mut count = 0usize;
+    // SAFETY: the table is a static in opensles.cpp and outlives the process.
+    let table = unsafe { cordial_opensles_symbols(&mut count) };
+    if table.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `table` points at `count` initialised entries with static names.
+    let entries = unsafe { std::slice::from_raw_parts(table, count) };
+    entries
+        .iter()
+        .map(|e| {
+            // SAFETY: each `name` is a string literal in opensles.cpp.
+            let name = unsafe { CStr::from_ptr(e.name) }.to_str().unwrap_or("");
+            (name, e.addr)
+        })
+        .collect()
 }
 
 // -------------------------------------------------------------------- AAudio
@@ -1065,7 +763,7 @@ pub fn opensles_overrides() -> Vec<(&'static str, *mut c_void)> {
 /// path with a virtual library nobody opens — an experiment that looks like
 /// it ran and did not.
 pub fn aaudio_selected() -> bool {
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_audio_backend_is_aaudio() -> c_int;
     }
     // SAFETY: reads a process-wide `static` decided once in aaudio.cpp.
@@ -1080,7 +778,7 @@ pub fn aaudio_selected() -> bool {
 /// announces itself rather than leaving the reader to infer it from whether
 /// sound comes out.
 pub fn announce_audio_backend() {
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_audio_backend_announce();
     }
     // SAFETY: no arguments, no return; writes one line to stderr.
@@ -1097,14 +795,35 @@ pub fn announce_audio_backend() {
 /// `org.fmod.FMOD.supportsAAudio()` has said yes, which is the actual gate
 /// and which was measured, not assumed; see the comment on that method.
 ///
-/// So this is registered the way `android::vulkan` and `mimalloc_lib` are, as
-/// a virtual library of its own — by default, since 2026-08-22, with
-/// `CORDIAL_AUDIO=java` the way back to FMOD's Java `AudioDevice` path.
+/// So this is registered the way `mimalloc_lib` is, as a virtual library of
+/// its own — by default, since 2026-08-22, with `CORDIAL_AUDIO=java` the way
+/// back to FMOD's Java `AudioDevice` path.
 pub fn aaudio_overrides() -> Vec<(&'static str, *mut c_void)> {
-    extern "C" {
+    #[repr(C)]
+    struct Symbol {
+        name: *const c_char,
+        addr: *mut c_void,
+    }
+    unsafe extern "C" {
         fn cordial_aaudio_symbols(count: *mut usize) -> *const Symbol;
     }
-    symbol_table(cordial_aaudio_symbols)
+
+    let mut count = 0usize;
+    // SAFETY: the table is a static in aaudio.cpp and outlives the process.
+    let table = unsafe { cordial_aaudio_symbols(&mut count) };
+    if table.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `table` points at `count` initialised entries with static names.
+    let entries = unsafe { std::slice::from_raw_parts(table, count) };
+    entries
+        .iter()
+        .map(|e| {
+            // SAFETY: each `name` is a string literal in aaudio.cpp.
+            let name = unsafe { CStr::from_ptr(e.name) }.to_str().unwrap_or("");
+            (name, e.addr)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1175,10 +894,31 @@ mod aaudio_tests {
 /// `Path does not exist: ""` during app startup. `open` is variadic, which is
 /// why this lives in C++ alongside liblog rather than in `trace.rs`.
 pub fn system_path_overrides() -> Vec<(&'static str, *mut c_void)> {
-    extern "C" {
+    #[repr(C)]
+    struct Symbol {
+        name: *const c_char,
+        addr: *mut c_void,
+    }
+    unsafe extern "C" {
         fn cordial_system_symbols(count: *mut usize) -> *const Symbol;
     }
-    symbol_table(cordial_system_symbols)
+
+    let mut count = 0usize;
+    // SAFETY: the table is a static in system_paths.cpp and outlives the process.
+    let table = unsafe { cordial_system_symbols(&mut count) };
+    if table.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `table` points at `count` initialised entries with static names.
+    let entries = unsafe { std::slice::from_raw_parts(table, count) };
+    entries
+        .iter()
+        .map(|e| {
+            // SAFETY: each `name` is a string literal in system_paths.cpp.
+            let name = unsafe { CStr::from_ptr(e.name) }.to_str().unwrap_or("");
+            (name, e.addr)
+        })
+        .collect()
 }
 
 /// `pthread_create` — `native/thread_trace.cpp`.
@@ -1190,10 +930,31 @@ pub fn system_path_overrides() -> Vec<(&'static str, *mut c_void)> {
 /// runs `RbxStorage::init`'s failing `stat("")` calls was never traced back to
 /// whoever spawned it.
 pub fn thread_overrides() -> Vec<(&'static str, *mut c_void)> {
-    extern "C" {
+    #[repr(C)]
+    struct Symbol {
+        name: *const c_char,
+        addr: *mut c_void,
+    }
+    unsafe extern "C" {
         fn cordial_thread_symbols(count: *mut usize) -> *const Symbol;
     }
-    symbol_table(cordial_thread_symbols)
+
+    let mut count = 0usize;
+    // SAFETY: the table is a static in thread_trace.cpp and outlives the process.
+    let table = unsafe { cordial_thread_symbols(&mut count) };
+    if table.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `table` points at `count` initialised entries with static names.
+    let entries = unsafe { std::slice::from_raw_parts(table, count) };
+    entries
+        .iter()
+        .map(|e| {
+            // SAFETY: each `name` is a string literal in thread_trace.cpp.
+            let name = unsafe { CStr::from_ptr(e.name) }.to_str().unwrap_or("");
+            (name, e.addr)
+        })
+        .collect()
 }
 
 // ------------------------------------------------------------------- netdb
@@ -1204,10 +965,31 @@ pub fn thread_overrides() -> Vec<(&'static str, *mut c_void)> {
 /// `AI_DEFAULT` sets a bit glibc rejects with `EAI_BADFLAGS`, and a result that
 /// did come back would have its `ai_addr` and `ai_canonname` transposed.
 pub fn netdb_overrides() -> Vec<(&'static str, *mut c_void)> {
-    extern "C" {
+    #[repr(C)]
+    struct Symbol {
+        name: *const c_char,
+        addr: *mut c_void,
+    }
+    unsafe extern "C" {
         fn cordial_netdb_symbols(count: *mut usize) -> *const Symbol;
     }
-    symbol_table(cordial_netdb_symbols)
+
+    let mut count = 0usize;
+    // SAFETY: the table is a static in netdb_compat.cpp and outlives the process.
+    let table = unsafe { cordial_netdb_symbols(&mut count) };
+    if table.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `table` points at `count` initialised entries with static names.
+    let entries = unsafe { std::slice::from_raw_parts(table, count) };
+    entries
+        .iter()
+        .map(|e| {
+            // SAFETY: each `name` is a string literal in netdb_compat.cpp.
+            let name = unsafe { CStr::from_ptr(e.name) }.to_str().unwrap_or("");
+            (name, e.addr)
+        })
+        .collect()
 }
 
 // ------------------------------------------------------------ foreign frees
@@ -1219,10 +1001,31 @@ pub fn netdb_overrides() -> Vec<(&'static str, *mut c_void)> {
 /// so a block glibc allocated cannot be released by it. `s_realpath` established
 /// the pattern: never produce the host allocation. ADR-040 has the measurement.
 pub fn alloc_overrides() -> Vec<(&'static str, *mut c_void)> {
-    extern "C" {
+    #[repr(C)]
+    struct Symbol {
+        name: *const c_char,
+        addr: *mut c_void,
+    }
+    unsafe extern "C" {
         fn cordial_alloc_symbols(count: *mut usize) -> *const Symbol;
     }
-    symbol_table(cordial_alloc_symbols)
+
+    let mut count = 0usize;
+    // SAFETY: the table is a static in foreign_alloc.cpp and outlives the process.
+    let table = unsafe { cordial_alloc_symbols(&mut count) };
+    if table.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `table` points at `count` initialised entries with static names.
+    let entries = unsafe { std::slice::from_raw_parts(table, count) };
+    entries
+        .iter()
+        .map(|e| {
+            // SAFETY: each `name` is a string literal in foreign_alloc.cpp.
+            let name = unsafe { CStr::from_ptr(e.name) }.to_str().unwrap_or("");
+            (name, e.addr)
+        })
+        .collect()
 }
 
 #[cfg(test)]

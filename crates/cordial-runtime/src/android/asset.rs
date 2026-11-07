@@ -828,7 +828,7 @@ pub fn resolve_asset_path(path: &str, write: bool) -> Option<PathBuf> {
 ///
 /// `path` is a NUL-terminated C string; `out` points at `out_len` writable
 /// bytes.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cordial_overlay_resolve(
     path: *const c_char,
     for_write: c_int,
