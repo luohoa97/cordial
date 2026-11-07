@@ -558,7 +558,7 @@ fn handle(line: &str) -> String {
         // what a recording hears in a client whose engine is silent. The native
         // side caps the level, so a script cannot make this loud.
         "tone" => {
-            extern "C" {
+            unsafe extern "C" {
                 fn cordial_audio_dev_tone(hz: f64, amp: f64, seconds: f64) -> i32;
             }
             let num = |v: Option<&str>| v.and_then(|s| s.parse::<f64>().ok());

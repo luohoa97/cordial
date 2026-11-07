@@ -285,7 +285,7 @@ fn host() -> Option<&'static HostVulkan> {
     HOST.get_or_init(load_host).as_ref()
 }
 
-extern "C" {
+unsafe extern "C" {
     // The *host* loader, not the bionic one — same reasoning as `window.rs`'s
     // X11 loading and `symtab.rs`'s `host_dlopen`: this file must reach real
     // `/usr/lib64/libvulkan.so.1`, and the bionic `dlopen` Roblox itself calls is
@@ -406,7 +406,7 @@ pub fn get_instance_proc_addr_symbol() -> Option<*mut c_void> {
 /// true of every driver when you ask without an instance.
 static INSTANCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-extern "C" fn vk_get_instance_proc_addr(instance: *mut c_void, name: *const c_char) -> *mut c_void {
+unsafe extern "C" fn vk_get_instance_proc_addr(instance: *mut c_void, name: *const c_char) -> *mut c_void {
     if !instance.is_null() {
         INSTANCE.store(instance as usize, std::sync::atomic::Ordering::Relaxed);
     }
@@ -579,7 +579,7 @@ pub(super) fn host_instance_proc(name: &CStr) -> *mut c_void {
 static HOST_GET_DEVICE_PROC_ADDR: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-extern "C" fn vk_get_device_proc_addr(device: *mut c_void, name: *const c_char) -> *mut c_void {
+unsafe extern "C" fn vk_get_device_proc_addr(device: *mut c_void, name: *const c_char) -> *mut c_void {
     let f = HOST_GET_DEVICE_PROC_ADDR.load(std::sync::atomic::Ordering::Relaxed);
     if f == 0 || name.is_null() {
         return std::ptr::null_mut();
@@ -648,7 +648,7 @@ extern "C" fn vk_get_device_proc_addr(device: *mut c_void, name: *const c_char) 
 static HOST_ACQUIRE_NEXT_IMAGE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-extern "C" fn vk_acquire_next_image_khr(
+unsafe extern "C" fn vk_acquire_next_image_khr(
     device: *mut c_void,
     swapchain: u64,
     timeout: u64,
@@ -703,7 +703,7 @@ fn normalize_acquire_result(rc: i32) -> i32 {
 static HOST_QUEUE_PRESENT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-extern "C" fn vk_queue_present_khr(queue: *mut c_void, info: *const c_void) -> i32 {
+unsafe extern "C" fn vk_queue_present_khr(queue: *mut c_void, info: *const c_void) -> i32 {
     crate::android::glcount::QUEUE_PRESENT
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // How evenly, not just how often. A count is a mean and a mean hides
@@ -807,7 +807,7 @@ fn take_capture(queue: *mut c_void, info: *const c_void) {
             std::mem::transmute::<usize, extern "C" fn(u64, *const c_char) -> *mut c_void>(gdpa),
             std::mem::transmute::<
                 *mut c_void,
-                extern "C" fn(*mut c_void, *mut super::capture::PhysicalDeviceMemoryProperties),
+                unsafe extern "C" fn(*mut c_void, *mut super::capture::PhysicalDeviceMemoryProperties),
             >(gpdmp),
         )
     };
@@ -1011,7 +1011,7 @@ static HOST_CREATE_DEVICE: std::sync::atomic::AtomicUsize = std::sync::atomic::A
 /// it was called against. Nothing else about it is touched, and deliberately so:
 /// `VkDeviceCreateInfo` carries queue priorities, enabled features and an
 /// extension list that this file has no business having an opinion about.
-extern "C" fn vk_create_device(
+unsafe extern "C" fn vk_create_device(
     physical_device: *mut c_void,
     create_info: *const c_void,
     allocator: *const c_void,
@@ -1428,7 +1428,7 @@ static HOST_CREATE_SWAPCHAIN: std::sync::atomic::AtomicUsize =
 /// deliberately`. That makes it something to *try* for a reporter of #35 or
 /// #39, not an established mitigation for their machines and not a fix for
 /// whatever is actually wrong with Roblox's Vulkan renderer here.
-extern "C" fn vk_create_swapchain_khr(
+unsafe extern "C" fn vk_create_swapchain_khr(
     device: *mut c_void,
     create_info: *const VkSwapchainCreateInfoKHR,
     allocator: *const c_void,
@@ -1506,7 +1506,7 @@ extern "C" fn vk_create_swapchain_khr(
             }
         }
     }
-    let rc = vk_create_swapchain_inner(device, create_info, allocator, swapchain_out);
+    let rc = unsafe { vk_create_swapchain_inner(device, create_info, allocator, swapchain_out) };
     #[cfg(feature = "vr")]
     if rc == VK_SUCCESS && replaced_mirror != 0 {
         vk_destroy_swapchain_khr(device, replaced_mirror, std::ptr::null());
@@ -1579,7 +1579,7 @@ fn destroy_swapchain_entry(host: *mut c_void) -> *mut c_void {
 /// swapchain: the mirror presents to the engine's swapchain from the XR
 /// thread, and the engine may destroy it from another.
 #[cfg(feature = "vr")]
-extern "C" fn vk_destroy_swapchain_khr(device: *mut c_void, swapchain: u64, allocator: *const c_void) {
+unsafe extern "C" fn vk_destroy_swapchain_khr(device: *mut c_void, swapchain: u64, allocator: *const c_void) {
     super::xr_mirror::forget_swapchain(swapchain);
     let f = HOST_DESTROY_SWAPCHAIN.load(std::sync::atomic::Ordering::Relaxed);
     if f != 0 {
@@ -1678,7 +1678,7 @@ pub(crate) fn instance_fn(name: &CStr) -> Option<*mut c_void> {
     (!p.is_null()).then_some(p)
 }
 
-extern "C" fn vk_create_swapchain_inner(
+unsafe extern "C" fn vk_create_swapchain_inner(
     device: *mut c_void,
     create_info: *const VkSwapchainCreateInfoKHR,
     allocator: *const c_void,
@@ -1689,7 +1689,7 @@ extern "C" fn vk_create_swapchain_inner(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     type Fn_ =
-        extern "C" fn(*mut c_void, *const VkSwapchainCreateInfoKHR, *const c_void, *mut u64) -> i32;
+        unsafe extern "C" fn(*mut c_void, *const VkSwapchainCreateInfoKHR, *const c_void, *mut u64) -> i32;
     // SAFETY: resolved from the host loader for exactly this name.
     let f: Fn_ = unsafe { std::mem::transmute(f) };
 
@@ -1697,7 +1697,7 @@ extern "C" fn vk_create_swapchain_inner(
     // null one is the caller's bug, forwarded so the host reports it on its own
     // terms rather than being masked here.
     let Some(info) = (unsafe { create_info.as_ref() }) else {
-        return f(device, create_info, allocator, swapchain_out);
+        return unsafe { f(device, create_info, allocator, swapchain_out) };
     };
     // The extent, unconditionally and on the same argument the present mode is
     // printed on: when the client is letterboxed on one side and clipped on the
@@ -1719,7 +1719,7 @@ extern "C" fn vk_create_swapchain_inner(
              CORDIAL_PRESENT_MODE=off)",
             present_mode_name(asked)
         );
-        return f(device, create_info, allocator, swapchain_out);
+        return unsafe { f(device, create_info, allocator, swapchain_out) };
     };
 
     let Some(supported) = supported_present_modes(info.surface) else {
@@ -1728,7 +1728,7 @@ extern "C" fn vk_create_swapchain_inner(
              supports, so the engine's own choice stands)",
             present_mode_name(asked)
         );
-        return f(device, create_info, allocator, swapchain_out);
+        return unsafe { f(device, create_info, allocator, swapchain_out) };
     };
     let advertised: Vec<&str> = supported.iter().map(|&m| present_mode_name(m)).collect();
 
@@ -1739,7 +1739,7 @@ extern "C" fn vk_create_swapchain_inner(
             present_mode_name(asked),
             advertised.join(", ")
         );
-        return f(device, create_info, allocator, swapchain_out);
+        return unsafe { f(device, create_info, allocator, swapchain_out) };
     }
 
     println!(
@@ -1802,7 +1802,7 @@ extern "C" fn vk_create_swapchain_inner(
     // and matches the host's layout exactly (see the module doc on Vulkan's ABI
     // being the same struct on Android and desktop Linux); every pointer inside
     // it is the caller's own and outlives this call.
-    f(device, &patched, allocator, swapchain_out)
+    unsafe { f(device, &patched, allocator, swapchain_out) }
 }
 
 // ------------------------------------------------------------------- NVIDIA
@@ -1954,7 +1954,7 @@ fn injected_failures_left() -> &'static std::sync::atomic::AtomicU32 {
 /// nobody has named. The cost of being wrong is under two seconds on a path that
 /// was ending in a fatal error already; the retry never runs when the call
 /// succeeds. See [`cordial_shell::nvidia::retry`].
-extern "C" fn vk_get_physical_device_surface_present_modes_khr(
+unsafe extern "C" fn vk_get_physical_device_surface_present_modes_khr(
     physical_device: *mut c_void,
     surface: u64,
     count: *mut u32,
@@ -2200,7 +2200,7 @@ fn format_family(format: u32) -> &'static str {
 /// `CORDIAL_ANDROID_TRACE=1` prints every call; `CORDIAL_COUNT_GL=1` reports
 /// the totals after `--run` alongside the existing graphics-call counts, in
 /// `glcount`.
-extern "C" fn vk_get_physical_device_format_properties(
+unsafe extern "C" fn vk_get_physical_device_format_properties(
     physical_device: *mut c_void,
     format: u32,
     out: *mut VkFormatProperties,
@@ -2266,7 +2266,7 @@ static HOST_CREATE_SHADER_MODULE: std::sync::atomic::AtomicUsize =
 /// Counted, not altered: see [`vk_get_physical_device_format_properties`] for
 /// why a passthrough counter belongs here rather than a guess read off the
 /// binary or mocktail's shader-multithreading flag.
-extern "C" fn vk_create_shader_module(
+unsafe extern "C" fn vk_create_shader_module(
     device: *mut c_void,
     create_info: *const c_void,
     allocator: *const c_void,
@@ -2319,7 +2319,7 @@ extern "C" fn vk_create_shader_module(
 /// `wl_egl_window_resize` on the EGL path) — using it here too, instead of
 /// Mesa's honestly-correct-per-spec-but-Android-shaped-code-hostile answer,
 /// keeps that one source of truth rather than adding a second.
-extern "C" fn vk_get_physical_device_surface_capabilities_khr(
+unsafe extern "C" fn vk_get_physical_device_surface_capabilities_khr(
     physical_device: *mut c_void,
     surface: *mut c_void,
     out: *mut VkSurfaceCapabilitiesKHR,
@@ -2406,7 +2406,7 @@ extern "C" fn vk_get_physical_device_surface_capabilities_khr(
     rc
 }
 
-extern "C" fn vk_create_instance(
+unsafe extern "C" fn vk_create_instance(
     create_info: *const VkInstanceCreateInfo,
     allocator: *const c_void,
     instance_out: *mut *mut c_void,
@@ -2483,7 +2483,7 @@ extern "C" fn vk_create_instance(
     rc
 }
 
-extern "C" fn vk_enumerate_instance_extension_properties(
+unsafe extern "C" fn vk_enumerate_instance_extension_properties(
     layer_name: *const c_char,
     property_count: *mut u32,
     properties: *mut VkExtensionProperties,
@@ -2580,7 +2580,7 @@ extern "C" fn vk_enumerate_instance_extension_properties(
 /// whichever backend's window singleton is live, the same pair
 /// `egl_create_window_surface` already substitutes for EGL in each backend's
 /// own module (`window.rs`/`wayland.rs`).
-extern "C" fn vk_create_android_surface_khr(
+unsafe extern "C" fn vk_create_android_surface_khr(
     instance: *mut c_void,
     create_info: *const VkAndroidSurfaceCreateInfoKHR,
     allocator: *const c_void,

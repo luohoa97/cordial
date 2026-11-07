@@ -1,0 +1,24 @@
+{
+  "id": "display-fps",
+  "name": "Display FPS",
+  "version": "1.0.0",
+  "entry": "main.ts",
+  "capabilities": [
+    "flags.write",
+    "settings.read",
+    "log"
+  ],
+  "preferences": [
+    {
+      "key": "displayFps",
+      "title": "Display FPS",
+      "description": "Draw the engine's own frame counter in the corner of the client. Needed on a GL ES backend, where Cordial's present counter reads zero because there is no host Vulkan swapchain to count.",
+      "type": "choice",
+      "default": "off",
+      "options": [
+        { "value": "off", "label": "Off" },
+        { "value": "on", "label": "On" }
+      ]
+    }
+  ]
+}

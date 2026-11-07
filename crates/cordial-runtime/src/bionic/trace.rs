@@ -44,7 +44,7 @@ fn current_tid() -> c_int {
     unsafe { libc_gettid() }
 }
 
-extern "C" {
+unsafe extern "C" {
     #[link_name = "gettid"]
     fn libc_gettid() -> c_int;
 }
@@ -52,7 +52,7 @@ extern "C" {
 // `s` is `super::cstr`: two copies of the null-then-`CStr` conversion for
 // diagnostics, one here and one for `__assert`, are now one in `ffi_util`.
 
-extern "C" {
+unsafe extern "C" {
     fn open64(path: *const c_char, flags: c_int, ...) -> c_int;
     fn openat(dirfd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
     fn access(path: *const c_char, mode: c_int) -> c_int;
@@ -68,28 +68,28 @@ type c_ulong = u64;
 
 // ------------------------------------------------------------------- wrappers
 
-extern "C" fn t_open64(path: *const c_char, flags: c_int, mode: u32) -> c_int {
+unsafe extern "C" fn t_open64(path: *const c_char, flags: c_int, mode: u32) -> c_int {
     // SAFETY: forwarding the caller's own arguments.
     let fd = unsafe { open64(path, flags, mode) };
     log(format_args!("open64({:?}, {flags:#x}) = {fd}", unsafe { s(path) }));
     fd
 }
 
-extern "C" fn t_openat(dirfd: c_int, path: *const c_char, flags: c_int, mode: u32) -> c_int {
+unsafe extern "C" fn t_openat(dirfd: c_int, path: *const c_char, flags: c_int, mode: u32) -> c_int {
     // SAFETY: forwarding the caller's own arguments.
     let fd = unsafe { openat(dirfd, path, flags, mode) };
     log(format_args!("openat({dirfd}, {:?}, {flags:#x}) = {fd}", unsafe { s(path) }));
     fd
 }
 
-extern "C" fn t_access(path: *const c_char, mode: c_int) -> c_int {
+unsafe extern "C" fn t_access(path: *const c_char, mode: c_int) -> c_int {
     // SAFETY: forwarding the caller's own arguments.
     let rc = unsafe { access(path, mode) };
     log(format_args!("access({:?}, {mode}) = {rc}", unsafe { s(path) }));
     rc
 }
 
-extern "C" fn t_getenv(name: *const c_char) -> *mut c_char {
+unsafe extern "C" fn t_getenv(name: *const c_char) -> *mut c_char {
     // SAFETY: forwarding the caller's own arguments.
     let v = unsafe { getenv(name) };
     log(format_args!(
@@ -100,28 +100,28 @@ extern "C" fn t_getenv(name: *const c_char) -> *mut c_char {
     v
 }
 
-extern "C" fn t_sysconf(name: c_int) -> c_long {
+unsafe extern "C" fn t_sysconf(name: c_int) -> c_long {
     // SAFETY: forwarding the caller's own arguments.
     let v = unsafe { sysconf(name) };
     log(format_args!("sysconf({name}) = {v}"));
     v
 }
 
-extern "C" fn t_getauxval(kind: c_ulong) -> c_ulong {
+unsafe extern "C" fn t_getauxval(kind: c_ulong) -> c_ulong {
     // SAFETY: forwarding the caller's own arguments.
     let v = unsafe { getauxval(kind) };
     log(format_args!("getauxval({kind}) = {v:#x}"));
     v
 }
 
-extern "C" fn t_prctl(option: c_int, a: u64, b: u64, c: u64, d: u64) -> c_int {
+unsafe extern "C" fn t_prctl(option: c_int, a: u64, b: u64, c: u64, d: u64) -> c_int {
     // SAFETY: forwarding the caller's own arguments.
     let rc = unsafe { prctl(option, a, b, c, d) };
     log(format_args!("prctl({option}, {a:#x}, ...) = {rc}"));
     rc
 }
 
-extern "C" fn t_syscall(num: c_long, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64) -> c_long {
+unsafe extern "C" fn t_syscall(num: c_long, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64) -> c_long {
     // SAFETY: forwarding the caller's own arguments.
     let rc = unsafe { syscall(num, a, b, c, d, e, f) };
     log(format_args!("syscall({num}, {a:#x}, {b:#x}) = {rc}"));
@@ -148,15 +148,15 @@ fn log_assert_report(tag: &str, cond: &str, msg: &str) -> String {
 // `abort(3)` the extern declaration above reached, without an `unsafe` block to
 // say so.
 
-extern "C" fn t_abort() -> ! {
+unsafe extern "C" fn t_abort() -> ! {
     die_with(ABORT_REPORT)
 }
 
-extern "C" fn t_stack_chk_fail() -> ! {
+unsafe extern "C" fn t_stack_chk_fail() -> ! {
     die_with(STACK_CHK_REPORT)
 }
 
-extern "C" fn t_android_log_assert(
+unsafe extern "C" fn t_android_log_assert(
     cond: *const c_char,
     tag: *const c_char,
     fmt: *const c_char,

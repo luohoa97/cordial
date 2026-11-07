@@ -750,9 +750,9 @@ fn poll_loop(conn: Connection, children: ChildIds) {
     let mut known: std::collections::HashMap<u32, Registered> = std::collections::HashMap::new();
     let mut last_generation = u32::MAX; // forces the first iteration to run.
     loop {
-        let gen = ffi::generation();
-        if gen != last_generation {
-            last_generation = gen;
+        let r#gen = ffi::generation();
+        if r#gen != last_generation {
+            last_generation = r#gen;
             let nodes = ffi::snapshot();
             let mut seen = std::collections::HashSet::new();
 

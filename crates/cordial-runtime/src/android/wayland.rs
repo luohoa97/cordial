@@ -730,7 +730,7 @@ unsafe impl Sync for Xkb {}
 
 const RTLD_NOW: c_int = 2;
 
-extern "C" {
+unsafe extern "C" {
     fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     fn mmap(addr: *mut c_void, len: usize, prot: c_int, flags: c_int, fd: c_int, off: i64) -> *mut c_void;
@@ -6715,7 +6715,7 @@ const POLLIN: i16 = 0x001;
 // two `extern "C" fn poll` declarations with different signatures anywhere in
 // the crate trip `clashing_extern_declarations`, since both ultimately bind
 // the one process-wide C symbol bionic's emulated libc also declares.
-extern "C" {
+unsafe extern "C" {
     fn poll(fds: *mut c_void, nfds: u64, timeout_ms: c_int) -> c_int;
 }
 
@@ -7134,23 +7134,23 @@ fn as_window(p: *mut c_void) -> Option<&'static WaylandWindow> {
     (!p.is_null()).then(|| WINDOW.get()).flatten()
 }
 
-extern "C" fn native_window_from_surface(_env: *mut c_void, _surface: *mut c_void) -> *mut c_void {
+unsafe extern "C" fn native_window_from_surface(_env: *mut c_void, _surface: *mut c_void) -> *mut c_void {
     let w = handle_ptr();
     super::trace(format_args!("wayland: ANativeWindow_fromSurface -> {w:?}"));
     w
 }
-extern "C" fn native_window_acquire(_window: *mut c_void) {}
-extern "C" fn native_window_release(_window: *mut c_void) {}
-extern "C" fn native_window_get_width(window: *mut c_void) -> i32 {
+unsafe extern "C" fn native_window_acquire(_window: *mut c_void) {}
+unsafe extern "C" fn native_window_release(_window: *mut c_void) {}
+unsafe extern "C" fn native_window_get_width(window: *mut c_void) -> i32 {
     as_window(window).map_or(0, |w| w.geometry().0)
 }
-extern "C" fn native_window_get_height(window: *mut c_void) -> i32 {
+unsafe extern "C" fn native_window_get_height(window: *mut c_void) -> i32 {
     as_window(window).map_or(0, |w| w.geometry().1)
 }
-extern "C" fn native_window_get_format(window: *mut c_void) -> i32 {
+unsafe extern "C" fn native_window_get_format(window: *mut c_void) -> i32 {
     as_window(window).map_or(0, |w| w.geometry().2)
 }
-extern "C" fn native_window_set_buffers_geometry(window: *mut c_void, width: i32, height: i32, format: i32) -> i32 {
+unsafe extern "C" fn native_window_set_buffers_geometry(window: *mut c_void, width: i32, height: i32, format: i32) -> i32 {
     let Some(w) = as_window(window) else { return -22 }; // -EINVAL
     let mut g = w.buffers.lock().unwrap_or_else(|e| e.into_inner());
     if width > 0 {
@@ -7164,10 +7164,10 @@ extern "C" fn native_window_set_buffers_geometry(window: *mut c_void, width: i32
     }
     0
 }
-extern "C" fn native_window_lock(_window: *mut c_void, _buffer: *mut c_void, _dirty: *mut c_void) -> i32 {
+unsafe extern "C" fn native_window_lock(_window: *mut c_void, _buffer: *mut c_void, _dirty: *mut c_void) -> i32 {
     -38 // -ENOSYS — Roblox renders through GLES/Vulkan, never this path.
 }
-extern "C" fn native_window_unlock_and_post(_window: *mut c_void) -> i32 {
+unsafe extern "C" fn native_window_unlock_and_post(_window: *mut c_void) -> i32 {
     -38
 }
 
@@ -7175,7 +7175,7 @@ extern "C" fn native_window_unlock_and_post(_window: *mut c_void) -> i32 {
 /// `wl_egl_window*` — the Wayland equivalent of `window.rs`'s XID
 /// substitution; see that function's doc for why the engine's own argument
 /// is discarded rather than translated (there is exactly one window).
-extern "C" fn egl_create_window_surface(
+unsafe extern "C" fn egl_create_window_surface(
     dpy: *mut c_void,
     config: *mut c_void,
     _native_window: *mut c_void,
@@ -7220,7 +7220,7 @@ const EGL_PLATFORM_WAYLAND_KHR: u32 = 0x31D8;
 /// supported configuration [for X11] worth keeping". Forcing the same
 /// connection here is not an optimisation; without it, buffer attachment
 /// would fail with a protocol error the first time the engine actually swaps.
-extern "C" fn egl_get_display(native_display: *mut c_void) -> *mut c_void {
+unsafe extern "C" fn egl_get_display(native_display: *mut c_void) -> *mut c_void {
     let plain_get_display = || {
         let name = c"eglGetDisplay";
         // SAFETY: RTLD_DEFAULT; libEGL is in the global scope by this point.
@@ -7278,8 +7278,8 @@ extern "C" fn egl_get_display(native_display: *mut c_void) -> *mut c_void {
 /// return as soon as the frame is submitted. The engine still paces itself
 /// through its own `RenderJob` timing, so this removes a broken throttle rather
 /// than handing it a runaway framerate.
-extern "C" fn egl_swap_interval(dpy: *mut c_void, _interval: c_int) -> u32 {
-    extern "C" {
+unsafe extern "C" fn egl_swap_interval(dpy: *mut c_void, _interval: c_int) -> u32 {
+    unsafe extern "C" {
         fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     }
     let name = std::ffi::CString::new("eglSwapInterval").unwrap_or_default();

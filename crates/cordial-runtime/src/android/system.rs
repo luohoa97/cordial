@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
-extern "C" {
+unsafe extern "C" {
     fn cordial_set_system_root(root: *const std::ffi::c_char);
     fn cordial_set_files_dir(dir: *const std::ffi::c_char);
 }

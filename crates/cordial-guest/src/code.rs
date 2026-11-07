@@ -48,7 +48,7 @@ const MADV_REMOVE: c_int = 9;
 /// merged. Its lock is the one held across each call.
 static EXEC: Mutex<BTreeMap<u64, u64>> = Mutex::new(BTreeMap::new());
 
-extern "C" {
+unsafe extern "C" {
     #[link_name = "mmap"]
     fn host_mmap(a: *mut c_void, len: usize, prot: c_int, flags: c_int, fd: c_int, off: i64) -> *mut c_void;
     #[link_name = "munmap"]

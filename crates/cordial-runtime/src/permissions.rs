@@ -29,7 +29,7 @@
 
 use std::ffi::{c_char, c_int, c_void, CString, OsStr};
 
-extern "C" {
+unsafe extern "C" {
     fn cordial_messagebus_set_request_handler_async(
         set_fn: *mut c_void,
         publish_fn: *mut c_void,

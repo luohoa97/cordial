@@ -1,0 +1,506 @@
+# Flatpak manifest for Cordial.
+#
+# Flatpak is the primary distribution target (spec §11), which is why the plugin
+# directory is `~/.var/app/io.github.luohoa97.CordialZ/data/cordial/plugins/` and drag-and-drop
+# is the install path rather than a convenience.
+#
+# Build:
+#     packaging/build-flatpak.sh
+#
+# Two things about the permission set are deliberate and should not drift:
+#
+#   * There is no `--filesystem=host` and no `--talk-name=org.freedesktop.Flatpak`.
+#     The second in particular is arbitrary command execution on the host, which
+#     would hand every plugin the sandbox escape the capability model exists to
+#     prevent — below the level any broker can see. See ADR-002 §2.
+#   * `--device=dri` and the display sockets are the whole of what the runtime
+#     needs. Camera, screenshot and filesystem access are never held by Cordial
+#     on a plugin's behalf; they are granted per-plugin at runtime through
+#     portals, revocably (spec §7).
+#   * The two `--filesystem=xdg-run/...` entries below exist only for the
+#     presence.set/presence.clear broker to find Discord's IPC socket
+#     (ADR-007) — named paths, not `--filesystem=xdg-run` on its own, and
+#     nowhere near `--filesystem=host`. notify.send and url.open needed no
+#     manifest entry at all; see the comment beside them.
+
+app-id: io.github.luohoa97.CordialZ
+# The GNOME runtime, not the freedesktop one, because the shell is GTK4 and
+# libadwaita (ADR-011) and org.freedesktop.Sdk has neither. This was wrong from
+# the first commit of this file and every CI run failed the same way for it:
+#
+#     Package 'gtk4' not found
+#     The system library `gtk4` required by crate `gdk4-sys` was not found.
+#
+# which is a legible message that nobody read, because nothing was gating on
+# the workflow and the five red runs sat there unlooked at. org.gnome.Platform
+# is a superset of org.freedesktop.Platform, so the GL, PipeWire and Vulkan
+# bits the runtime already relied on are all still there.
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+# The freedesktop SDK extensions are versioned by the *base* runtime rather than
+# by GNOME's number: org.gnome.Sdk//50 is built on org.freedesktop.Sdk//25.08,
+# and there is no rust-stable//50 to install. Both packaging/build-flatpak.sh
+# and .github/workflows/flatpak.yml read the line below to know what to fetch,
+# so keep its format exactly as it is — it is parsed, not decorative.
+# sdk-extension-version: '25.08'
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm20
+# The shell, not the loader. The shell is what a user starts: it finds a Roblox
+# build, explains itself when there is not one, and launches `cordial-run`
+# beside itself. This said `cordial-load` until now, which was the loader's name
+# before 312451e renamed it to `cordial-run` — so the manifest named a binary
+# that no longer exists, `install` failed, and nothing here had been built since.
+command: cordial-shell
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm20/bin
+  prepend-ld-library-path: /usr/lib/sdk/llvm20/lib
+  env:
+    # AOSP bionic does not build with GCC — it uses C11 _Atomic inside C++
+    # headers, which is a Clang extension. See docs/base-evaluation.md §2.1.
+    CC: clang
+    CXX: clang++
+    CARGO_HOME: /run/build/cordial/cargo
+
+finish-args:
+  # GPU. Roblox's Android build needs GLES2 + EGL; Vulkan is dlopen'd and
+  # optional (docs/findings.md §5).
+  #
+  # **No `add-extensions` entry is needed for MangoHUD's or vkBasalt's Vulkan
+  # layers, and adding one would be redundant rather than merely harmless.**
+  # `org.freedesktop.Platform.VulkanLayer` is declared by the *runtime* --
+  # `flatpak info --show-metadata org.gnome.Platform//50` prints `[Extension
+  # org.freedesktop.Platform.VulkanLayer]` with `subdirectories = true` -- so
+  # every `org.freedesktop.Platform.VulkanLayer.*` extension the user has
+  # installed is already visible to any app built on this runtime, with
+  # nothing for the app's own manifest to add. Sober's manifest (fetched from
+  # flathub, 2026-09-29) confirms this empirically: it has no `add-extensions`
+  # block at all and its users still get MangoHUD. See ADR-041.
+  - --device=dri
+  # **A USB FIDO2 security key is deliberately NOT reachable, and this is the
+  # reasoning rather than an oversight.**
+  #
+  # An account with a passkey enrolled cannot finish sign-in in Cordial's web
+  # window, because the window has no WebAuthn to offer it. Measured, not
+  # assumed: `PublicKeyCredential` and `navigator.credentials` are both
+  # `undefined` in a secure context, in `webview::open`'s own view, on both
+  # `webkitgtk6.0-2.52.5-1.fc44` and this runtime's own
+  # `libwebkitgtk-6.0.so.4.16.9`. It is not a build flag away either — every
+  # WebAuthn transport upstream is Objective-C++ under `Cocoa/`, so the GTK
+  # port has no USB HID service to enable. `docs/analysis/webview-surface.md`
+  # section 9 has the runs and the control.
+  #
+  # The grant it would need, when that changes:
+  #
+  #     - --device=all
+  #
+  # and only that one. A FIDO2 key is a `/dev/hidraw*` node; `--device=usb` is
+  # `/dev/bus/usb` alone (flatpak-metadata(5)) and does not reach hidraw, so
+  # there is no narrower lever than "every device node in /dev" — cameras and
+  # input devices included. Adding it today would widen the sandbox for a
+  # capability no code inside it can use, which is a permission that lies about
+  # what the application does, on the one file here that exists to be audited.
+  # Uncomment it in the same change that makes a passkey prompt actually reach
+  # a key, never before.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # An online game.
+  - --share=network
+  - --socket=pulseaudio
+  # **The native PipeWire socket, and without it the Flatpak has no sound.**
+  #
+  # `--socket=pulseaudio` grants only the PulseAudio compatibility socket.
+  # `native/pipewire_backend.cpp` dlopens `libpipewire-0.3.so.0` -- which the
+  # runtime does provide, so the load succeeds -- and then speaks the native
+  # protocol to a socket the sandbox does not expose. The library is there, the
+  # backend is compiled in, and the connection fails: no error a user sees,
+  # just silence. Reported as "the flatpak build has no sound".
+  - --filesystem=xdg-run/pipewire-0:ro
+  # Roblox's own data lives under the app's data directory, per instance.
+  - --persist=.cordial
+  # Discord's IPC socket, for the presence.set/presence.clear broker
+  # (ADR-007). Named narrowly rather than as a directory: this exposes
+  # exactly one socket path, not the rest of $XDG_RUNTIME_DIR. Discord falls
+  # back to discord-ipc-1 through -9 if -0 is already taken (typically a
+  # second Discord instance on the same machine) — that case is deliberately
+  # not covered here. Widening this to every slot, or to `--filesystem=host`,
+  # is the broader grant ADR-007 explicitly rejects; if -0 turns out to be
+  # insufficient in practice, that is a one-line change to this file, not an
+  # architecture change.
+  - --filesystem=xdg-run/discord-ipc-0
+  # The other half of Discord's own socket search (see presence.rs): when
+  # Discord is itself a Flatpak, its IPC socket lives nested under its own
+  # app-id directory rather than directly in $XDG_RUNTIME_DIR. Read-only,
+  # since Cordial only ever connects out to it.
+  - --filesystem=xdg-run/app/com.discordapp.Discord:ro
+  # Sober's unpacked copy of the official Android build, read-only, for the
+  # import (ADR-054): the first-run screen's "Copy Sober's build" and Settings'
+  # "Import from Sober". Without it the sandbox sees `~/.var/app/` holding only
+  # this application's own directory, the import is never offered, and a user
+  # who has Sober installed is told nothing about it.
+  #
+  # Narrowed to `packages` rather than the whole of Sober's data, because the
+  # rest of that tree is Sober's configuration and Roblox's own storage under
+  # Sober -- an account's session included -- and Cordial has no business
+  # reading any of it. Read-only for the same reason: the import copies the
+  # archives out and never writes back. The path is `install::sober_apk_under`'s
+  # and `provider::import`'s, and a test pins the first; if that moves, this
+  # moves in the same edit. Nothing else needs this grant, and a hard link
+  # across it is expected to fail (INFERRED), which is why the import copies.
+  #
+  # A user-picked APK needs no entry here and does not get one: settings.rs uses
+  # `GtkFileDialog`, which is the portal inside a sandbox, and the portal hands
+  # over the chosen file itself.
+  - --filesystem=~/.var/app/org.vinegarhq.Sober/data/sober/packages:ro
+  # NetworkManager's `Metered` property, read-only, so the updater can ask the
+  # same question inside the sandbox that it asks outside it.
+  #
+  # Without this there is no system bus at all — `Could not connect: No such
+  # file or directory` — and `metered::current` fails closed to Unknown, which
+  # `is_metered` counts as metered. Fail-closed is right; the consequence is
+  # that a Flatpak install never runs a background download on a connection
+  # NetworkManager explicitly reports as unmetered, which is the one case the
+  # setting exists to serve.
+  #
+  # **Not the portal, and this is the interesting part.**
+  # org.freedesktop.portal.NetworkMonitor needs no manifest grant and was the
+  # obvious answer, but it exposes `metered` as a *boolean* where NMMetered has
+  # five values. This module's central rule is that only an explicit NO turns
+  # the download on — Unknown, GuessNo, GuessYes and anything unrecognised are
+  # all held back — and a boolean cannot carry that distinction. INFERRED from
+  # GLib's documented mapping rather than measured, because this machine reports
+  # an explicit No today and both sources therefore agree: GLib folds
+  # {Unknown, No, GuessNo} to false, so going through the portal would silently
+  # turn "only an explicit NO" into "anything that is not a yes-ish guess". That
+  # is precisely the loosening metered.rs was written to prevent.
+  #
+  # Measured inside the installed package, with a control:
+  #   without the grant   Error connecting: Could not connect
+  #   with the grant      (<uint32 2>,)
+  - --system-talk-name=org.freedesktop.NetworkManager
+  # The Secret Service, and this one is a security fix rather than a feature.
+  #
+  # Without it `secrets.rs` finds no service on the session bus and falls back
+  # to a 0600 file, announcing it in those words:
+  #
+  #   there is no secret service on the session bus, so the session falls back
+  #   to a 0600 file at .../profiles/<name>/cookies. Anything that can read your
+  #   files can take the account.
+  #
+  # So the Flatpak — the install route the README now recommends — was the one
+  # build that kept the session on disk, which is exactly the thing 4ade316
+  # moved into the keyring in the first place. The fallback behaved correctly
+  # and said so plainly; it was the packaging that put every user into it.
+  #
+  # Measured: without the grant `org.freedesktop.secrets` is ServiceUnknown;
+  # with it, Collections returns the login and session collections.
+  - --talk-name=org.freedesktop.secrets
+  # Feral GameMode. Absent, it was ServiceUnknown and the runtime carried on
+  # without it, which is the honest behaviour and also a silently missing
+  # feature. `ClientCount` answers with the grant.
+  - --talk-name=com.feralinteractive.GameMode
+  # The AT-SPI accessibility bridge needs *both* of these, and the name on its
+  # own would have been a stub that lies.
+  #
+  # `org.a11y.Bus.GetAddress` answers as soon as the name is granted — and hands
+  # back `unix:path=/run/user/1001/at-spi/bus`, a socket that is not in the
+  # sandbox. So the bridge would have got past the lookup it currently fails at
+  # and died one step later, on a connect, with a less obvious message. Granting
+  # the name alone would have looked like a fix and moved the failure.
+  #
+  # With both, a Peer.Ping to org.a11y.atspi.Registry round-trips.
+  - --talk-name=org.a11y.Bus
+  - --filesystem=xdg-run/at-spi
+  # notify.send and url.open are not listed here at all: both go through
+  # org.freedesktop.portal.Notification and org.freedesktop.portal.OpenURI,
+  # which Flatpak already exposes to every sandboxed app without a
+  # --talk-name entry. Reaching for org.freedesktop.Notifications directly
+  # would need one; going through the portal keeps this manifest not needing
+  # to grow for either capability.
+  #
+  # Play in VR (ADR-053, docs/vr.md), with WiVRn installed as a Flatpak --
+  # the one runtime that works from inside this sandbox. These are the
+  # grants WiVRn's own README gives for a Flatpak'd OpenXR application
+  # ("Steam Flatpak", https://github.com/WiVRn/WiVRn), less its openvr
+  # line, which is for SteamVR's OpenVR games and nothing here reads.
+  #
+  # WiVRn's install, read-only, system and user. Its runtime manifest names
+  # its library by a relative path, which the loader resolves against the
+  # real manifest file, so these two paths are where `libopenxr_wivrn.so` is
+  # loaded from. Observed: with the system grant, a GNOME 50 sandbox lists
+  # `/var/lib/flatpak/app/io.github.wivrn.wivrn/current/active/files/lib/wivrn/`
+  # at that same path and `dlopen`s the library; its newest glibc symbol is
+  # 2.34. `flatpak` cannot run in here, so `vr::flatpak_install_on_disk`
+  # finds the install through these same two paths.
+  - --filesystem=/var/lib/flatpak/app/io.github.wivrn.wivrn:ro
+  - --filesystem=xdg-data/flatpak/app/io.github.wivrn.wivrn:ro
+  # WiVRn's server socket, `$XDG_RUNTIME_DIR/wivrn/comp_ipc`. `:create`
+  # rather than the README's `:ro`, and this is the one write this block
+  # asks for: Flatpak exports only paths that exist when the app starts, and
+  # `$XDG_RUNTIME_DIR` is emptied at every login, so with `:ro` a launcher
+  # opened before WiVRn's server had ever run would never see the socket
+  # until it was restarted. With `:create` the directory is made empty, and
+  # WiVRn's server, which binds its socket inside it and never removes the
+  # directory (WiVRn's own manifest grants itself `xdg-run/wivrn:create` for
+  # the same reason), is found whenever it starts. The directory holds
+  # nothing but that socket.
+  - --filesystem=xdg-run/wivrn:create
+  # The user's active OpenXR runtime, read-only, for Settings -> VR ->
+  # Runtime's "system" choice; Cordial never writes it, and passes the
+  # manifest to the client in XR_RUNTIME_JSON because the loader in here
+  # would read the app's own config instead.
+  - --filesystem=xdg-config/openxr:ro
+  #
+  # Deliberately absent, and docs/vr.md says so:
+  #
+  #   * Monado installed natively. Its client library lives in the host's
+  #     /usr, which a sandbox only reaches through `host-os` at /run/host/usr,
+  #     and a library built against the host's glibc does not load against
+  #     this runtime's; the Linux VR community wiki documents exactly that
+  #     failure for Flatpak'd games with no workaround.
+  #   * SteamVR. Its OpenXR library loads read-only, but it then needs shared
+  #     memory and a SteamVR already running on the host (`--device=shm`,
+  #     `--share=ipc`), which is a user's `flatpak override` to make, not a
+  #     default.
+  #   * adb, for pulling the Quest build off a headset. Bundling one would need
+  #     raw USB access (`--device=usb`), and like the passkey grant above it
+  #     belongs in the change that shows it working in here against a headset,
+  #     which has not been done. The Flatpak imports an APK the user pulled
+  #     with the host's adb instead, through the file portal.
+
+modules:
+  # Boost's headers, for dynarmic (crates/cordial-guest), which find_package()s
+  # Boost and includes boost::icl and boost::variant. Neither SDK carries Boost
+  # (freedesktop-sdk 25.08 has no boost element), and only the headers are
+  # needed, so this copies them and builds nothing. 1.83.0 is the version the
+  # AppImage base (Ubuntu 24.04) and the VR work's measurements used. `cleanup`
+  # keeps every file out of the exported app: headers are a build input only.
+  # Found by the `cordial` module through BOOST_ROOT below; checked with
+  # CMake 4.3 configuring dynarmic against exactly this layout.
+  - name: boost-headers
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/include
+      - cp -r boost /app/include/
+    cleanup:
+      - '*'
+    sources:
+      - type: archive
+        url: https://archives.boost.io/release/1.83.0/source/boost_1_83_0.tar.bz2
+        sha256: 6478edfe2f3305127cffe8caf73ea0176c53769f4bf1585be237eb30798c3b8e
+  # The OpenXR loader, which the VR mode's client dlopens
+  # (`libopenxr_loader.so.1`) and neither runtime ships: no freedesktop-sdk
+  # element and no file in org.gnome.Platform//50 or org.freedesktop.Platform
+  # //25.08 matches "openxr". The loader only -- no API layers, tests or
+  # conformance suite -- with its bundled jsoncpp, since the platform runtime
+  # has no libjsoncpp to link at run time. release-1.1.47 is the version the
+  # vendored headers and the generated call tables come from. Apache-2.0 OR
+  # MIT (loader) and MIT (jsoncpp); THIRD-PARTY-NOTICES.md lists both.
+  - name: openxr-loader
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -DBUILD_TESTS=OFF
+      - -DBUILD_CONFORMANCE_TESTS=OFF
+      - -DBUILD_API_LAYERS=OFF
+      - -DBUILD_WITH_SYSTEM_JSONCPP=OFF
+      - -DDYNAMIC_LOADER=ON
+    post-install:
+      - install -Dm644 LICENSE /app/share/licenses/cordial/openxr-loader-Apache-2.0.txt
+      - install -Dm644 src/external/jsoncpp/LICENSE /app/share/licenses/cordial/jsoncpp-MIT.txt
+    cleanup:
+      - /include
+      - /lib/cmake
+      - /lib/pkgconfig
+    sources:
+      - type: archive
+        url: https://github.com/KhronosGroup/OpenXR-SDK/archive/refs/tags/release-1.1.47.tar.gz
+        sha256: 82c7f4e3658578a22e438b5f005ecaf22c3f724b09fe031fa0f8ffc97c30c9ba
+  - name: cordial
+    buildsystem: simple
+    build-options:
+      env:
+        BOOST_ROOT: /app
+    # There is deliberately no `build-args: [--share=network]` here, and this is
+    # the whole of issue #3. The build step runs with the network unshared, so
+    # anything it needs has to arrive through `sources` below, where every entry
+    # carries a commit or a sha256 and flatpak-builder fetches it in the download
+    # phase. That is what makes the result reproducible.
+    #
+    # **Do not check this by probing the build directory.** `flatpak build
+    # target/flatpak sh -c '...'` reads that directory's `metadata`, which
+    # carries the finish-args above — `--share=network` among them, because
+    # Roblox is an online game — so the probe resolves DNS and connects, and
+    # says the opposite of the truth. That measurement was made here and was
+    # wrong. What answers the question is a manifest pair differing only in
+    # `build-args`, built by flatpak-builder and probing from inside a
+    # build-command: without it, `getaddrinfo` fails, a TCP connect is refused
+    # and the sandbox has no routes; with it, all three succeed. Runtime network
+    # is untouched either way — the two flags are unrelated despite the name.
+    #
+    # The `--offline` on the cargo line is a tripwire rather than a
+    # configuration: source replacement in cargo/config.toml already points
+    # crates.io at the vendored tree, so a crate missing from
+    # packaging/cargo-sources.json fails with `no matching package` instead of
+    # hanging on a socket that is not there. If you add a dependency, run
+    # `python3 packaging/cargo-sources.py` in the same change — a stale source
+    # list is the one failure mode this arrangement has.
+    #
+    # This used to carry a note claiming --share=network "is what keeps Cordial
+    # off Flathub". It is not, and the correction is worth keeping: Flathub's
+    # generative-AI policy does not allow applications containing AI-generated
+    # or AI-assisted code or documentation, and Cordial's history records
+    # exactly that in its commit trailers. Closing issue #3 does not change that
+    # answer. It was worth doing anyway, because a build that does not reach the
+    # network is reproducible whichever remote ends up serving it.
+    build-commands:
+      # **Both crates' `webview` features, and that is not optional.**
+      #
+      # The packaged build carried neither, so the Flatpak shipped with no web
+      # view at all -- reported as "webview doesnt work in cordial flatpak",
+      # and it could not have: nothing referenced `webview::open`, the linker
+      # collected it, and the binary linked no libwebkitgtk.
+      #
+      # Enabling only the shell's is the same trap one layer up, and the
+      # justfile's `toolbox` recipe already has the comment explaining why: the
+      # shell holds the WebKit window and `cordial-runtime` holds the presenter
+      # that calls it, so one without the other leaves the caller cfg'd out and
+      # the feature silently absent.
+      #
+      # `readelf -d /app/bin/cordial-run | grep -i webkit` is the check that it
+      # actually linked.
+      - cargo build --release --offline --features cordial-shell/webview,cordial-runtime/webview
+      # Both binaries, side by side. `launch.rs` looks for the loader as the
+      # sibling of `current_exe` and nowhere else — there is no baked-in
+      # /app/bin and no configurable path — so shipping the shell without
+      # `cordial-run` beside it gives a launcher whose Launch button cannot
+      # find anything to launch.
+      # First-party plugins, read-only beside the binary.
+      # Until the native packages existed nothing installed these anywhere, so the settings window listed no built-in plugins for anybody -- including Flatpak users, whose /app/share/cordial/plugins the code has looked in from the start and which has never existed.
+      - |
+        for plugin in plugins/*/; do
+          id=$(basename "$plugin")
+          [ -f "$plugin/plugin.json" ] || continue
+          install -Dm644 "$plugin/plugin.json" "/app/share/cordial/plugins/$id/plugin.json"
+          install -Dm644 "$plugin/main.ts" "/app/share/cordial/plugins/$id/main.ts"
+        done
+      - install -Dm755 target/release/cordial-shell /app/bin/cordial-shell
+      # See packaging/deb/build-deb.sh for why this is a symlink and why
+      # cordial-run gets none. `flatpak run ...` still starts the shell
+      # through `command:` above; this is for `flatpak run --command=cordial`.
+      - ln -sf cordial-shell /app/bin/cordial
+      - install -Dm755 target/release/cordial-run /app/bin/cordial-run
+      # flatpak-validate-icon rejects a non-square icon and the export fails
+      # rather than warns. The 680x480 README banners used to sit in this same
+      # directory under these same two filenames, which is how PR #22 came to
+      # disable the Frostbite icon to fix an export failure that had already
+      # been fixed; they are packaging/banner*.svg now.
+      - install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.CordialZZ.svg
+          /app/share/icons/hicolor/scalable/apps/io.github.luohoa97.CordialZZ.svg
+      # Frostbite, the twice-a-year joke in `crates/cordial-shell/src/branding.rs`.
+      # Installed unconditionally because the alternative is a name that resolves
+      # to nothing on the one day nobody is watching for it, and because Flatpak
+      # exports only files whose names begin with the application id -- which is
+      # exactly why this is a suffix of `io.github.luohoa97.CordialZ` rather than
+      # an id of its own. The app id itself does not change on either day.
+      - install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.CordialZ.Frostbite.svg
+          /app/share/icons/hicolor/scalable/apps/io.github.luohoa97.CordialZ.Frostbite.svg
+      - install -Dm644 packaging/io.github.luohoa97.CordialZ.desktop
+          /app/share/applications/io.github.luohoa97.CordialZ.desktop
+      # Without this the hosted remote installs but does not browse: a software
+      # centre lists the remote and finds nothing in it. See the file.
+      - install -Dm644 packaging/io.github.luohoa97.CordialZ.metainfo.xml
+          /app/share/metainfo/io.github.luohoa97.CordialZ.metainfo.xml
+      # Licence and attribution. MIT requires its notice in "all copies or
+      # substantial portions", and Apache-2.0 section 4(d) requires the NOTICE
+      # file to travel with derivative works — both apply to a binary build, not
+      # just to the source tree.
+      - install -Dm644 LICENSE /app/share/licenses/cordial/LICENSE
+      - install -Dm644 THIRD-PARTY-NOTICES.md
+          /app/share/licenses/cordial/THIRD-PARTY-NOTICES.md
+      - install -Dm644 third_party/libbadcpu/LICENSE.upstream
+          /app/share/licenses/cordial/libbadcpu-MIT.txt
+      - install -Dm644 third_party/mcpelauncher-linker/LICENSE
+          /app/share/licenses/cordial/mcpelauncher-linker-MIT.txt
+      - install -Dm644 third_party/mcpelauncher-linker/core/NOTICE
+          /app/share/licenses/cordial/aosp-NOTICE.txt
+      - install -Dm644 third_party/libjnivm/LICENSE
+          /app/share/licenses/cordial/libjnivm-MIT.txt
+      # The comment above already named this obligation; these two lines were
+      # the ones missing to meet it. third_party/mocktail-webview/ is Apache-2.0
+      # material — mocktail's implementation of Roblox's in-experience web
+      # window, taken as the basis for Cordial's own — and NOTICE at the
+      # repository root is the section 4(d) attribution for it. Found while
+      # giving three new package formats a licence list to copy from this one;
+      # packaging/rpm/cordial.spec and packaging/aur/cordial-git/PKGBUILD had
+      # the same gap and are fixed alongside this.
+      - install -Dm644 NOTICE /app/share/licenses/cordial/NOTICE
+      - install -Dm644 third_party/mocktail-webview/LICENSE
+          /app/share/licenses/cordial/mocktail-webview-Apache-2.0.txt
+      # dynarmic and the externals of it that are compiled in, for the VR mode's
+      # translator (THIRD-PARTY-NOTICES.md has the list and why these six).
+      - install -Dm644 third_party/dynarmic/LICENSE.txt
+          /app/share/licenses/cordial/dynarmic-0BSD.txt
+      - install -Dm644 third_party/dynarmic/externals/fmt/LICENSE
+          /app/share/licenses/cordial/fmt-MIT.txt
+      - install -Dm644 third_party/dynarmic/externals/mcl/LICENSE
+          /app/share/licenses/cordial/mcl-MIT.txt
+      - install -Dm644 third_party/dynarmic/externals/robin-map/LICENSE
+          /app/share/licenses/cordial/robin-map-MIT.txt
+      - install -Dm644 third_party/dynarmic/externals/xbyak/COPYRIGHT
+          /app/share/licenses/cordial/xbyak-BSD-3-Clause.txt
+      - install -Dm644 third_party/dynarmic/externals/zydis/LICENSE
+          /app/share/licenses/cordial/zydis-MIT.txt
+      - install -Dm644 third_party/dynarmic/externals/zycore/LICENSE
+          /app/share/licenses/cordial/zycore-MIT.txt
+    sources:
+      # The working tree, minus the four directories that must not come from
+      # it. `target` is tens of gigabytes on a developer's machine and every
+      # byte of it gets copied into the build before anything is compiled; the
+      # three submodule paths are skipped so the `git` sources below own them
+      # instead of whatever happens to be checked out locally.
+      - type: dir
+        path: ..
+        skip:
+          - target
+          - third_party/libjnivm
+          - third_party/mcpelauncher-linker
+          - third_party/dynarmic
+      # Pinned by commit rather than pulled by the build (issue #3). This is
+      # what makes the submodule half of the build reproducible, and it means
+      # a CI checkout does not need `--recursive`. Bump these together with
+      # `git submodule update --remote`, never separately: the commits here and
+      # the gitlink in the tree disagreeing is silent, and the Flatpak would
+      # then build from a different revision than a `cargo build` does.
+      - type: git
+        url: https://github.com/ChristopherHX/libjnivm
+        commit: f24b98c198fcc5c59a68d1efadd3f5791eb01c2e
+        dest: third_party/libjnivm
+      # Carries `bionic` and `core` as submodules of its own, which
+      # flatpak-builder clones with it.
+      - type: git
+        url: https://github.com/minecraft-linux/mcpelauncher-linker
+        commit: 1ac3ea6c1cf4f73a84d73f0bff510fba94a7d0f2
+        dest: third_party/mcpelauncher-linker
+      # The VR mode's translator. Its own externals (fmt, mcl, robin-map,
+      # xbyak, zydis, zycore and three that are not compiled here) are
+      # submodules that flatpak-builder clones with it. patches/0007 and 0008
+      # are applied to it by crates/cordial-guest/build.rs, as to a checkout.
+      - type: git
+        url: https://github.com/azahar-emu/dynarmic
+        commit: a46601580d5512d324104f985b5f0209dc980ddc
+        dest: third_party/dynarmic
+      # The crate graph, one `archive` source per crate with the sha256 that is
+      # already in Cargo.lock, plus the `cargo/config.toml` that points
+      # crates.io at the unpacked result. 212 crates, 425 sources, generated by
+      # packaging/cargo-sources.py — do not hand-edit it, and regenerate it in
+      # the same commit as any Cargo.lock change.
+      #
+      # Written out as a file rather than inlined because 118 kB of source list
+      # in the middle of this manifest would bury the permission set, which is
+      # the part of this file anyone actually needs to audit.
+      - cargo-sources.json

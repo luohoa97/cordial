@@ -205,7 +205,7 @@ struct Fns {
     begin_command_buffer: extern "C" fn(u64, *const CmdBeginInfo) -> i32,
     end_command_buffer: extern "C" fn(u64) -> i32,
     cmd_pipeline_barrier:
-        extern "C" fn(u64, u32, u32, u32, u32, *const c_void, u32, *const c_void, u32, *const Barrier),
+        unsafe extern "C" fn(u64, u32, u32, u32, u32, *const c_void, u32, *const c_void, u32, *const Barrier),
     cmd_clear_color_image: extern "C" fn(u64, u64, i32, *const [f32; 4], u32, *const Range),
     cmd_blit_image: extern "C" fn(u64, u64, i32, u64, i32, u32, *const Blit, u32),
     queue_submit: extern "C" fn(u64, u32, *const Submit, u64) -> i32,

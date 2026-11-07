@@ -60,7 +60,7 @@ struct CordialAudioSink {
     is_default: std::os::raw::c_int,
 }
 
-extern "C" {
+unsafe extern "C" {
     fn cordial_audio_sinks(out: *mut *mut CordialAudioSink) -> usize;
     fn cordial_audio_sources(out: *mut *mut CordialAudioSink) -> usize;
     fn cordial_audio_sinks_free(sinks: *mut CordialAudioSink, count: usize);

@@ -69,7 +69,7 @@ counters! {
 /// Called once per wrapped symbol now rather than once per call; see
 /// [`forward!`] for the cache and the module doc for what it cost before.
 fn host(sym: &str) -> *mut c_void {
-    extern "C" {
+    unsafe extern "C" {
         fn dlsym(handle: *mut c_void, symbol: *const std::ffi::c_char) -> *mut c_void;
     }
     let Ok(c) = CString::new(sym) else {
@@ -88,7 +88,7 @@ fn host(sym: &str) -> *mut c_void {
 /// deliberately not counted for that reason.
 macro_rules! forward {
     ($counter:ident, $sym:literal, ($($a:ident),*)) => {{
-        extern "C" fn wrapper($($a: *mut c_void),*) -> *mut c_void {
+        unsafe extern "C" fn wrapper($($a: *mut c_void),*) -> *mut c_void {
             $counter.fetch_add(1, Ordering::Relaxed);
             type Fn_ = extern "C" fn($(replace!($a)),*) -> *mut c_void;
             // **Resolved once per symbol, not once per call.** Each expansion
@@ -129,11 +129,11 @@ macro_rules! replace {
 // Not wired to any counter; purely stderr timing.
 static SWAP_TRACE_T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
-extern "C" fn swap_buffers_timed(a: *mut c_void, b: *mut c_void) -> *mut c_void {
+unsafe extern "C" fn swap_buffers_timed(a: *mut c_void, b: *mut c_void) -> *mut c_void {
     SWAP_BUFFERS.fetch_add(1, Ordering::Relaxed);
     let t0 = *SWAP_TRACE_T0.get_or_init(std::time::Instant::now);
     let before = t0.elapsed().as_secs_f64();
-    extern "C" {
+    unsafe extern "C" {
         fn dlsym(handle: *mut c_void, symbol: *const std::ffi::c_char) -> *mut c_void;
     }
     let f: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void = unsafe {

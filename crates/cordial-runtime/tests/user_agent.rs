@@ -76,10 +76,10 @@ fn shape(ua: &str) -> String {
 
 #[test]
 fn the_android_tablet_user_agent_has_the_real_clients_shape() {
-    std::env::set_var("CORDIAL_DEVICE_PROFILE", "android-tablet");
+    unsafe { std::env::set_var("CORDIAL_DEVICE_PROFILE", "android-tablet"); }
     // Four parts in the engine's build, three in the client's own token: the
     // capture's 2.732.1043 comes from engine 2.732.0.1043.
-    std::env::set_var("CORDIAL_ENGINE_VERSION", "2.732.0.1043");
+    unsafe { std::env::set_var("CORDIAL_ENGINE_VERSION", "2.732.0.1043"); }
 
     let ours = user_agent().expect("the native side answers");
     let theirs = captured_user_agent();

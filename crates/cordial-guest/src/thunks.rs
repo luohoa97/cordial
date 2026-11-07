@@ -14,7 +14,7 @@ use crate::jit::{guest_call, Fault, Handler, Runtime};
 
 const EINVAL: u64 = 22;
 
-extern "C" {
+unsafe extern "C" {
     fn qsort_r(
         base: *mut c_void,
         n: usize,
@@ -65,7 +65,7 @@ pub fn qsort() -> Handler {
         cmp: u64,
         fault: Option<Fault>,
     }
-    extern "C" fn host_cmp(a: *const c_void, b: *const c_void, ctx: *mut c_void) -> i32 {
+    unsafe extern "C" fn host_cmp(a: *const c_void, b: *const c_void, ctx: *mut c_void) -> i32 {
         // SAFETY: `ctx` is the Ctx below, live for the whole qsort_r call.
         let ctx = unsafe { &mut *(ctx as *mut Ctx) };
         if ctx.fault.is_some() {
@@ -107,7 +107,7 @@ pub fn pthread_create_thunk() -> Handler {
         pc: u64,
         arg: u64,
     }
-    extern "C" fn start(p: *mut c_void) -> *mut c_void {
+    unsafe extern "C" fn start(p: *mut c_void) -> *mut c_void {
         // SAFETY: the Box leaked by the handler below, handed over once.
         let s = unsafe { Box::from_raw(p as *mut Start) };
         match guest_call(&s.rt, s.pc, &[s.arg], &[]) {

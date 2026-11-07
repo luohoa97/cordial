@@ -129,7 +129,7 @@ struct XColor {
     pad: c_char,
 }
 
-extern "C" {
+unsafe extern "C" {
     fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
 }
@@ -1444,7 +1444,7 @@ fn x11_button_to_wheel(button: c_uint) -> Option<(f32, f32)> {
 // same host symbol — `rustc` warns (`clashing_extern_declarations`) about two
 // `extern "C" fn poll` with different signatures anywhere in the crate, since
 // both ultimately bind the one process-wide C symbol.
-extern "C" {
+unsafe extern "C" {
     fn poll(fds: *mut c_void, nfds: c_ulong, timeout_ms: c_int) -> c_int;
 }
 #[repr(C)]
@@ -2086,7 +2086,7 @@ fn as_window(p: *mut c_void) -> Option<&'static HostWindow> {
     (!p.is_null()).then(|| WINDOW.get()).flatten()
 }
 
-extern "C" fn native_window_from_surface(_env: *mut c_void, _surface: *mut c_void) -> *mut c_void {
+unsafe extern "C" fn native_window_from_surface(_env: *mut c_void, _surface: *mut c_void) -> *mut c_void {
     // Cordial's Java `Surface` has no state of its own: there is one window and
     // the Surface object exists only so `onSurfaceCreatedNative`'s signature can
     // be satisfied. Returning the single window is therefore correct rather than
@@ -2101,23 +2101,23 @@ extern "C" fn native_window_from_surface(_env: *mut c_void, _surface: *mut c_voi
     w
 }
 
-extern "C" fn native_window_acquire(window: *mut c_void) {
+unsafe extern "C" fn native_window_acquire(window: *mut c_void) {
     let _ = window;
 }
 
-extern "C" fn native_window_release(window: *mut c_void) {
+unsafe extern "C" fn native_window_release(window: *mut c_void) {
     let _ = window;
 }
 
-extern "C" fn native_window_get_width(window: *mut c_void) -> i32 {
+unsafe extern "C" fn native_window_get_width(window: *mut c_void) -> i32 {
     as_window(window).map_or(0, |w| w.geometry().0)
 }
 
-extern "C" fn native_window_get_height(window: *mut c_void) -> i32 {
+unsafe extern "C" fn native_window_get_height(window: *mut c_void) -> i32 {
     as_window(window).map_or(0, |w| w.geometry().1)
 }
 
-extern "C" fn native_window_get_format(window: *mut c_void) -> i32 {
+unsafe extern "C" fn native_window_get_format(window: *mut c_void) -> i32 {
     as_window(window).map_or(0, |w| w.geometry().2)
 }
 
@@ -2125,7 +2125,7 @@ extern "C" fn native_window_get_format(window: *mut c_void) -> i32 {
 /// underlying buffers; here the values are recorded and reported back, because
 /// the EGL surface is sized by the X window and the engine only needs the two to
 /// agree.
-extern "C" fn native_window_set_buffers_geometry(
+unsafe extern "C" fn native_window_set_buffers_geometry(
     window: *mut c_void,
     width: i32,
     height: i32,
@@ -2154,7 +2154,7 @@ extern "C" fn native_window_set_buffers_geometry(
 /// rather than a fake buffer is deliberate: a caller that gets a buffer will
 /// write to it and expect the result on screen, and silently discarding that
 /// would be far harder to diagnose than a refused lock.
-extern "C" fn native_window_lock(
+unsafe extern "C" fn native_window_lock(
     _window: *mut c_void,
     _buffer: *mut c_void,
     _dirty: *mut c_void,
@@ -2162,7 +2162,7 @@ extern "C" fn native_window_lock(
     -38 // -ENOSYS
 }
 
-extern "C" fn native_window_unlock_and_post(_window: *mut c_void) -> i32 {
+unsafe extern "C" fn native_window_unlock_and_post(_window: *mut c_void) -> i32 {
     -38 // -ENOSYS
 }
 
@@ -2186,14 +2186,14 @@ extern "C" fn native_window_unlock_and_post(_window: *mut c_void) -> i32 {
 /// There is exactly one window in this runtime, so any pointer arriving here is
 /// that window; the argument is replaced unconditionally rather than compared
 /// against a handle that could only ever have one value.
-extern "C" fn egl_create_window_surface(
+unsafe extern "C" fn egl_create_window_surface(
     dpy: *mut c_void,
     config: *mut c_void,
     _native_window: *mut c_void,
     attribs: *mut c_void,
 ) -> *mut c_void {
     crate::android::glcount::CREATE_WINDOW_SURFACE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    extern "C" {
+    unsafe extern "C" {
         fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     }
     let name = CString::new("eglCreateWindowSurface").unwrap_or_default();
@@ -2245,8 +2245,8 @@ extern "C" fn egl_create_window_surface(
 /// than an unthrottled spin), so this does not hand the engine a runaway
 /// framerate — it removes an extra, broken 1-Hz throttle underneath that
 /// pacing, on top of it.
-extern "C" fn egl_swap_interval(dpy: *mut c_void, _interval: c_int) -> u32 {
-    extern "C" {
+unsafe extern "C" fn egl_swap_interval(dpy: *mut c_void, _interval: c_int) -> u32 {
+    unsafe extern "C" {
         fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     }
     let name = CString::new("eglSwapInterval").unwrap_or_default();

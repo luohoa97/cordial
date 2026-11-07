@@ -38,10 +38,10 @@ fn a_launch_reads_its_flags_and_grants_from_the_profile_it_was_given() {
     std::fs::create_dir_all(config.join("cordial")).unwrap();
     std::fs::create_dir_all(plugins.join("profile-demo")).unwrap();
 
-    std::env::set_var("XDG_CONFIG_HOME", &config);
-    std::env::set_var("CORDIAL_PLUGIN_DIR", &plugins);
-    std::env::remove_var("CORDIAL_FLAGS");
-    std::env::remove_var("CORDIAL_PLUGIN_GRANTS");
+    unsafe { std::env::set_var("XDG_CONFIG_HOME", &config); }
+    unsafe { std::env::set_var("CORDIAL_PLUGIN_DIR", &plugins); }
+    unsafe { std::env::remove_var("CORDIAL_FLAGS"); }
+    unsafe { std::env::remove_var("CORDIAL_PLUGIN_GRANTS"); }
 
     // The profile arrives as one decision, the way `--profile` will hand it
     // over, and everything below is resolved from it.

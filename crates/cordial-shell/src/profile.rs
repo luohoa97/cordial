@@ -39,7 +39,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 
-extern "C" {
+unsafe extern "C" {
     fn flock(fd: c_int, operation: c_int) -> c_int;
     // Declared variadic because it is. Wrapping a variadic function in a
     // fixed-arity declaration is what makes `CORDIAL_TRACE=1` abort the engine,
@@ -308,7 +308,7 @@ fn adopt_handed_lock(dir: &Path) -> Option<File> {
     // Consumed rather than read. The client execs plugin sandboxes, and a
     // descriptor number is meaningless in a process that did not inherit it —
     // worse, it could name something else entirely by then.
-    std::env::remove_var(HANDED_LOCK);
+    unsafe { std::env::remove_var(HANDED_LOCK) };
 
     let fd: c_int = raw.trim().parse().ok().filter(|fd| *fd >= 0)?;
     let expected = std::fs::canonicalize(dir.join(".lock")).ok()?;

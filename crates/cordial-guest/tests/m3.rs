@@ -21,7 +21,7 @@ type Many = extern "C" fn(i64, i64, i8, u16, i16, i32, i64, f32, f64, i32, i64, 
 
 /// The same computation as `guest_many` in tests/guest/m1.c, natively.
 #[allow(clippy::too_many_arguments)]
-extern "C" fn native_many(env: i64, obj: i64, b: i8, c: u16, s: i16, i: i32, j: i64, f: f32, d: f64, i2: i32,
+unsafe extern "C" fn native_many(env: i64, obj: i64, b: i8, c: u16, s: i16, i: i32, j: i64, f: f32, d: f64, i2: i32,
                           j2: i64, f2: f32, d2: f64, d3: f64, d4: f64, d5: f64, d6: f64, d7: f64, d8: f64,
                           i3: i32, j3: i64) -> f64 {
     // As C converts each argument to unsigned long: sign-extending the

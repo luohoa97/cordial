@@ -37,7 +37,7 @@
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::OnceLock;
 
-extern "C" {
+unsafe extern "C" {
     // The process's own libwayland, found the way `wayland.rs` finds it: GTK has
     // it loaded already, so this takes a reference and does not load a second
     // copy.

@@ -187,7 +187,7 @@ mod tests {
 
     static SET: Mutex<(u64, u64, u64)> = Mutex::new((0, 0, 0));
 
-    extern "C" fn fake_set_data_callback(builder: u64, cb: u64, user: u64) {
+    unsafe extern "C" fn fake_set_data_callback(builder: u64, cb: u64, user: u64) {
         *SET.lock().unwrap() = (builder, cb, user);
     }
 

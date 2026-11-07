@@ -24,7 +24,7 @@ use crate::mem::{Mapping, PROT_READ};
 const SLOTS: usize = 8192;
 const SLOT_BYTES: usize = 16;
 
-extern "C" {
+unsafe extern "C" {
     fn cg_host_entry_common();
 }
 
@@ -47,7 +47,7 @@ struct Page {
 
 static PAGE: OnceLock<Page> = OnceLock::new();
 
-extern "C" {
+unsafe extern "C" {
     fn mprotect(addr: *mut c_void, len: usize, prot: i32) -> i32;
 }
 const PROT_EXEC: i32 = 4;
@@ -114,7 +114,7 @@ struct EntryRegs {
 }
 
 #[no_mangle]
-extern "C" fn cg_host_entry_dispatch(index: u64, regs: *mut EntryRegs) {
+unsafe extern "C" fn cg_host_entry_dispatch(index: u64, regs: *mut EntryRegs) {
     // SAFETY: `regs` is cg_host_entry_common's frame, live for this call.
     let regs = unsafe { &mut *regs };
     let page = page();

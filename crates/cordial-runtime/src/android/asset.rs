@@ -1230,7 +1230,7 @@ fn write_atomically(out: &Path, bytes: &[u8]) -> Result<(), String> {
 
 // ------------------------------------------------------------------- the API
 
-extern "C" fn asset_manager_from_java(_env: *mut c_void, _obj: *mut c_void) -> *mut c_void {
+unsafe extern "C" fn asset_manager_from_java(_env: *mut c_void, _obj: *mut c_void) -> *mut c_void {
     super::trace(format_args!("AAssetManager_fromJava"));
     // There is one asset manager per process and the Java object is Cordial's
     // own, so there is nothing to look up. Returning a non-null token matters:
@@ -1238,7 +1238,7 @@ extern "C" fn asset_manager_from_java(_env: *mut c_void, _obj: *mut c_void) -> *
     MANAGER.get().map_or(std::ptr::null_mut(), |m| m as *const Manager as *mut c_void)
 }
 
-extern "C" fn asset_manager_open(
+unsafe extern "C" fn asset_manager_open(
     _mgr: *mut c_void,
     filename: *const c_char,
     _mode: c_int,
@@ -1261,18 +1261,18 @@ fn open_asset(manager: &Manager, name: &str) -> Option<Asset> {
     manager.read(name).map(|bytes| Asset { bytes })
 }
 
-extern "C" fn asset_get_buffer(asset: *mut c_void) -> *const c_void {
+unsafe extern "C" fn asset_get_buffer(asset: *mut c_void) -> *const c_void {
     // SAFETY: `asset` is null or came from asset_manager_open and has not been
     // closed.
     unsafe { handle_ref::<Asset>(asset) }.map_or(std::ptr::null(), |a| a.bytes.as_ptr() as *const c_void)
 }
 
-extern "C" fn asset_get_length(asset: *mut c_void) -> i64 {
+unsafe extern "C" fn asset_get_length(asset: *mut c_void) -> i64 {
     // SAFETY: as above.
     unsafe { handle_ref::<Asset>(asset) }.map_or(0, |a| a.bytes.len() as i64)
 }
 
-extern "C" fn asset_close(asset: *mut c_void) {
+unsafe extern "C" fn asset_close(asset: *mut c_void) {
     // SAFETY: `asset` is null or came from asset_manager_open and is closed
     // exactly once, per the API contract.
     unsafe { drop_handle::<Asset>(asset) };
@@ -1282,7 +1282,7 @@ extern "C" fn asset_close(asset: *mut c_void) {
 /// one because assets are stored uncompressed at a known offset in the APK.
 /// Cordial's are decompressed in memory, so this hands back a `memfd` holding
 /// the same bytes, which behaves the same for reading.
-extern "C" fn asset_open_file_descriptor(
+unsafe extern "C" fn asset_open_file_descriptor(
     asset: *mut c_void,
     out_start: *mut i64,
     out_length: *mut i64,
@@ -1384,7 +1384,7 @@ fn list_dir<'a>(entries: impl Iterator<Item = &'a str>, dir: &str) -> Vec<String
     names
 }
 
-extern "C" fn asset_manager_open_dir(_mgr: *mut c_void, dir_name: *const c_char) -> *mut c_void {
+unsafe extern "C" fn asset_manager_open_dir(_mgr: *mut c_void, dir_name: *const c_char) -> *mut c_void {
     let Some(manager) = MANAGER.get() else {
         eprintln!("[asset] openDir before an APK was set — pass --apk");
         return std::ptr::null_mut();
@@ -1413,13 +1413,13 @@ fn open_dir(manager: &Manager, dir: &str) -> Option<AssetDir> {
     Some(AssetDir { names, next: 0 })
 }
 
-extern "C" fn asset_dir_get_next_file_name(dir: *mut c_void) -> *const c_char {
+unsafe extern "C" fn asset_dir_get_next_file_name(dir: *mut c_void) -> *const c_char {
     // SAFETY: `dir` is null or came from asset_manager_open_dir and has not been
     // closed; the engine reads one directory from one thread.
     unsafe { handle_mut::<AssetDir>(dir) }.map_or(std::ptr::null(), AssetDir::next_name)
 }
 
-extern "C" fn asset_dir_close(dir: *mut c_void) {
+unsafe extern "C" fn asset_dir_close(dir: *mut c_void) {
     // SAFETY: `dir` is null or came from asset_manager_open_dir and is closed
     // exactly once, per the API contract.
     unsafe { drop_handle::<AssetDir>(dir) };
@@ -1452,18 +1452,18 @@ pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
 /// the zip lookup.
 pub fn probe(name: &str) -> Result<usize, String> {
     let c = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
-    let mgr = asset_manager_from_java(std::ptr::null_mut(), std::ptr::null_mut());
+    let mgr = unsafe { asset_manager_from_java(std::ptr::null_mut(), std::ptr::null_mut()) };
     if mgr.is_null() {
         return Err("no APK configured".into());
     }
-    let asset = asset_manager_open(mgr, c.as_ptr(), 0);
+    let asset = unsafe { asset_manager_open(mgr, c.as_ptr(), 0) };
     if asset.is_null() {
         return Err(format!("asset not found: {name}"));
     }
-    let len = asset_get_length(asset) as usize;
-    let buf = asset_get_buffer(asset);
+    let len = unsafe { asset_get_length(asset) as usize };
+    let buf = unsafe { asset_get_buffer(asset) };
     if buf.is_null() {
-        asset_close(asset);
+        unsafe { asset_close(asset) };
         return Err("asset opened but its buffer is null".into());
     }
     // Touch the first and last byte: a length without readable memory behind it
@@ -1473,7 +1473,7 @@ pub fn probe(name: &str) -> Result<usize, String> {
     let checksum = bytes.first().copied().unwrap_or(0) as usize
         + bytes.last().copied().unwrap_or(0) as usize;
     std::hint::black_box(checksum);
-    asset_close(asset);
+    unsafe { asset_close(asset) };
     Ok(len)
 }
 
@@ -1565,20 +1565,20 @@ mod overlay_tests {
     #[test]
     fn the_asset_entry_points_answer_a_null_handle_with_their_failure_value() {
         // The engine probes; a null `AAsset*` is the miss it already handles.
-        assert!(asset_get_buffer(std::ptr::null_mut()).is_null());
-        assert_eq!(asset_get_length(std::ptr::null_mut()), 0);
+        assert!(unsafe { asset_get_buffer(std::ptr::null_mut()) }.is_null());
+        assert_eq!(unsafe { asset_get_length(std::ptr::null_mut()) }, 0);
         assert_eq!(asset_open_file_descriptor(std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()), -1);
-        asset_close(std::ptr::null_mut());
+        unsafe { asset_close(std::ptr::null_mut()) };
     }
 
     #[test]
     fn an_open_asset_reports_its_bytes_and_closes() {
         let a = handle_to(b"hello");
-        assert_eq!(asset_get_length(a), 5);
-        let p = asset_get_buffer(a);
+        assert_eq!(unsafe { asset_get_length(a) }, 5);
+        let p = unsafe { asset_get_buffer(a) };
         // SAFETY: five bytes owned by the asset, which is still open.
         assert_eq!(unsafe { std::slice::from_raw_parts(p as *const u8, 5) }, b"hello");
-        asset_close(a);
+        unsafe { asset_close(a) };
     }
 
     #[test]

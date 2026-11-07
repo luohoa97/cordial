@@ -39,7 +39,7 @@ pub struct HostRet {
     pub xmm1: [u64; 2],
 }
 
-extern "C" {
+unsafe extern "C" {
     pub fn cg_monitor_new(processors: u64) -> *mut c_void;
     pub fn cg_monitor_free(m: *mut c_void);
 

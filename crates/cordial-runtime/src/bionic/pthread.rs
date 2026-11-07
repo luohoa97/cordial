@@ -142,7 +142,7 @@ struct BionicSem {
 
 // glibc's implementations. These resolve to the host's libc at link time; our
 // own wrappers are never exported, so there is no recursion.
-extern "C" {
+unsafe extern "C" {
     fn pthread_cond_init(cond: *mut c_void, attr: *const c_void) -> c_int;
     fn pthread_cond_destroy(cond: *mut c_void) -> c_int;
     fn pthread_cond_wait(cond: *mut c_void, mutex: *mut c_void) -> c_int;
@@ -164,7 +164,7 @@ extern "C" {
 // host's own implementations keep resolving directly, unchanged from before
 // this fix.
 #[cfg(target_arch = "aarch64")]
-extern "C" {
+unsafe extern "C" {
     fn pthread_mutex_init(mutex: *mut c_void, attr: *const c_void) -> c_int;
     fn pthread_mutex_destroy(mutex: *mut c_void) -> c_int;
     fn pthread_mutex_lock(mutex: *mut c_void) -> c_int;
@@ -1021,7 +1021,7 @@ pub extern "C" fn cordial_pthread_attr_real(attr: *const c_void) -> *const c_voi
 // ------------------------------------------------- once, and thread-local keys
 
 // glibc's. Renamed so the forwarding wrappers below can carry bionic's names.
-extern "C" {
+unsafe extern "C" {
     #[link_name = "pthread_once"]
     fn host_pthread_once(control: *mut c_int, init_routine: Option<extern "C" fn()>) -> c_int;
     #[link_name = "pthread_key_create"]
@@ -1296,7 +1296,7 @@ mod tests {
         }
         #[cfg(not(target_arch = "aarch64"))]
         {
-            extern "C" {
+            unsafe extern "C" {
                 fn pthread_mutex_lock(mutex: *mut c_void) -> c_int;
             }
             unsafe { pthread_mutex_lock(m) }
@@ -1310,7 +1310,7 @@ mod tests {
         }
         #[cfg(not(target_arch = "aarch64"))]
         {
-            extern "C" {
+            unsafe extern "C" {
                 fn pthread_mutex_unlock(mutex: *mut c_void) -> c_int;
             }
             unsafe { pthread_mutex_unlock(m) }
@@ -1367,7 +1367,7 @@ mod tests {
         use std::sync::mpsc;
         use std::time::Duration;
 
-        extern "C" {
+        unsafe extern "C" {
             fn pthread_mutex_lock(m: *mut c_void) -> c_int;
             fn pthread_mutex_unlock(m: *mut c_void) -> c_int;
         }
@@ -1456,7 +1456,7 @@ mod tests {
     #[test]
     fn once_runs_the_initialiser_exactly_once() {
         static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        extern "C" fn init() {
+        unsafe extern "C" fn init() {
             RUNS.fetch_add(1, Ordering::SeqCst);
         }
         // bionic's PTHREAD_ONCE_INIT is 0, and so is glibc's. A control that
@@ -1692,7 +1692,7 @@ mod tests {
     #[test]
     fn a_once_control_is_borrowed_as_the_atomic_it_is() {
         static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        extern "C" fn init() {
+        unsafe extern "C" fn init() {
             RUNS.fetch_add(1, Ordering::SeqCst);
         }
         let control = AtomicI32::new(0);
@@ -1728,7 +1728,7 @@ mod tests {
     /// reports EDEADLK instead.
     #[test]
     fn the_glibc_mutex_types_behave_as_their_names_say() {
-        extern "C" {
+        unsafe extern "C" {
             fn pthread_mutexattr_init(attr: *mut c_void) -> c_int;
             fn pthread_mutexattr_destroy(attr: *mut c_void) -> c_int;
             fn pthread_mutexattr_settype(attr: *mut c_void, kind: c_int) -> c_int;
@@ -1934,7 +1934,7 @@ mod tests {
         // stack size back via `getattr_np`/`attr_getstacksize` -- the same
         // two functions Roblox's engine would call, on the same object,
         // through the same wrapper.
-        extern "C" {
+        unsafe extern "C" {
             fn cordial_pthread_create(
                 thread: *mut c_ulong,
                 attr: *const c_void,
@@ -1950,7 +1950,7 @@ mod tests {
         // so nothing rounds it before the read-back.
         const REQUESTED_STACK: usize = 1 << 20;
 
-        extern "C" fn start(_: *mut c_void) -> *mut c_void {
+        unsafe extern "C" fn start(_: *mut c_void) -> *mut c_void {
             let mut self_attr_storage = [0u64; 7];
             let self_attr = self_attr_storage.as_mut_ptr() as *mut c_void;
             // SAFETY: `pthread_self` takes no arguments and returns the

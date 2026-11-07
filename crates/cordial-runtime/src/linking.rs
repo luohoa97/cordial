@@ -27,7 +27,7 @@
 
 use std::ffi::{c_char, c_int, c_void, CString};
 
-extern "C" {
+unsafe extern "C" {
     fn cordial_messagebus_set_request_handler(
         f: *mut c_void,
         protocol: *const c_char,

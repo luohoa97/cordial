@@ -35,7 +35,7 @@ pub fn report() {
 }
 
 pub(crate) fn errno_set(e: c_int) {
-    extern "C" {
+    unsafe extern "C" {
         fn __errno_location() -> *mut c_int;
     }
     // SAFETY: the calling thread's own errno; the guest reads it through the
@@ -103,7 +103,7 @@ const AT_RANDOM: u64 = 25;
 const AT_HWCAP2: u64 = 26;
 
 fn getauxval() -> Handler {
-    extern "C" {
+    unsafe extern "C" {
         #[link_name = "getauxval"]
         fn host_getauxval(t: u64) -> u64;
     }
@@ -141,7 +141,7 @@ fn getauxval() -> Handler {
 /// `uname`: the host's, with `machine` saying what the guest runs on.
 /// `struct utsname` is six 65-byte fields in bionic and in glibc alike.
 fn uname() -> Handler {
-    extern "C" {
+    unsafe extern "C" {
         #[link_name = "uname"]
         fn host_uname(u: *mut u8) -> c_int;
     }
@@ -221,7 +221,7 @@ thread_local! {
 /// by a guest thread's start routine after the guest's own returns or calls
 /// `pthread_exit`, on the thread itself, so each value read is its own.
 pub(crate) fn thread_exit(rt: &Arc<Runtime>) -> Result<(), Fault> {
-    extern "C" {
+    unsafe extern "C" {
         fn pthread_getspecific(k: u32) -> *mut c_void;
         fn pthread_setspecific(k: u32, v: *const c_void) -> c_int;
     }
@@ -343,7 +343,7 @@ fn guest_key_delete() -> Handler {
 static KEY_DTORS: Mutex<BTreeMap<u32, u64>> = Mutex::new(BTreeMap::new());
 
 fn pthread_key_create() -> Handler {
-    extern "C" {
+    unsafe extern "C" {
         #[link_name = "pthread_key_create"]
         fn host_key_create(k: *mut u32, d: Option<extern "C" fn(*mut c_void)>) -> c_int;
     }
@@ -396,7 +396,7 @@ fn bsearch() -> Handler {
 
 // The bionic linker's own entry points, which the native path's libdl.so
 // wraps. The caller address decides the namespace and RTLD_NEXT.
-extern "C" {
+unsafe extern "C" {
     fn __loader_dlopen(filename: *const c_char, flags: c_int, caller: *const c_void) -> *mut c_void;
     fn __loader_dlsym(handle: *mut c_void, symbol: *const c_char, caller: *const c_void) -> *mut c_void;
     fn __loader_dladdr(addr: *const c_void, info: *mut [u64; 4]) -> c_int;
@@ -564,7 +564,7 @@ fn dlclose() -> Handler {
 /// business. The list is taken first and the callbacks run after, each on
 /// the next Jit.
 fn dl_iterate_phdr() -> Handler {
-    extern "C" fn collect(info: *mut DlPhdrInfo, _size: usize, data: *mut c_void) -> c_int {
+    unsafe extern "C" fn collect(info: *mut DlPhdrInfo, _size: usize, data: *mut c_void) -> c_int {
         // SAFETY: the linker's info for one object, and our Vec.
         let (info, out) = unsafe { (&*info, &mut *(data as *mut Vec<DlPhdrInfo>)) };
         if info.phnum == 0 || info.phdr.is_null() {
@@ -631,7 +631,7 @@ const LC_ALL_MASK: u64 = 0x1fbf;
 const LC_GLOBAL_LOCALE: u64 = u64::MAX;
 const EINVAL: c_int = 22;
 
-extern "C" {
+unsafe extern "C" {
     #[link_name = "newlocale"]
     fn host_newlocale(mask: c_int, name: *const c_char, base: *mut c_void) -> *mut c_void;
     #[link_name = "uselocale"]
@@ -928,7 +928,7 @@ pub(crate) fn guest_openat(dirfd: i64, path: u64, flags: u32, mode: u32) -> Resu
 /// `__open_2`, which are different functions in the native table).
 pub(crate) fn openat_via(name: &'static str, native: Option<usize>, dirfd: i64, path: u64, flags: u32, mode: u32)
               -> Result<Result<u64, c_int>, Fault> {
-    extern "C" {
+    unsafe extern "C" {
         #[link_name = "openat"]
         fn host_openat(dirfd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
     }
@@ -978,7 +978,7 @@ const F_SETFL: u64 = 4;
 /// x86-64's are the same numbers); only the file status flags need
 /// renumbering, in both directions.
 fn fcntl() -> Handler {
-    extern "C" {
+    unsafe extern "C" {
         #[link_name = "fcntl"]
         fn host_fcntl(fd: c_int, cmd: c_int, arg: u64) -> c_int;
     }
@@ -1051,7 +1051,7 @@ fn stat(name: &'static str, native: Option<usize>) -> Handler {
 /// EINVAL from an x86-64 kernel -- which is the true answer for the CPU the
 /// guest runs on, since the translator has none of those features either.
 fn prctl() -> Handler {
-    extern "C" {
+    unsafe extern "C" {
         #[link_name = "prctl"]
         fn host_prctl(o: c_int, ...) -> c_int;
     }
@@ -1072,7 +1072,7 @@ fn prctl() -> Handler {
 // and drops every Jit's translations of one the guest changes.
 
 fn errno() -> c_int {
-    extern "C" {
+    unsafe extern "C" {
         fn __errno_location() -> *mut c_int;
     }
     // SAFETY: the calling thread's own errno.
@@ -1370,7 +1370,7 @@ fn cpuinfo_text() -> String {
 /// The `auxv` entries `getauxval` answers, as the kernel lays them out:
 /// (type, value) pairs of u64, ending with AT_NULL.
 fn auxv_bytes() -> Vec<u8> {
-    extern "C" {
+    unsafe extern "C" {
         #[link_name = "getauxval"]
         fn host_getauxval(t: u64) -> u64;
     }
@@ -1387,7 +1387,7 @@ fn auxv_bytes() -> Vec<u8> {
 /// A descriptor on an in-memory copy of the CPU file `path` names, or None
 /// for any other path.
 fn cpu_file(path: *const c_char) -> Option<c_int> {
-    extern "C" {
+    unsafe extern "C" {
         fn memfd_create(name: *const c_char, flags: u32) -> c_int;
         #[link_name = "write"]
         fn host_write(fd: c_int, p: *const c_void, n: usize) -> isize;
@@ -1419,7 +1419,7 @@ fn cpu_file(path: *const c_char) -> Option<c_int> {
 /// `fopen`: the CPU files from memory, everything else through the native
 /// answer (Cordial's `/system` redirect).
 fn fopen(native: Option<usize>) -> Handler {
-    extern "C" {
+    unsafe extern "C" {
         fn fdopen(fd: c_int, mode: *const c_char) -> *mut c_void;
     }
     Box::new(move |c| {
@@ -1571,7 +1571,7 @@ mod tests {
     /// arm64's struct stat, from a real host stat of this file.
     #[test]
     fn stat_is_laid_out_as_arm64s() {
-        extern "C" {
+        unsafe extern "C" {
             #[link_name = "stat"]
             fn host_stat(p: *const c_char, out: *mut u8) -> c_int;
         }

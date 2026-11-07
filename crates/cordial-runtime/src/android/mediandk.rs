@@ -204,18 +204,18 @@ pub(crate) fn overrides() -> Vec<(&'static str, *mut c_void)> {
 // ---------------------------------------------------------------------------
 
 /// Release an AImage object. Returns AMEDIA_OK on success.
-extern "C" fn aimage_delete(_image: *mut c_void) {}
+unsafe extern "C" fn aimage_delete(_image: *mut c_void) {}
 
 /// Get the hardware buffer associated with an AImage. Returns null — we have
 /// no actual hardware buffer on this host, and returning null is the honest
 /// answer rather than fabricating one.
-extern "C" fn aimage_get_hardware_buffer(_image: *mut c_void) -> *mut c_void {
+unsafe extern "C" fn aimage_get_hardware_buffer(_image: *mut c_void) -> *mut c_void {
     std::ptr::null_mut()
 }
 
 /// Get the timestamp of an AImage in nanoseconds. Returns 0 — no real frame
 /// timing available without hardware.
-extern "C" fn aimage_get_timestamp(_image: *mut c_void) -> i64 {
+unsafe extern "C" fn aimage_get_timestamp(_image: *mut c_void) -> i64 {
     0
 }
 
@@ -227,7 +227,7 @@ extern "C" fn aimage_get_timestamp(_image: *mut c_void) -> i64 {
 /// — no hardware produces images on this host, so there is nothing to acquire.
 /// This is the honest answer: Roblox should not treat null as "no image yet"
 /// because we never produce one.
-extern "C" fn aimage_reader_acquire_next_image(
+unsafe extern "C" fn aimage_reader_acquire_next_image(
     _reader: *mut c_void,
     image_acquired: *mut *mut c_void,
 ) -> c_int {
@@ -238,7 +238,7 @@ extern "C" fn aimage_reader_acquire_next_image(
 }
 
 /// Delete an AImageReader and free its resources.
-extern "C" fn aimage_reader_delete(reader: *mut c_void) {
+unsafe extern "C" fn aimage_reader_delete(reader: *mut c_void) {
     if let Some(handle) = ptr_to_handle(reader) {
         ObjectTable::lock().readers.remove(&handle);
     }
@@ -246,14 +246,14 @@ extern "C" fn aimage_reader_delete(reader: *mut c_void) {
 
 /// Get the ANativeWindow associated with an AImageReader. Returns null — we
 /// have no surface to present images to through this path.
-extern "C" fn aimage_reader_get_window(_reader: *mut c_void) -> *mut c_void {
+unsafe extern "C" fn aimage_reader_get_window(_reader: *mut c_void) -> *mut c_void {
     std::ptr::null_mut()
 }
 
 /// Create a new AImageReader. Returns a valid handle so Roblox gets a real
 /// object it can use. The reader exists in our table but produces no images
 /// (acquire returns WOULD_BLOCK) — that is the honest state of this host.
-extern "C" fn aimage_reader_new_with_usage(
+unsafe extern "C" fn aimage_reader_new_with_usage(
     width: c_int,
     height: c_int,
     format: c_int,
@@ -291,7 +291,7 @@ extern "C" fn aimage_reader_new_with_usage(
 
 /// Configure a codec. Returns OK — configuration is parameter validation,
 /// not hardware allocation, and we can do that honestly.
-extern "C" fn amedia_codec_configure(
+unsafe extern "C" fn amedia_codec_configure(
     _codec: *mut c_void,
     _format: *mut c_void,
     _surface: *mut c_void,
@@ -302,7 +302,7 @@ extern "C" fn amedia_codec_configure(
 }
 
 /// Create a decoder by MIME type. Returns a valid handle.
-extern "C" fn amedia_codec_create_decoder_by_type(mime: *const c_char) -> *mut c_void {
+unsafe extern "C" fn amedia_codec_create_decoder_by_type(mime: *const c_char) -> *mut c_void {
     let mime_str = if mime.is_null() {
         return std::ptr::null_mut();
     } else {
@@ -330,7 +330,7 @@ extern "C" fn amedia_codec_create_decoder_by_type(mime: *const c_char) -> *mut c
 }
 
 /// Create an encoder by MIME type. Returns a valid handle.
-extern "C" fn amedia_codec_create_encoder_by_type(mime: *const c_char) -> *mut c_void {
+unsafe extern "C" fn amedia_codec_create_encoder_by_type(mime: *const c_char) -> *mut c_void {
     let mime_str = if mime.is_null() {
         return std::ptr::null_mut();
     } else {
@@ -358,7 +358,7 @@ extern "C" fn amedia_codec_create_encoder_by_type(mime: *const c_char) -> *mut c
 }
 
 /// Delete a codec and free its resources.
-extern "C" fn amedia_codec_delete(codec: *mut c_void) {
+unsafe extern "C" fn amedia_codec_delete(codec: *mut c_void) {
     if let Some(handle) = ptr_to_handle(codec) {
         ObjectTable::lock().codecs.remove(&handle);
     }
@@ -366,13 +366,13 @@ extern "C" fn amedia_codec_delete(codec: *mut c_void) {
 
 /// Dequeue an input buffer index. Returns AMEDIA_ERROR_WOULD_BLOCK — no buffer
 /// is available to fill on this host. This is the honest answer.
-extern "C" fn amedia_codec_dequeue_input_buffer(_codec: *mut c_void, _timeout_us: i64) -> c_int {
+unsafe extern "C" fn amedia_codec_dequeue_input_buffer(_codec: *mut c_void, _timeout_us: i64) -> c_int {
     AMEDIA_ERROR_WOULD_BLOCK
 }
 
 /// Dequeue an output buffer index. Returns AMEDIA_ERROR_WOULD_BLOCK — no
 /// decoded output exists on this host.
-extern "C" fn amedia_codec_dequeue_output_buffer(
+unsafe extern "C" fn amedia_codec_dequeue_output_buffer(
     _codec: *mut c_void,
     _info: *mut c_void,
     _timeout_us: i64,
@@ -381,12 +381,12 @@ extern "C" fn amedia_codec_dequeue_output_buffer(
 }
 
 /// Flush a codec. Returns OK — nothing pending to flush.
-extern "C" fn amedia_codec_flush(_codec: *mut c_void) -> c_int {
+unsafe extern "C" fn amedia_codec_flush(_codec: *mut c_void) -> c_int {
     AMEDIA_OK
 }
 
 /// Get an input buffer pointer. Returns null — no buffer storage on this host.
-extern "C" fn amedia_codec_get_input_buffer(
+unsafe extern "C" fn amedia_codec_get_input_buffer(
     _codec: *mut c_void,
     _index: usize,
     _size: *mut usize,
@@ -395,7 +395,7 @@ extern "C" fn amedia_codec_get_input_buffer(
 }
 
 /// Get an output buffer pointer. Returns null — no output storage on this host.
-extern "C" fn amedia_codec_get_output_buffer(
+unsafe extern "C" fn amedia_codec_get_output_buffer(
     _codec: *mut c_void,
     _index: usize,
     _size: *mut usize,
@@ -404,13 +404,13 @@ extern "C" fn amedia_codec_get_output_buffer(
 }
 
 /// Get the output format of a codec. Returns null — no format was set.
-extern "C" fn amedia_codec_get_output_format(_codec: *mut c_void) -> *mut c_void {
+unsafe extern "C" fn amedia_codec_get_output_format(_codec: *mut c_void) -> *mut c_void {
     std::ptr::null_mut()
 }
 
 /// Queue an input buffer. Returns OK — we accept the buffer even though we
 /// cannot decode it, so Roblox's queue/finish flow completes.
-extern "C" fn amedia_codec_queue_input_buffer(
+unsafe extern "C" fn amedia_codec_queue_input_buffer(
     _codec: *mut c_void,
     _index: c_int,
     _offset: usize,
@@ -422,7 +422,7 @@ extern "C" fn amedia_codec_queue_input_buffer(
 }
 
 /// Release an output buffer. Returns OK — nothing to release.
-extern "C" fn amedia_codec_release_output_buffer(
+unsafe extern "C" fn amedia_codec_release_output_buffer(
     _codec: *mut c_void,
     _index: c_int,
     _render: c_int,
@@ -431,12 +431,12 @@ extern "C" fn amedia_codec_release_output_buffer(
 }
 
 /// Start a codec. Returns OK.
-extern "C" fn amedia_codec_start(_codec: *mut c_void) -> c_int {
+unsafe extern "C" fn amedia_codec_start(_codec: *mut c_void) -> c_int {
     AMEDIA_OK
 }
 
 /// Stop a codec. Returns OK.
-extern "C" fn amedia_codec_stop(_codec: *mut c_void) -> c_int {
+unsafe extern "C" fn amedia_codec_stop(_codec: *mut c_void) -> c_int {
     AMEDIA_OK
 }
 
@@ -445,14 +445,14 @@ extern "C" fn amedia_codec_stop(_codec: *mut c_void) -> c_int {
 // ---------------------------------------------------------------------------
 
 /// Delete a format and free its resources.
-extern "C" fn amedia_format_delete(format: *mut c_void) {
+unsafe extern "C" fn amedia_format_delete(format: *mut c_void) {
     if let Some(handle) = ptr_to_handle(format) {
         ObjectTable::lock().formats.remove(&handle);
     }
 }
 
 /// Get a buffer value from a format. Returns null — we don't store buffers.
-extern "C" fn amedia_format_get_buffer(
+unsafe extern "C" fn amedia_format_get_buffer(
     _format: *mut c_void,
     _name: *const c_char,
     _size: *mut usize,
@@ -461,7 +461,7 @@ extern "C" fn amedia_format_get_buffer(
 }
 
 /// Get an int32 value from a format. Returns false (0) — no value stored.
-extern "C" fn amedia_format_get_int32(
+unsafe extern "C" fn amedia_format_get_int32(
     _format: *mut c_void,
     _name: *const c_char,
     _value: *mut c_int,
@@ -470,7 +470,7 @@ extern "C" fn amedia_format_get_int32(
 }
 
 /// Create a new AMediaFormat. Returns a valid handle.
-extern "C" fn amedia_format_new() -> *mut c_void {
+unsafe extern "C" fn amedia_format_new() -> *mut c_void {
     let handle = ObjectTable::lock().alloc_id();
 
     ObjectTable::lock().formats.insert(
@@ -484,7 +484,7 @@ extern "C" fn amedia_format_new() -> *mut c_void {
 }
 
 /// Set a buffer value in a format. Returns OK — we accept and store it.
-extern "C" fn amedia_format_set_buffer(
+unsafe extern "C" fn amedia_format_set_buffer(
     _format: *mut c_void,
     _name: *const c_char,
     _data: *const c_void,
@@ -494,7 +494,7 @@ extern "C" fn amedia_format_set_buffer(
 }
 
 /// Set a float value in a format. Returns OK.
-extern "C" fn amedia_format_set_float(
+unsafe extern "C" fn amedia_format_set_float(
     _format: *mut c_void,
     _name: *const c_char,
     _value: f64,
@@ -503,7 +503,7 @@ extern "C" fn amedia_format_set_float(
 }
 
 /// Set an int32 value in a format. Returns OK.
-extern "C" fn amedia_format_set_int32(
+unsafe extern "C" fn amedia_format_set_int32(
     _format: *mut c_void,
     _name: *const c_char,
     _value: c_int,
@@ -512,7 +512,7 @@ extern "C" fn amedia_format_set_int32(
 }
 
 /// Set a string value in a format. Returns OK.
-extern "C" fn amedia_format_set_string(
+unsafe extern "C" fn amedia_format_set_string(
     _format: *mut c_void,
     _name: *const c_char,
     _value: *const c_char,
@@ -522,7 +522,7 @@ extern "C" fn amedia_format_set_string(
 
 /// Return a string representation of a format. Returns null — no format to
 /// render. This is the honest answer rather than fabricating text.
-extern "C" fn amedia_format_to_string(_format: *mut c_void) -> *const c_char {
+unsafe extern "C" fn amedia_format_to_string(_format: *mut c_void) -> *const c_char {
     std::ptr::null()
 }
 

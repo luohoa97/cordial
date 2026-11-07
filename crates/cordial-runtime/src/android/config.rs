@@ -100,12 +100,12 @@ struct Handle {
     config: Config,
 }
 
-extern "C" fn config_new() -> *mut c_void {
+unsafe extern "C" fn config_new() -> *mut c_void {
     super::trace(format_args!("AConfiguration_new"));
     Box::into_raw(Box::new(Handle { config: current() })) as *mut c_void
 }
 
-extern "C" fn config_delete(config: *mut c_void) {
+unsafe extern "C" fn config_delete(config: *mut c_void) {
     if config.is_null() {
         return;
     }
@@ -116,7 +116,7 @@ extern "C" fn config_delete(config: *mut c_void) {
 /// Android reads the configuration out of the APK's resource table, which
 /// encodes what the app supports. Cordial's answer does not depend on the APK —
 /// the screen is the screen — so this refreshes from the live values instead.
-extern "C" fn config_from_asset_manager(config: *mut c_void, _assets: *mut c_void) {
+unsafe extern "C" fn config_from_asset_manager(config: *mut c_void, _assets: *mut c_void) {
     super::trace(format_args!("AConfiguration_fromAssetManager"));
     if config.is_null() {
         return;
@@ -129,7 +129,7 @@ extern "C" fn config_from_asset_manager(config: *mut c_void, _assets: *mut c_voi
 /// `AConfiguration_getLanguage` and `getCountry` write two characters into a
 /// caller-supplied buffer. They are *not* NUL-terminated — the API specifies
 /// exactly two bytes, and writing a third would overrun a `char[2]`.
-extern "C" fn config_get_language(config: *mut c_void, out: *mut c_char) {
+unsafe extern "C" fn config_get_language(config: *mut c_void, out: *mut c_char) {
     if config.is_null() || out.is_null() {
         return;
     }
@@ -142,7 +142,7 @@ extern "C" fn config_get_language(config: *mut c_void, out: *mut c_char) {
     }
 }
 
-extern "C" fn config_get_country(config: *mut c_void, out: *mut c_char) {
+unsafe extern "C" fn config_get_country(config: *mut c_void, out: *mut c_char) {
     if config.is_null() || out.is_null() {
         return;
     }
@@ -156,7 +156,7 @@ extern "C" fn config_get_country(config: *mut c_void, out: *mut c_char) {
 
 macro_rules! getter {
     ($name:ident, $field:ident) => {
-        extern "C" fn $name(config: *mut c_void) -> i32 {
+        unsafe extern "C" fn $name(config: *mut c_void) -> i32 {
             if config.is_null() {
                 return 0;
             }
@@ -170,7 +170,7 @@ getter!(config_get_screen_width_dp, screen_width_dp);
 getter!(config_get_screen_height_dp, screen_height_dp);
 getter!(config_get_screen_size, screen_size);
 
-extern "C" fn config_get_nav_hidden(_config: *mut c_void) -> i32 {
+unsafe extern "C" fn config_get_nav_hidden(_config: *mut c_void) -> i32 {
     NAVHIDDEN_NO
 }
 

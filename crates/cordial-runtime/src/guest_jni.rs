@@ -50,7 +50,7 @@ pub(crate) enum Form {
 
 pub(crate) type Entry = (&'static str, &'static [Ty], Ret, Form);
 
-extern "C" {
+unsafe extern "C" {
     fn cordial_jni_thread_env() -> *mut c_void;
     fn cordial_jni_method_signature(method: *mut c_void) -> *const c_char;
     fn cordial_jni_method_name(method: *mut c_void) -> *const c_char;

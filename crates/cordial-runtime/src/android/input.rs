@@ -162,7 +162,7 @@ pub fn keysym_to_char(keysym: c_ulong) -> Option<char> {
     }
     static FN: std::sync::OnceLock<Option<unsafe extern "C" fn(u32) -> u32>> = std::sync::OnceLock::new();
     let f = FN.get_or_init(|| {
-        extern "C" {
+        unsafe extern "C" {
             fn dlopen(filename: *const std::ffi::c_char, flag: std::ffi::c_int) -> *mut std::ffi::c_void;
             fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char) -> *mut std::ffi::c_void;
         }
@@ -4442,7 +4442,7 @@ mod tests {
         // stayed broken. The contract is the whole keysym space: whatever the
         // library can name, this function returns, with nothing special-cased
         // on the way. Reintroduce a per-script branch and this fails.
-        extern "C" {
+        unsafe extern "C" {
             fn dlopen(filename: *const std::ffi::c_char, flag: std::ffi::c_int) -> *mut std::ffi::c_void;
             fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char) -> *mut std::ffi::c_void;
         }

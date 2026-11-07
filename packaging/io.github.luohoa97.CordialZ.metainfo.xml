@@ -1,0 +1,486 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metadata, which exists so the hosted remote is browsable rather than
+  only installable. `flatpak build-update-repo` builds an `appstream2/<arch>`
+  branch out of whatever metainfo the refs carry; with no metainfo at all it
+  prints "No appstream data for app/io.github.luohoa97.CordialZ/x86_64/master" and
+  writes an empty branch, and GNOME Software and Discover then show a remote
+  with nothing in it. Someone who has added the remote and cannot find Cordial
+  in their software centre has no way to tell that from a broken remote.
+
+  Keep <releases> in step with the workspace version in Cargo.toml. Nothing
+  enforces it; a stale version here is only visible in a software centre, which
+  is exactly where nobody building the package is looking.
+-->
+<component type="desktop-application">
+  <id>io.github.luohoa97.CordialZ</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Cordial</name>
+  <summary>Run Roblox on Linux natively</summary>
+  <description>
+    <p>
+      Cordial loads Roblox's official Android x86-64 engine directly on Linux
+      through a purpose-built runtime: the AOSP bionic linker, a bionic/glibc
+      shim, a JNI VM in place of Android's, and a framework layer that answers
+      the client's calls. No emulator, no container, no virtual machine.
+    </p>
+    <p>
+      Plugins are ordinary programs in their own processes, and they are granted
+      named capabilities rather than access. There is no script execution, no
+      hooking and no memory access — those are absent from the API rather than
+      disabled, so there is no primitive to re-enable in a fork.
+    </p>
+    <p>
+      Cordial ships no Roblox code, APK or assets. You supply the Android client
+      yourself.
+    </p>
+    <p>
+      It is experimental. Signing in, loading an experience and playing it with keyboard
+      and mouse all work, text fields draw what you type, and sound plays. Voice
+      chat does not, and on roughly one launch in three a signed-in client
+      reaches the home screen and freezes; reopening usually works. Install it
+      expecting rough edges.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.luohoa97.CordialZ.desktop</launchable>
+  <url type="homepage">https://luohoa97.github.io/cordial/</url>
+  <url type="bugtracker">https://github.com/luohoa97/cordial/issues</url>
+  <url type="vcs-browser">https://github.com/luohoa97/cordial</url>
+  <developer id="io.github.luohoa97">
+    <name>luohoa97</name>
+  </developer>
+  <categories>
+    <category>Game</category>
+  </categories>
+  <!--
+    Rated for what connecting to Roblox exposes you to, not for anything Cordial
+    itself contains: it is a client for a service with in-game chat and a signed-in
+    account. Omitting the block entirely would have a software centre report
+    Cordial as unrated, which is a weaker statement than the true one.
+  -->
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-info">moderate</content_attribute>
+  </content_rating>
+  <!--
+    Every released tag, newest first, because a software centre shows only what
+    is here and an app with one <release> reads as one that has shipped once.
+    CHANGELOG.md is the long form; these are the one-line versions of the same
+    entries and should not say anything it does not. There is no 0.1.0 — the
+    first version this project gave itself was 0.2.0.
+  -->
+  <releases>
+    <!--
+      **This list is eight releases stale below, and 0.13.0 was the first entry
+      added since 0.5.2.** The comment above asks for it to be kept in step and
+      it was not; backfilling 0.6 through 0.12 from their notes is worth doing
+      and is not this change. AppStream shows the newest entry as "what's new",
+      so the important one is the top.
+    -->
+    <release version="0.25.0" date="2026-10-05">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.25.0</url>
+      <description>
+        <p>
+          Cordial keeps its own Roblox builds, and each profile runs the newest
+          or one you pin. Opening a web page in the Flatpak no longer crashes,
+          and Settings can choose the microphone.
+        </p>
+      </description>
+    </release>
+    <release version="0.24.1" date="2026-10-04">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.24.1</url>
+      <description>
+        <p>
+          A start that gets stuck on the loading screen is now restarted
+          automatically, and Enter in a text box does what Roblox asks.
+        </p>
+      </description>
+    </release>
+    <release version="0.24.0" date="2026-10-04">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.24.0</url>
+      <description>
+        <p>
+          Experimental VR: Roblox's Meta Quest build on your PC, in a headset,
+          started from Settings. Chat boxes now clear after Enter.
+        </p>
+        <p>
+          Settings can download Cordial's own copy of Roblox when Sober is
+          installed, and FPS Flex gets a frame rate cap.
+        </p>
+      </description>
+    </release>
+    <release version="0.23.2" date="2026-10-01">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.23.2</url>
+      <description>
+        <p>
+          The game now follows the window while you drag to resize it, instead
+          of waiting until you stop.
+        </p>
+      </description>
+    </release>
+    <release version="0.23.1" date="2026-10-01">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.23.1</url>
+      <description>
+        <p>
+          FastFlags such as the frame rate target no longer reset while you
+          play, and Settings has a frame rate limit that applies in game.
+        </p>
+        <p>
+          The text editor appears without working Vulkan, pointer lock works on
+          KDE Plasma, missing textures on GPUs without ETC2 are decoded, and
+          fullscreen no longer crashes on AMD's RADV driver.
+        </p>
+      </description>
+    </release>
+    <release version="0.23.0" date="2026-10-01">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.23.0</url>
+      <description>
+        <p>
+          A doctor that checks your display, GPU, sound and Roblox install, on
+          one Report a Problem screen. The game no longer goes grey when a text
+          box takes focus without working Vulkan.
+        </p>
+        <p>
+          NVIDIA GPUs and drivers are named in diagnostics, with warnings for
+          known-bad drivers. Audio output, GameMode, controllers and the title
+          bar change while you play. FastFlags can be imported from Bloxstrap,
+          Fishstrap or Sober, and profiles can be deleted.
+        </p>
+      </description>
+    </release>
+    <release version="0.22.0" date="2026-09-30">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.22.0</url>
+      <description>
+        <p>
+          Mouse acceleration, background throttling and two other settings now
+          apply to a running game without a restart, and settings that need a
+          restart say so.
+        </p>
+        <p>
+          Settings shows which Roblox build this Cordial installs.
+        </p>
+      </description>
+    </release>
+    <release version="0.21.1" date="2026-09-30">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.21.1</url>
+      <description>
+        <p>
+          The 0.21.0 changes, with the AppImage, deb, rpm and Arch packages
+          that 0.21.0's release was missing.
+        </p>
+      </description>
+    </release>
+    <release version="0.21.0" date="2026-09-30">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.21.0</url>
+      <description>
+        <p>
+          Plugins that cannot start are reported once instead of retried every
+          second, and a plugin update asking for permissions you never granted
+          waits for approval.
+        </p>
+        <p>
+          Mouse acceleration now applies to the camera by default.
+        </p>
+      </description>
+    </release>
+    <release version="0.20.1" date="2026-09-29">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.20.1</url>
+      <description>
+        <p>
+          Flatpak updates work again: the repository had stopped publishing
+          new versions after 0.18.0.
+        </p>
+      </description>
+    </release>
+    <release version="0.20.0" date="2026-09-29">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.20.0</url>
+      <description>
+        <p>
+          An optional Shaders switch adds sharpening and anti-aliasing through
+          vkBasalt, once it is installed.
+        </p>
+        <p>
+          Multi-line text boxes get a proper multi-line editor, and typing
+          stays in place when the window is resized or goes fullscreen.
+        </p>
+      </description>
+    </release>
+    <release version="0.19.0" date="2026-09-25">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.19.0</url>
+      <description>
+        <p>
+          Private servers can be joined from the Roblox website and from a
+          game's Servers list, and joining a game from a Roblox web page
+          closes the page.
+        </p>
+        <p>
+          Plugins now apply to a running Cordial without restarting it.
+        </p>
+      </description>
+    </release>
+    <release version="0.18.0" date="2026-09-24">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.18.0</url>
+      <description>
+        <p>
+          Cordial starts again: a change on Roblox's side had it opening to a
+          grey window. It now fetches the same startup settings the Roblox
+          client itself uses.
+        </p>
+        <p>
+          ARM64 builds are published alongside x86_64. They have not been
+          tested on real ARM hardware yet.
+        </p>
+      </description>
+    </release>
+    <release version="0.17.0" date="2026-09-16">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.17.0</url>
+      <description>
+        <p>
+          Starting a second profile while one is already running now shows a
+          warning first and asks you to accept or cancel, because
+          multi-instancing risks a Roblox ban. It only asks once.
+        </p>
+        <p>
+          The Flatpak has a stable channel that only moves on a tagged
+          release; every install before this one is still on the channel
+          that tracks main and needs a manual move to reach it.
+        </p>
+      </description>
+    </release>
+    <release version="0.16.0" date="2026-09-15">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.16.0</url>
+      <description>
+        <p>
+          Launching twice in a row works. The crash that killed every launch
+          after the first until you cleared the cache was a race between
+          Cordial's startup and the engine's, not a corrupt cache, and Cordial
+          now waits for the engine to be given its flags before going on.
+        </p>
+        <p>
+          The camera no longer throws you a half-turn on X11, Join in a game's
+          Servers list opens the server instead of doing nothing, and entering
+          fullscreen rebuilds the display chain once rather than once per
+          animation step.
+        </p>
+      </description>
+    </release>
+    <release version="0.15.1" date="2026-09-15">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.15.1</url>
+      <description>
+        <p>
+          A Roblox build Cordial was merely pointed at — through the Settings
+          picker, CORDIAL_APK, or Sober's package directory — is now checked
+          against Roblox's signing certificate before it is used, the way a
+          build Cordial downloaded itself always was.
+        </p>
+        <p>
+          The apt, dnf and pacman repositories now publish from a tagged
+          release rather than from every commit to main, and every binary
+          carries its version, its licence and the project URL.
+        </p>
+      </description>
+    </release>
+    <release version="0.15.0" date="2026-09-15">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.15.0</url>
+      <description>
+        <p>
+          Voice chat reaches the network: the permission answer is delivered
+          both ways the engine expects, and the microphone is captured through
+          callbacks. Audible speech was confirmed before the last round of
+          hardening, not on these exact bytes, so treat it as new.
+        </p>
+        <p>
+          Clicking Play in a browser now launches the saved profile for that
+          browser account without showing the picker, and the game window's
+          title bar can be hidden for tiling window managers.
+        </p>
+      </description>
+    </release>
+    <release version="0.14.2" date="2026-09-13">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.14.2</url>
+      <description>
+        <p>
+          The Version page in Settings lists older Roblox builds the mirror has
+          and can download one. Each is checked against Roblox's signature, and
+          downloading one makes it that profile's build.
+        </p>
+        <p>
+          Roblox can now ask for the microphone. Voice chat still does not work;
+          the release notes say why.
+        </p>
+      </description>
+    </release>
+    <release version="0.14.1" date="2026-09-13">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.14.1</url>
+      <description>
+        <p>
+          Closing the game window no longer ends on the crash page. The client
+          was segfaulting on the way out, and now exits cleanly.
+        </p>
+        <p>
+          Cordial keeps the current Roblox build and the two before it, and
+          Settings has a Version page for going back to one. Roblox refuses old
+          clients eventually, so a pinned build will stop working one day.
+        </p>
+        <p>
+          A resize glitch and the TaskScheduler crash on a second launch are
+          reported and not yet reproduced. Both are described in the release
+          notes.
+        </p>
+      </description>
+    </release>
+    <release version="0.14.0" date="2026-09-13">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.14.0</url>
+      <description>
+        <p>
+          The AppImage runs on something other than the machine that built it.
+          It was built on Fedora 44 and eighteen of its bundled libraries came
+          out stamped for a glibc four minor versions above the floor Cordial
+          claims, so the one format whose whole promise is portability ran on
+          the one distribution that did not need it. The build base is now
+          Ubuntu 24.04, and none of the 149 bundled libraries is above the
+          floor.
+        </p>
+        <p>
+          Cordial also no longer fails to start on the newest Roblox build,
+          which began importing a C library function the generated symbol table
+          did not carry.
+        </p>
+        <p>
+          The web view still does not work inside the AppImage, and the window
+          still does not appear at all on Wayland compositors other than
+          Mutter. Both are described in the release notes.
+        </p>
+      </description>
+    </release>
+    <release version="0.13.2" date="2026-09-03">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.13.2</url>
+      <description>
+        <p>
+          Plugins ran and then silently died on any host whose kernel refuses
+          unprivileged user namespaces, because Cordial tested for the sandbox
+          by asking whether bwrap was installed rather than whether it could
+          build a sandbox. It now probes a real one and falls back, saying so,
+          to the permission model and broker it already had.
+        </p>
+        <p>
+          Also the release 0.13.1 should have been: its native packages built
+          correctly and were attached to nothing, so that release carries a
+          Flatpak alone.
+        </p>
+      </description>
+    </release>
+    <release version="0.13.1" date="2026-09-03">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.13.1</url>
+      <description>
+        <p>
+          Plugins can run. No package Cordial ships installed or bundled Deno,
+          which plugins are written in, so they could not start on any install
+          that did not already have one. Settings now offers to fetch a pinned
+          interpreter where none is present, and the Arch package depends on
+          it properly.
+        </p>
+        <p>
+          The AppImage can open a web view again; it bundled WebKit without the
+          helper processes WebKit looks for by absolute path. Fixes a flash of
+          the window background when chat opens, and a plugin consent prompt
+          that asked again every time Settings was opened. The FastFlags editor
+          is syntax-coloured and reports errors as you type, and Discord
+          presence shows a game's own art with a default for games that send
+          none.
+        </p>
+      </description>
+    </release>
+    <release version="0.13.0" date="2026-09-01">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.13.0</url>
+      <description>
+        <p>
+          Built-in plugins are started. They never were: Cordial looked in the
+          user plugin directory and not the system one, so every plugin it
+          ships was listed, granted and switched on without its process ever
+          being spawned. Discord Rich Presence works as a result, recovers if
+          Discord opens later, carries a game's own presence through
+          BloxstrapRPC, and shows a join button.
+        </p>
+        <p>
+          Controllers are on by default, with a switch and a fix for a virtual
+          mouse being reported as a pad. New settings for frame pacing,
+          FastFlags and quitting when you leave a game. Plugins can be loaded
+          unpacked from a folder and reload as they are edited.
+        </p>
+      </description>
+    </release>
+    <release version="0.5.2" date="2026-08-05">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.5.2</url>
+      <description>
+        <p>
+          The Flatpak works. Six separate faults stood between the packaged
+          build and a running client, and every one was invisible from a source
+          build: a linker compiled with PATH_MAX=256 that aborted at load, no
+          access to the Roblox build the setup dialog pointed at, the session
+          being written to disk instead of the keyring, every connection reading
+          as metered, and no accessibility bus.
+        </p>
+      </description>
+    </release>
+    <release version="0.5.1" date="2026-08-05">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.5.1</url>
+      <description>
+        <p>
+          The application ID changes from org.cordial.Cordial to
+          io.github.luohoa97.CordialZ, which is an identifier this project
+          controls. An existing install keeps its old data directory and will
+          look freshly installed. The Flatpak also builds for the first time —
+          it had been asking for a runtime with no GTK4 in it — and the
+          published remote definition can now be added at all.
+        </p>
+      </description>
+    </release>
+    <release version="0.5.0" date="2026-08-05">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.5.0</url>
+      <description>
+        <p>
+          The app bridge is given the surface and platform parameters it was
+          never handed, and everything Cordial fails to answer is collected into
+          one report at exit. Graphics gains an explicit OpenGL ES option.
+          Ctrl+V pastes into Roblox text boxes. Plugins run inside a kernel
+          sandbox beneath Deno's permissions and the capability broker.
+        </p>
+      </description>
+    </release>
+    <release version="0.4.0" date="2026-08-03">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.4.0</url>
+      <description>
+        <p>
+          Sound comes out, and the microphone is open only while Roblox is
+          recording. The pointer locks, and the launcher no longer imposes a
+          session length. An earlier 1 fps report is withdrawn: it was the
+          desktop, not the engine.
+        </p>
+      </description>
+    </release>
+    <release version="0.3.0" date="2026-08-02">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.3.0</url>
+      <description>
+        <p>
+          Keys work inside an experience: the engine wants evdev codes, not
+          Android keycodes. Present mode MAILBOX gives a flat 60 where FIFO gave
+          a variable 35 to 50. The engine cache now invalidates when the Roblox
+          build changes, so a warm start runs the build you installed.
+        </p>
+      </description>
+    </release>
+    <release version="0.2.0" date="2026-08-02">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.2.0</url>
+      <description>
+        <p>
+          The first release anyone could use. Signing in works and the session
+          persists in the desktop keyring rather than on disk; profiles isolate
+          accounts so two run side by side; a native Wayland backend replaces the
+          blank window; and the plugin brokers do something.
+        </p>
+      </description>
+    </release>
+  </releases>
+</component>

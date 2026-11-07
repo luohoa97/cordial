@@ -30,7 +30,7 @@ struct DlInfo {
     saddr: *mut c_void,
 }
 
-extern "C" {
+unsafe extern "C" {
     fn dladdr(addr: *mut c_void, info: *mut DlInfo) -> i32;
     fn dlopen(filename: *const c_char, flags: i32) -> *mut c_void;
 }

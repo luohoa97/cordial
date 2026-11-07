@@ -31,7 +31,7 @@ use std::ffi::{c_char, c_int, c_void, CStr, CString};
 mod ffi {
     use std::ffi::{c_char, c_int, c_void};
 
-    extern "C" {
+    unsafe extern "C" {
         pub fn cordial_linker_init();
         pub fn cordial_linker_load_library(
             name: *const c_char,
@@ -336,7 +336,7 @@ impl std::error::Error for Error {}
 pub mod jni {
     use std::ffi::{c_char, c_int, c_void, CString};
 
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_jni_create_vm() -> *mut c_void;
         fn cordial_jni_env() -> *mut c_void;
         fn cordial_jni_dump_classes(path: *const c_char) -> c_int;
@@ -456,7 +456,7 @@ pub mod game_activity {
         join_request_type: i32,
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_game_activity_init(
             f: *mut c_void,
             internal_path: *const c_char,
@@ -467,7 +467,7 @@ pub mod game_activity {
         ) -> i64;
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_set_bootstrap(f: Option<extern "C" fn()>);
     }
 
@@ -487,7 +487,7 @@ pub mod game_activity {
         unsafe { cordial_set_bootstrap(f) }
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_game_activity_start(
             handle: i64,
             width: c_int,
@@ -520,7 +520,7 @@ pub mod game_activity {
         }
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_set_init_params(
             f: *mut c_void,
             assets: *const c_char,
@@ -571,7 +571,7 @@ pub mod game_activity {
         }
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_asset_manager_init(f: *mut c_void, err: *mut c_char, n: usize) -> c_int;
         fn cordial_storage_init(
             f: *mut c_void,
@@ -2295,7 +2295,7 @@ pub mod game_activity {
         }
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_game_activity_touch(
             handle: i64,
             action: c_int,
@@ -2527,7 +2527,7 @@ pub mod game_activity {
         }
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_game_activity_lifecycle(
             handle: i64,
             native_name: *const c_char,
@@ -3538,7 +3538,7 @@ pub mod game_activity {
         (start, end)
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_textbox_test_focus(
             handle: i64, text: *const c_char,
             f0: f32, f1: f32, f2: f32, f3: f32, f4: f32, multiline: c_int,
@@ -3598,7 +3598,7 @@ pub mod game_activity {
     mod tests {
         use super::*;
 
-        extern "C" {
+        unsafe extern "C" {
             fn cordial_textbox_focused(
                 handle: i64,
                 text: *const c_char,
@@ -3780,7 +3780,7 @@ pub mod accessibility {
         pub const VISIBLE_TO_USER: u32 = 1 << 10;
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_accessibility_set_bridge_connected(connected: c_int);
         fn cordial_accessibility_snapshot(out: *mut RawNode, max: usize) -> usize;
         fn cordial_accessibility_node_count() -> usize;

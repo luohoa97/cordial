@@ -1,0 +1,27 @@
+[Desktop Entry]
+Type=Application
+Name=Cordial
+GenericName=Roblox Client
+Comment=Run Roblox on Linux
+# cordial-shell, not cordial, and the shortening is the bug rather than the
+# tidy-up. Nothing is installed as plain `cordial`: the split app ships
+# /app/bin/cordial-shell beside /app/bin/cordial-run. flatpak-builder turns this
+# line's argv[0] into --command=, so `Exec=cordial %u` exported an entry that
+# printed "WARNING: Binary not found for Exec line" at build time and
+# "bwrap: execvp cordial: No such file or directory" when a link was clicked.
+# The manifest's command: key does not rescue it — that applies to a bare
+# `flatpak run` with no desktop entry involved.
+Exec=cordial-shell %u
+Icon=io.github.luohoa97.CordialZ
+Terminal=false
+Categories=Game;
+# Cordial handles Roblox's own links, which is how a Play button on the website
+# reaches a client at all — the same registration Sober carries, so a machine
+# switching from one to the other keeps working. cordial-shell asks for
+# HANDLES_OPEN and HANDLES_COMMAND_LINE and checks the scheme itself before
+# passing anything on; see deep_link.rs, whose SCHEMES has to stay in step with
+# this line. %u above is not optional: without it the desktop file declares a
+# handler that is never given the URL it was invoked for.
+MimeType=x-scheme-handler/roblox-player;x-scheme-handler/roblox;
+StartupNotify=true
+StartupWMClass=Cordial

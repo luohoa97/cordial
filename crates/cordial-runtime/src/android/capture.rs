@@ -285,10 +285,10 @@ struct DeviceFns {
     allocate_memory: extern "C" fn(u64, *const MemoryAllocateInfo, *const c_void, *mut u64) -> i32,
     bind_buffer_memory: extern "C" fn(u64, u64, u64, u64) -> i32,
     create_command_pool:
-        extern "C" fn(u64, *const CommandPoolCreateInfo, *const c_void, *mut u64) -> i32,
+        unsafe extern "C" fn(u64, *const CommandPoolCreateInfo, *const c_void, *mut u64) -> i32,
     reset_command_pool: extern "C" fn(u64, u64, u32) -> i32,
     allocate_command_buffers:
-        extern "C" fn(u64, *const CommandBufferAllocateInfo, *mut u64) -> i32,
+        unsafe extern "C" fn(u64, *const CommandBufferAllocateInfo, *mut u64) -> i32,
     begin_command_buffer: extern "C" fn(u64, *const CommandBufferBeginInfo) -> i32,
     cmd_pipeline_barrier: extern "C" fn(
         u64,
@@ -307,16 +307,16 @@ struct DeviceFns {
     queue_submit: extern "C" fn(u64, u32, *const SubmitInfo, u64) -> i32,
     queue_wait_idle: extern "C" fn(u64) -> i32,
     map_memory: extern "C" fn(u64, u64, u64, u64, u32, *mut *mut c_void) -> i32,
-    unmap_memory: extern "C" fn(u64, u64),
-    destroy_buffer: extern "C" fn(u64, u64, *const c_void),
-    free_memory: extern "C" fn(u64, u64, *const c_void),
-    destroy_command_pool: extern "C" fn(u64, u64, *const c_void),
+    unmap_memory: unsafe extern "C" fn(u64, u64),
+    destroy_buffer: unsafe extern "C" fn(u64, u64, *const c_void),
+    free_memory: unsafe extern "C" fn(u64, u64, *const c_void),
+    destroy_command_pool: unsafe extern "C" fn(u64, u64, *const c_void),
 }
 
 macro_rules! load {
     ($get:expr, $dev:expr, $name:literal) => {{
         let n = concat!($name, "\0");
-        let p = $get($dev, n.as_ptr() as *const std::ffi::c_char);
+        let p = unsafe { $get($dev, n.as_ptr() as *const std::ffi::c_char) };
         if p.is_null() {
             return Err(concat!("driver has no ", $name).into());
         }
@@ -332,8 +332,8 @@ pub fn capture(
     queue: u64,
     swapchain: u64,
     image_index: u32,
-    get_device_proc_addr: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
-    get_physical_device_memory_properties: extern "C" fn(
+    get_device_proc_addr: unsafe extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
+    get_physical_device_memory_properties: unsafe extern "C" fn(
         *mut c_void,
         *mut PhysicalDeviceMemoryProperties,
     ),
@@ -363,8 +363,8 @@ fn do_capture(
     queue: u64,
     swapchain: u64,
     image_index: u32,
-    gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
-    gpdmp: extern "C" fn(*mut c_void, *mut PhysicalDeviceMemoryProperties),
+    gdpa: unsafe extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
+    gpdmp: unsafe extern "C" fn(*mut c_void, *mut PhysicalDeviceMemoryProperties),
     physical_device: *mut c_void,
     path: &str,
 ) -> Result<String, String> {
@@ -380,7 +380,7 @@ pub fn frame_target(
     queue: u64,
     swapchain: u64,
     image_index: u32,
-    gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
+    gdpa: unsafe extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
 ) -> Result<Target, String> {
     let device = DEVICE.load(Ordering::Relaxed) as u64;
     let (width, height) = extent();
@@ -493,16 +493,16 @@ impl Drop for Readback {
         // zero until made, so a failure half way through allocation cleans up
         // exactly what exists and nothing else.
         if !self.mapped.is_null() {
-            (self.f.unmap_memory)(self.device, self.memory);
+            unsafe { (self.f.unmap_memory)(self.device, self.memory) };
         }
         if self.pool != 0 {
-            (self.f.destroy_command_pool)(self.device, self.pool, std::ptr::null());
+            unsafe { (self.f.destroy_command_pool)(self.device, self.pool, std::ptr::null()) };
         }
         if self.memory != 0 {
-            (self.f.free_memory)(self.device, self.memory, std::ptr::null());
+            unsafe { (self.f.free_memory)(self.device, self.memory, std::ptr::null()) };
         }
         if self.buffer != 0 {
-            (self.f.destroy_buffer)(self.device, self.buffer, std::ptr::null());
+            unsafe { (self.f.destroy_buffer)(self.device, self.buffer, std::ptr::null()) };
         }
     }
 }
@@ -510,8 +510,8 @@ impl Drop for Readback {
 impl Readback {
     pub fn new(
         t: &Target,
-        gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
-        gpdmp: extern "C" fn(*mut c_void, *mut PhysicalDeviceMemoryProperties),
+        gdpa: unsafe extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
+        gpdmp: unsafe extern "C" fn(*mut c_void, *mut PhysicalDeviceMemoryProperties),
         physical_device: *mut c_void,
     ) -> Result<Self, String> {
         let device = t.device;
@@ -577,9 +577,8 @@ impl Readback {
         let mut req = MemoryRequirements { size: 0, alignment: 0, memory_type_bits: 0, _pad: 0 };
         (rb.f.get_buffer_memory_requirements)(device, buffer, &mut req);
 
-        // SAFETY: the driver fills this out entirely; it is read-only afterwards.
         let mut props: PhysicalDeviceMemoryProperties = unsafe { std::mem::zeroed() };
-        (gpdmp)(physical_device, &mut props);
+        unsafe { (gpdmp)(physical_device, &mut props) };
         let wanted = MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT;
         let type_index = (0..props.memory_type_count)
             .find(|i| {
@@ -611,7 +610,7 @@ impl Readback {
             queue_family_index: t.queue_family,
         };
         let mut pool = 0u64;
-        if (rb.f.create_command_pool)(device, &pool_ci, std::ptr::null(), &mut pool) != VK_SUCCESS {
+        if unsafe { (rb.f.create_command_pool)(device, &pool_ci, std::ptr::null(), &mut pool) } != VK_SUCCESS {
             return Err("vkCreateCommandPool failed".into());
         }
         rb.pool = pool;
@@ -625,7 +624,7 @@ impl Readback {
             command_buffer_count: 1,
         };
         let mut cb = 0u64;
-        if (rb.f.allocate_command_buffers)(device, &cb_ai, &mut cb) != VK_SUCCESS {
+        if unsafe { (rb.f.allocate_command_buffers)(device, &cb_ai, &mut cb) } != VK_SUCCESS {
             return Err("vkAllocateCommandBuffers failed".into());
         }
         rb.cb = cb;
@@ -773,8 +772,8 @@ impl Readback {
 
 fn copy_to_png(
     t: &Target,
-    gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
-    gpdmp: extern "C" fn(*mut c_void, *mut PhysicalDeviceMemoryProperties),
+    gdpa: unsafe extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
+    gpdmp: unsafe extern "C" fn(*mut c_void, *mut PhysicalDeviceMemoryProperties),
     physical_device: *mut c_void,
     path: &str,
 ) -> Result<String, String> {
