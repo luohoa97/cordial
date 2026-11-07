@@ -61,7 +61,7 @@ const QUEUE_DEPTH: usize = 4;
 
 // ------------------------------------------------------------- the game audio tap
 
-extern "C" {
+unsafe extern "C" {
     fn cordial_record_tap_enable(on: c_int);
     fn cordial_record_tap_read(dst: *mut f32, frames: usize, pos: u64);
     fn cordial_record_tap_streams() -> u32;
@@ -1148,8 +1148,8 @@ fn open_encoding(ffmpeg: &Path, spec: &EncodeSpec) -> Result<Encoding, String> {
 pub fn on_frame(
     queue: u64,
     target: Target,
-    gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
-    gpdmp: extern "C" fn(*mut c_void, *mut capture::PhysicalDeviceMemoryProperties),
+    gdpa: unsafe extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
+    gpdmp: unsafe extern "C" fn(*mut c_void, *mut capture::PhysicalDeviceMemoryProperties),
     physical_device: *mut c_void,
 ) {
     if ARMED_FAST.swap(false, Ordering::AcqRel) {
@@ -1201,8 +1201,8 @@ fn take_frame(
     s: &mut Session,
     queue: u64,
     target: &Target,
-    gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
-    gpdmp: extern "C" fn(*mut c_void, *mut capture::PhysicalDeviceMemoryProperties),
+    gdpa: unsafe extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
+    gpdmp: unsafe extern "C" fn(*mut c_void, *mut capture::PhysicalDeviceMemoryProperties),
     physical_device: *mut c_void,
 ) -> Result<(), String> {
     let dims = (target.rect.2, target.rect.3);
@@ -1663,7 +1663,7 @@ mod tests {
     #[test]
     #[ignore = "plays 0.03 for two seconds on the default output; needs a sound server and ffmpeg"]
     fn a_tone_played_through_the_audio_path_ends_up_in_the_file() {
-        extern "C" {
+        unsafe extern "C" {
             fn cordial_audio_dev_tone(hz: f64, amp: f64, seconds: f64) -> i32;
         }
         let _tap = TAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());

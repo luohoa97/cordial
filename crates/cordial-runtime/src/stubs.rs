@@ -126,7 +126,7 @@ fn fatal(symbol: &str, why: &str) -> ! {
     unsafe { libc_exit(1) }
 }
 
-extern "C" {
+unsafe extern "C" {
     #[link_name = "_exit"]
     fn libc_exit(status: std::ffi::c_int) -> !;
 }

@@ -377,13 +377,13 @@ fn parse() -> Result<Options, String> {
         // The Quest build is a VR device's engine and runs here only behind
         // an OpenXR session; `InitParams.isVrDevice` says so (init_params.cpp).
         if std::env::var_os("CORDIAL_VR_DEVICE").is_none() {
-            std::env::set_var("CORDIAL_VR_DEVICE", "1");
+            unsafe { std::env::set_var("CORDIAL_VR_DEVICE", "1") };
         }
         // And presented as one: the PC identity's "Windows" platform name
         // beside `isVrDevice` left games' `UserInputService.VREnabled` false.
         // `CORDIAL_DEVICE_PROFILE=pc-windows-11` is the control.
         if std::env::var_os(cordial_runtime::flags::DEVICE_PROFILE_ENV).is_none() {
-            std::env::set_var(cordial_runtime::flags::DEVICE_PROFILE_ENV, "meta-quest");
+            unsafe { std::env::set_var(cordial_runtime::flags::DEVICE_PROFILE_ENV, "meta-quest") };
         }
         if !cfg!(target_arch = "x86_64") {
             return Err("--guest-arm64 needs the x86-64 build: dynarmic has no arm64 host backend".into());
@@ -1614,13 +1614,13 @@ fn engine_version(lib_dir: &str) -> Option<String> {
 // `cordial-linker-sys`'s `build.rs` already tells `cordial-run` to link, so a
 // bare `extern "C"` here resolves at the same final link step every other
 // wrapper in that crate does.
-extern "C" {
-    fn cordial_local_storage_set_platform_impl(
-        f: *mut std::ffi::c_void,
-        err: *mut std::os::raw::c_char,
-        err_len: usize,
-    ) -> std::os::raw::c_int;
-    fn cordial_update_screen_orientation(
+unsafe extern "C" {
+   fn cordial_local_storage_set_platform_impl(
+       f: *mut std::ffi::c_void,
+       err: *mut std::os::raw::c_char,
+       err_len: usize,
+   ) -> std::os::raw::c_int;
+   fn cordial_update_screen_orientation(
         f: *mut std::ffi::c_void,
         width: std::os::raw::c_int,
         height: std::os::raw::c_int,
@@ -3194,7 +3194,7 @@ fn main() -> ExitCode {
                                         // Read by `build_user_agent` on the C++
                                         // side, which has no other route to it.
                                         if !engine_ver.is_empty() {
-                                            std::env::set_var("CORDIAL_ENGINE_VERSION", &engine_ver);
+                                            unsafe { std::env::set_var("CORDIAL_ENGINE_VERSION", &engine_ver) };
                                         }
                                         if engine_ver.is_empty() {
                                             println!("  engine version not readable from libroblox.so; not setting one");
@@ -4603,11 +4603,25 @@ fn main() -> ExitCode {
                                         // resize being reported and the second
                                         // swapchain being rebuilt, not in
                                         // anything Cordial's own log shows.
-                                        if let Ok(ms) = std::env::var("CORDIAL_BRIDGE_DELAY_MS") {
-                                            if let Ok(ms) = ms.parse::<u64>() {
-                                                println!("  holding the bridge back {ms}ms before StartLuaAppDM");
-                                                std::thread::sleep(std::time::Duration::from_millis(ms));
-                                            }
+                                        // CORDIAL_LUA_DELAY_MS: hold the Lua app DataModel start
+                                        // until after the engine's first render step has run.
+                                        // The startup freeze (#92) is a race between that first
+                                        // render and the teardown startLuaApp_ begins once settings
+                                        // and flags load; when the render loses, the finalize thread
+                                        // waits for a task nothing posts. Delaying this call tilts
+                                        // the race. Measured over many signed-in launches, not a
+                                        // single run.
+                                        let lua_delay = std::env::var("CORDIAL_LUA_DELAY_MS")
+                                            .ok()
+                                            .and_then(|v| v.parse::<u64>().ok())
+                                            .or_else(|| {
+                                                std::env::var("CORDIAL_BRIDGE_DELAY_MS")
+                                                    .ok()
+                                                    .and_then(|v| v.parse::<u64>().ok())
+                                            });
+                                        if let Some(ms) = lua_delay {
+                                            println!("  holding the Lua app start back {ms}ms before StartLuaAppDM");
+                                            std::thread::sleep(std::time::Duration::from_millis(ms));
                                         }
                                         if std::env::var_os("CORDIAL_SKIP_LUA_DM").is_none() {
                                         if let Some(f) = lib.symbol(
@@ -5504,7 +5518,7 @@ fn main() -> ExitCode {
 /// Set when `open_window` failed. Read once, at exit, for the status above.
 static WINDOW_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-extern "C" {
+unsafe extern "C" {
     #[link_name = "_exit"]
     fn libc_exit(status: std::ffi::c_int) -> !;
 }
@@ -5872,8 +5886,8 @@ mod local_storage_secrets {
     /// `*found` and `*out_len` carry the actual answer. `-1` means the call
     /// itself could not be made (a bad key, a null buffer) rather than
     /// anything about whether a value exists.
-    #[no_mangle]
-    pub extern "C" fn cordial_local_storage_get(
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn cordial_local_storage_get(
         user_id: c_longlong,
         key: *const c_char,
         out: *mut c_char,
@@ -5923,8 +5937,8 @@ mod local_storage_secrets {
         0
     }
 
-    #[no_mangle]
-    pub extern "C" fn cordial_local_storage_set(
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn cordial_local_storage_set(
         user_id: c_longlong,
         key: *const c_char,
         value: *const c_char,
@@ -5948,8 +5962,8 @@ mod local_storage_secrets {
         if set(user_id as i64, key, value) { 0 } else { -1 }
     }
 
-    #[no_mangle]
-    pub extern "C" fn cordial_local_storage_delete(user_id: c_longlong, key: *const c_char) -> c_int {
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn cordial_local_storage_delete(user_id: c_longlong, key: *const c_char) -> c_int {
         // SAFETY: `key` is a NUL-terminated C string owned by the caller for
         // the duration of this call, per `borrow_str`'s own contract.
         let Some(key) = (unsafe { borrow_str(key) }) else {
@@ -5958,8 +5972,8 @@ mod local_storage_secrets {
         if delete(user_id as i64, key) { 0 } else { -1 }
     }
 
-    #[no_mangle]
-    pub extern "C" fn cordial_local_storage_delete_user(user_id: c_longlong) -> c_int {
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn cordial_local_storage_delete_user(user_id: c_longlong) -> c_int {
         if delete_user(user_id as i64) { 0 } else { -1 }
     }
 }

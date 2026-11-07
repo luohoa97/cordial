@@ -85,7 +85,7 @@ fn matched_profile_is_shown_when_automatic_launch_waits_for_retry() {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let root = tempfile::tempdir().unwrap();
-    std::env::set_var("CORDIAL_PROFILE_ROOT", root.path());
+    unsafe { std::env::set_var("CORDIAL_PROFILE_ROOT", root.path()); }
     std::fs::create_dir(root.path().join("last-used")).unwrap();
     std::fs::create_dir(root.path().join("browser-account")).unwrap();
     let config = Rc::new(RefCell::new(ShellConfig::default()));

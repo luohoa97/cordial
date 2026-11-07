@@ -716,7 +716,7 @@ impl Drop for JitBox {
     }
 }
 
-extern "C" fn on_svc(user: *mut c_void, jit: *mut CgJit, imm: u32) {
+unsafe extern "C" fn on_svc(user: *mut c_void, jit: *mut CgJit, imm: u32) {
     // SAFETY: `user` is the JitBox this Jit was built with, which outlives it.
     let jb = unsafe { &*(user as *const JitBox) };
     let _out = InCallback::new(jb);
@@ -788,7 +788,7 @@ extern "C" fn on_svc(user: *mut c_void, jit: *mut CgJit, imm: u32) {
     }
 }
 
-extern "C" fn on_exception(user: *mut c_void, _jit: *mut CgJit, pc: u64, kind: u32) {
+unsafe extern "C" fn on_exception(user: *mut c_void, _jit: *mut CgJit, pc: u64, kind: u32) {
     // SAFETY: as in on_svc.
     let jb = unsafe { &*(user as *const JitBox) };
     let _out = InCallback::new(jb);
@@ -818,7 +818,7 @@ extern "C" fn on_exception(user: *mut c_void, _jit: *mut CgJit, pc: u64, kind: u
 /// reads, not a change to anything it executes (design §7).
 fn cntvct() -> u64 {
     let mut ts = [0i64; 2];
-    extern "C" {
+    unsafe extern "C" {
         fn clock_gettime(clk: i32, ts: *mut [i64; 2]) -> i32;
     }
     // SAFETY: CLOCK_MONOTONIC into a local timespec.
@@ -826,7 +826,7 @@ fn cntvct() -> u64 {
     ts[0] as u64 * 600_000_000 + ts[1] as u64 * 3 / 5
 }
 
-extern "C" fn on_fallback(user: *mut c_void, jit: *mut CgJit, pc: u64, count: u64) {
+unsafe extern "C" fn on_fallback(user: *mut c_void, jit: *mut CgJit, pc: u64, count: u64) {
     // SAFETY: as in on_svc.
     let jb = unsafe { &*(user as *const JitBox) };
     let _out = InCallback::new(jb);
@@ -853,7 +853,7 @@ extern "C" fn on_fallback(user: *mut c_void, jit: *mut CgJit, pc: u64, count: u6
 }
 
 /// `IC IVAU` (op 0, `va` the line) or `IC IALLU[IS]` (ops 1 and 2).
-extern "C" fn on_icache(user: *mut c_void, _jit: *mut CgJit, op: u32, va: u64) {
+unsafe extern "C" fn on_icache(user: *mut c_void, _jit: *mut CgJit, op: u32, va: u64) {
     // SAFETY: as in on_svc.
     let jb = unsafe { &*(user as *const JitBox) };
     let _out = InCallback::new(jb);
@@ -1091,7 +1091,7 @@ impl Drop for GuestThread {
     }
 }
 
-extern "C" {
+unsafe extern "C" {
     fn pthread_self() -> u64;
     fn gettid() -> i32;
     fn syscall(nr: i64, ...) -> i64;

@@ -12,9 +12,9 @@ members = [
 
 [workspace.package]
 version = "0.34.1"
-edition = "2021"
+edition = "2024"
 license = "GPL-3.0-or-later"  # see LICENSE; third-party notices in THIRD-PARTY-NOTICES.md
-rust-version = "1.75"
+rust-version = "1.85"
 
 # ADR-036: the unsafe/safe boundary between the two ABI-edge crates and the
 # other three is a lint, not a habit anyone has to remember. Every member

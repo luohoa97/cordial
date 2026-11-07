@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Cordial Z — permanent launch script with the Zink GL ES backend.
+#
+# Why this file exists. Roblox's Android client picks its renderer at startup by
+# asking the platform what it has. On this machine the honest answer is OpenGL
+# ES over Mesa's Zink, which runs the engine's GL calls on the RTX 4050's Vulkan
+# driver. The measured consequences, against the native Vulkan path:
+#
+#   * ETC2/EAC textures stop being decoded on the CPU. Under Vulkan a session
+#     ran 50,411 emulated decodes; under Zink the count is 0. Mesa's texture
+#     path replaces Roblox's.
+#   * VRAM sits flat at ~1753 MiB instead of climbing past 2.3 GiB.
+#   * Frame delivery is even, which is what Sell Lemons needed.
+#
+# Three variables do this, and all three are required. `CORDIAL_NO_VULKAN`
+# makes the engine see a machine with no Vulkan so it chooses GL ES; the two
+# Mesa variables route that GL ES through Zink. Without the third, Zink picks
+# the integrated Radeon 680M and everything crawls — the ICD pin is what keeps
+# the work on the 4050.
+#
+# `VK_ICD_FILENAMES` pointing at one ICD also raises the harmless
+# "ZINK: failed to choose pdev" lines Mesa prints while probing the others.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.var/app/io.github.luohoa97.Cordial/data}"
+export CORDIAL_DEV_CONTROL="${CORDIAL_DEV_CONTROL:-1}"
+export CORDIAL_COUNT_GL="${CORDIAL_COUNT_GL:-1}"
+
+# Cordial defaults its pointer lock to the toplevel surface, which Mutter never
+# activates on this desktop, so the lock silently never takes. The canvas is
+# the surface the engine actually renders into.
+export CORDIAL_POINTER_LOCK_SURFACE="${CORDIAL_POINTER_LOCK_SURFACE:-canvas}"
+
+export CORDIAL_NO_VULKAN=1
+export MESA_LOADER_DRIVER_OVERRIDE=zink
+export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+
+# Maximize the window after launch to get full-screen-like coverage
+# without locking the window in place. wmctrl does this post-launch.
+
+# Deliberately absent: CORDIAL_WAYLAND_SWAP_INTERVAL and any swap-interval
+# forcing. Cordial pins eglSwapInterval to 0 because a non-zero value once
+# deadlocked a Wayland window into a blank rectangle, and forcing vsync on here
+# measured worse — 58 fps dipping to 50 — because Zink's swap is non-blocking
+# and the wait buys nothing. Do not reintroduce it without a measurement.
+
+exec "$ROOT/target/release/cordial-shell" "$@"

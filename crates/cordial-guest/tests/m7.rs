@@ -108,7 +108,7 @@ fn m7_hints_complete_and_wfi_still_stops() {
                cordial_guest::Fault::Exception { pc: wfi.addr(), kind: cordial_guest::Exception::WaitForInterrupt });
 }
 
-extern "C" {
+unsafe extern "C" {
     fn memcpy(d: *mut u8, s: *const u8, n: usize) -> *mut u8;
     fn memmove(d: *mut u8, s: *const u8, n: usize) -> *mut u8;
     fn memset(d: *mut u8, c: i32, n: usize) -> *mut u8;
@@ -206,7 +206,7 @@ fn m7_string_functions_match_libc() {
 #[allow(unsafe_code)]
 fn m7_clock_gettime_monotonic_from_the_counter() {
     use cordial_guest::{Ret, Ty};
-    extern "C" {
+    unsafe extern "C" {
         fn clock_gettime(clk: i32, ts: *mut [i64; 2]) -> i32;
     }
     let rt = Runtime::new(Options::default());

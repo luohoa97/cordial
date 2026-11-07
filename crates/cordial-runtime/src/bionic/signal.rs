@@ -44,7 +44,7 @@ struct BionicSigaction {
     sa_restorer: *mut c_void,
 }
 
-extern "C" {
+unsafe extern "C" {
     // glibc's, operating on its own 128-byte sets.
     fn sigemptyset(set: *mut c_void) -> c_int;
     fn sigaddset(set: *mut c_void, sig: c_int) -> c_int;
@@ -82,7 +82,7 @@ fn from_glibc(set: &[u8; GLIBC_SIGSET_BYTES]) -> BionicSigset {
 
 // ---------------------------------------------------------------- set builders
 
-extern "C" fn b_sigemptyset(set: *mut BionicSigset) -> c_int {
+unsafe extern "C" fn b_sigemptyset(set: *mut BionicSigset) -> c_int {
     if set.is_null() {
         return -1;
     }
@@ -92,7 +92,7 @@ extern "C" fn b_sigemptyset(set: *mut BionicSigset) -> c_int {
     0
 }
 
-extern "C" fn b_sigfillset(set: *mut BionicSigset) -> c_int {
+unsafe extern "C" fn b_sigfillset(set: *mut BionicSigset) -> c_int {
     if set.is_null() {
         return -1;
     }
@@ -101,7 +101,7 @@ extern "C" fn b_sigfillset(set: *mut BionicSigset) -> c_int {
     0
 }
 
-extern "C" fn b_sigaddset(set: *mut BionicSigset, sig: c_int) -> c_int {
+unsafe extern "C" fn b_sigaddset(set: *mut BionicSigset, sig: c_int) -> c_int {
     if set.is_null() || sig < 1 || sig > MAX_SIGNAL {
         return -1;
     }
@@ -110,7 +110,7 @@ extern "C" fn b_sigaddset(set: *mut BionicSigset, sig: c_int) -> c_int {
     0
 }
 
-extern "C" fn b_sigdelset(set: *mut BionicSigset, sig: c_int) -> c_int {
+unsafe extern "C" fn b_sigdelset(set: *mut BionicSigset, sig: c_int) -> c_int {
     if set.is_null() || sig < 1 || sig > MAX_SIGNAL {
         return -1;
     }
@@ -119,7 +119,7 @@ extern "C" fn b_sigdelset(set: *mut BionicSigset, sig: c_int) -> c_int {
     0
 }
 
-extern "C" fn b_sigismember(set: *const BionicSigset, sig: c_int) -> c_int {
+unsafe extern "C" fn b_sigismember(set: *const BionicSigset, sig: c_int) -> c_int {
     if set.is_null() || sig < 1 || sig > MAX_SIGNAL {
         return -1;
     }
@@ -162,7 +162,7 @@ fn mask_call(
     rc
 }
 
-extern "C" fn b_sigprocmask(
+unsafe extern "C" fn b_sigprocmask(
     how: c_int,
     set: *const BionicSigset,
     old: *mut BionicSigset,
@@ -170,7 +170,7 @@ extern "C" fn b_sigprocmask(
     mask_call(how, set, old, sigprocmask)
 }
 
-extern "C" fn b_pthread_sigmask(
+unsafe extern "C" fn b_pthread_sigmask(
     how: c_int,
     set: *const BionicSigset,
     old: *mut BionicSigset,
@@ -233,7 +233,7 @@ fn sigaction_translated(sig: c_int, act: Option<&BionicSigaction>, want_old: boo
     (rc, (want_old && rc == 0).then(|| sigaction_from_glibc(&old_buf)))
 }
 
-extern "C" fn b_sigaction(
+unsafe extern "C" fn b_sigaction(
     sig: c_int,
     act: *const BionicSigaction,
     old: *mut BionicSigaction,
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn b_sigaction_reports_the_previous_action_and_installs_the_new_one() {
-        extern "C" fn handler(_: c_int) {}
+        unsafe extern "C" fn handler(_: c_int) {}
         const SIG: c_int = 12; // SIGUSR2, which nothing else here installs.
         let mut original: libc::sigaction = unsafe { std::mem::zeroed() };
         // SAFETY: querying the current action only.

@@ -130,7 +130,7 @@ use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-extern "C" {
+unsafe extern "C" {
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
 }
 
@@ -981,7 +981,7 @@ mod tests {
         // RTLD_GLOBAL so the later `dlsym(RTLD_DEFAULT, ...)` in `fc_sym` can
         // see the symbols; a unit-test process has no GTK in it to have loaded
         // fontconfig already, which is the whole difference from the client.
-        extern "C" {
+        unsafe extern "C" {
             fn dlopen(file: *const c_char, mode: c_int) -> *mut c_void;
         }
         const RTLD_NOW: c_int = 2;

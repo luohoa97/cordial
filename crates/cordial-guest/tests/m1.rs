@@ -21,7 +21,7 @@ mod guest {
 }
 static IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/guest.bin"));
 
-extern "C" {
+unsafe extern "C" {
     fn strlen(s: *const c_char) -> usize;
     fn snprintf(buf: *mut c_char, n: usize, fmt: *const c_char, ...) -> c_int;
     fn qsort(base: *mut c_void, n: usize, size: usize,
@@ -178,7 +178,7 @@ fn m1_snprintf_matches_native() {
     println!("  time in snprintf: native {:?}, through the guest {:?}", native_time, guest_time);
 }
 
-extern "C" fn native_cmp_int(a: *const c_void, b: *const c_void) -> c_int {
+unsafe extern "C" fn native_cmp_int(a: *const c_void, b: *const c_void) -> c_int {
     // SAFETY: qsort passes pointers to elements of an int array.
     let (x, y) = unsafe { (*(a as *const i32), *(b as *const i32)) };
     (x > y) as c_int - (x < y) as c_int
@@ -203,7 +203,7 @@ fn m1_qsort_with_guest_comparator_matches_native() {
     assert_eq!(thread_jit_count(), 2, "one Jit for the caller and one for the nested comparator");
 }
 
-extern "C" fn native_cmp_len(a: *const c_void, b: *const c_void) -> c_int {
+unsafe extern "C" fn native_cmp_len(a: *const c_void, b: *const c_void) -> c_int {
     // SAFETY: qsort passes pointers to elements of a char* array.
     let (x, y) = unsafe { (strlen(*(a as *const *const c_char)), strlen(*(b as *const *const c_char))) };
     (x > y) as c_int - (x < y) as c_int
@@ -297,7 +297,7 @@ fn m1_snprintf_fp_overflow_before_int_overflow() {
 #[cfg_attr(cordial_guest_no_image, ignore = "no arm64 test image here; cordial-guest's build warning says why")]
 fn m1_host_callee_runs_under_guest_rounding_mode() {
     #[allow(deprecated)]
-    extern "C" fn read_mxcsr() -> u64 {
+    unsafe extern "C" fn read_mxcsr() -> u64 {
         // SAFETY: reading MXCSR has no preconditions on x86-64.
         unsafe { std::arch::x86_64::_mm_getcsr() as u64 }
     }

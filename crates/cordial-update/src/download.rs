@@ -597,7 +597,7 @@ mod tests {
     /// Every variable this module reads, cleared.
     fn clear_env() {
         for var in [URL_ENV, HASH_ENV, SPLIT_URL_ENV, SPLIT_HASH_ENV] {
-            std::env::remove_var(var);
+            unsafe { std::env::remove_var(var); }
         }
     }
 
@@ -717,13 +717,13 @@ mod tests {
         // above, this one names the variable: whoever reads it set one of them.
         let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
-        std::env::set_var(URL_ENV, "https://example.invalid/base.apk");
-        std::env::set_var(HASH_ENV, Sha256Hash::of(b"").to_string());
-        std::env::set_var(SPLIT_URL_ENV, "https://example.invalid/split.apk");
-        std::env::remove_var(SPLIT_HASH_ENV);
+        unsafe { std::env::set_var(URL_ENV, "https://example.invalid/base.apk"); }
+        unsafe { std::env::set_var(HASH_ENV, Sha256Hash::of(b"").to_string()); }
+        unsafe { std::env::set_var(SPLIT_URL_ENV, "https://example.invalid/split.apk"); }
+        unsafe { std::env::remove_var(SPLIT_HASH_ENV); }
         let e = Parts::configured().unwrap_err();
         for var in [URL_ENV, HASH_ENV, SPLIT_URL_ENV] {
-            std::env::remove_var(var);
+            unsafe { std::env::remove_var(var); }
         }
         assert!(e.to_string().contains(SPLIT_HASH_ENV), "{e}");
     }
@@ -734,13 +734,13 @@ mod tests {
         // it. `None` and a refusal have to stay different answers.
         let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
-        std::env::set_var(URL_ENV, "https://example.invalid/base.apk");
-        std::env::set_var(HASH_ENV, Sha256Hash::of(b"").to_string());
-        std::env::remove_var(SPLIT_URL_ENV);
-        std::env::remove_var(SPLIT_HASH_ENV);
+        unsafe { std::env::set_var(URL_ENV, "https://example.invalid/base.apk"); }
+        unsafe { std::env::set_var(HASH_ENV, Sha256Hash::of(b"").to_string()); }
+        unsafe { std::env::remove_var(SPLIT_URL_ENV); }
+        unsafe { std::env::remove_var(SPLIT_HASH_ENV); }
         let parts = Parts::configured().unwrap();
         for var in [URL_ENV, HASH_ENV] {
-            std::env::remove_var(var);
+            unsafe { std::env::remove_var(var); }
         }
         assert_eq!(parts.split, None);
         assert_eq!(parts.named().len(), 1);
@@ -754,13 +754,13 @@ mod tests {
         let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let hash = Sha256Hash::of(b"").to_string();
-        std::env::set_var(URL_ENV, "https://example.invalid/download?id=1");
-        std::env::set_var(HASH_ENV, &hash);
-        std::env::set_var(SPLIT_URL_ENV, "https://example.invalid/download?id=2");
-        std::env::set_var(SPLIT_HASH_ENV, &hash);
+        unsafe { std::env::set_var(URL_ENV, "https://example.invalid/download?id=1"); }
+        unsafe { std::env::set_var(HASH_ENV, &hash); }
+        unsafe { std::env::set_var(SPLIT_URL_ENV, "https://example.invalid/download?id=2"); }
+        unsafe { std::env::set_var(SPLIT_HASH_ENV, &hash); }
         let parts = Parts::configured().unwrap();
         for var in [URL_ENV, HASH_ENV, SPLIT_URL_ENV, SPLIT_HASH_ENV] {
-            std::env::remove_var(var);
+            unsafe { std::env::remove_var(var); }
         }
         let named: Vec<&str> = parts.named().iter().map(|(name, _)| *name).collect();
         assert_eq!(named, vec![crate::install::BASE_APK, crate::install::SPLIT_APK]);
@@ -787,10 +787,10 @@ mod tests {
         // the rest of the workspace uses for env.
         let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
-        std::env::set_var(URL_ENV, "https://example.invalid/base.apk");
-        std::env::remove_var(HASH_ENV);
+        unsafe { std::env::set_var(URL_ENV, "https://example.invalid/base.apk"); }
+        unsafe { std::env::remove_var(HASH_ENV); }
         let e = Source::configured().unwrap_err();
-        std::env::remove_var(URL_ENV);
+        unsafe { std::env::remove_var(URL_ENV); }
         assert!(matches!(e, Refusal::NoSource(_)), "{e}");
         assert!(e.to_string().contains(HASH_ENV), "{e}");
     }

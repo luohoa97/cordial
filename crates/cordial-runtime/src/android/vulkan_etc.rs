@@ -299,7 +299,7 @@ pub fn emulate_for(pd: *mut c_void) -> bool {
     emulate
 }
 
-extern "C" fn get_features(pd: *mut c_void, out: *mut u32) {
+unsafe extern "C" fn get_features(pd: *mut c_void, out: *mut u32) {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, *mut u32)>(H_FEATURES.load(Relaxed)) else {
         return;
     };
@@ -310,7 +310,7 @@ extern "C" fn get_features(pd: *mut c_void, out: *mut u32) {
     patch_features(pd, out as *mut c_void, "vkGetPhysicalDeviceFeatures");
 }
 
-extern "C" fn get_features2(pd: *mut c_void, out: *mut c_void) {
+unsafe extern "C" fn get_features2(pd: *mut c_void, out: *mut c_void) {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, *mut c_void)>(H_FEATURES2.load(Relaxed)) else {
         return;
     };
@@ -356,7 +356,7 @@ pub fn patch_format_properties(
     ));
 }
 
-extern "C" fn get_format_props2(pd: *mut c_void, format: u32, out: *mut c_void) {
+unsafe extern "C" fn get_format_props2(pd: *mut c_void, format: u32, out: *mut c_void) {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, u32, *mut c_void)>(H_FORMAT_PROPS2.load(Relaxed)) else {
         return;
     };
@@ -399,7 +399,7 @@ fn image_request_ok(tiling: u32, usage: u32, flags: u32) -> bool {
 
 type ImageFormatPropsFn = extern "C" fn(*mut c_void, u32, u32, u32, u32, u32, *mut c_void) -> i32;
 
-extern "C" fn get_image_format_props(
+unsafe extern "C" fn get_image_format_props(
     pd: *mut c_void,
     format: u32,
     kind: u32,
@@ -436,7 +436,7 @@ extern "C" fn get_image_format_props(
     rc
 }
 
-extern "C" fn get_image_format_props2(pd: *mut c_void, info: *const c_void, out: *mut c_void) -> i32 {
+unsafe extern "C" fn get_image_format_props2(pd: *mut c_void, info: *const c_void, out: *mut c_void) -> i32 {
     let Some(f) =
         as_fn::<extern "C" fn(*mut c_void, *const c_void, *mut c_void) -> i32>(H_IMAGE_FORMAT_PROPS2.load(Relaxed))
     else {
@@ -667,7 +667,7 @@ fn forget_device() {
     trace(format_args!("device 0x{:x}: emulation state dropped, {n} command buffer(s) of staging freed", dev.device));
 }
 
-extern "C" fn destroy_device(device: *mut c_void, alloc: *const c_void) {
+unsafe extern "C" fn destroy_device(device: *mut c_void, alloc: *const c_void) {
     if active_device(device as usize).is_some() {
         forget_device();
     }
@@ -774,7 +774,7 @@ fn substitute_image_info(info: *const c_void) -> Option<Box<SubstitutedImageInfo
     Some(c)
 }
 
-extern "C" fn get_device_image_requirements(device: *mut c_void, info: *const c_void, out: *mut c_void) {
+unsafe extern "C" fn get_device_image_requirements(device: *mut c_void, info: *const c_void, out: *mut c_void) {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, *const c_void, *mut c_void)>(H_DEVICE_IMAGE_REQS.load(Relaxed))
     else {
         return;
@@ -788,7 +788,7 @@ extern "C" fn get_device_image_requirements(device: *mut c_void, info: *const c_
     }
 }
 
-extern "C" fn get_device_image_sparse_requirements(
+unsafe extern "C" fn get_device_image_sparse_requirements(
     device: *mut c_void,
     info: *const c_void,
     count: *mut u32,
@@ -805,7 +805,7 @@ extern "C" fn get_device_image_sparse_requirements(
     }
 }
 
-extern "C" fn create_image(device: *mut c_void, info: *const c_void, alloc: *const c_void, out: *mut u64) -> i32 {
+unsafe extern "C" fn create_image(device: *mut c_void, info: *const c_void, alloc: *const c_void, out: *mut u64) -> i32 {
     let Some(f) =
         as_fn::<extern "C" fn(*mut c_void, *const c_void, *const c_void, *mut u64) -> i32>(H_CREATE_IMAGE.load(Relaxed))
     else {
@@ -867,7 +867,7 @@ extern "C" fn create_image(device: *mut c_void, info: *const c_void, alloc: *con
     rc
 }
 
-extern "C" fn destroy_image(device: *mut c_void, image: u64, alloc: *const c_void) {
+unsafe extern "C" fn destroy_image(device: *mut c_void, image: u64, alloc: *const c_void) {
     if LIVE_IMAGES.load(Relaxed) != 0 && state().images.remove(&image).is_some() {
         LIVE_IMAGES.fetch_sub(1, Relaxed);
     }
@@ -876,7 +876,7 @@ extern "C" fn destroy_image(device: *mut c_void, image: u64, alloc: *const c_voi
     }
 }
 
-extern "C" fn create_image_view(device: *mut c_void, info: *const c_void, alloc: *const c_void, out: *mut u64) -> i32 {
+unsafe extern "C" fn create_image_view(device: *mut c_void, info: *const c_void, alloc: *const c_void, out: *mut u64) -> i32 {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, *const c_void, *const c_void, *mut u64) -> i32>(
         H_CREATE_IMAGE_VIEW.load(Relaxed),
     ) else {
@@ -1012,7 +1012,7 @@ fn staging(dev: &Dev, cmd: &mut CmdState, len: u64) -> Result<(u64, u64, usize),
         dev.memory_types
             .iter()
             .enumerate()
-            .find(|(i, &f)| bits & (1 << i) != 0 && f & wanted == wanted && f & avoid == 0)
+            .find(|&(ref i, &f)| bits & (1 << i) != 0 && f & wanted == wanted && f & avoid == 0)
             .map(|(i, _)| i as u32)
     };
     let Some(type_index) = pick(MEMORY_DEVICE_LOCAL).or_else(|| pick(0)) else {
@@ -1159,7 +1159,7 @@ fn emulate_copy(
 
 type CopyBufferToImageFn = extern "C" fn(*mut c_void, u64, u64, i32, u32, *const c_void);
 
-extern "C" fn cmd_copy_buffer_to_image(
+unsafe extern "C" fn cmd_copy_buffer_to_image(
     cmd: *mut c_void,
     src: u64,
     image: u64,
@@ -1208,7 +1208,7 @@ fn copy_regions(
     }
 }
 
-extern "C" fn cmd_copy_buffer_to_image2(cmd: *mut c_void, info: *const c_void) {
+unsafe extern "C" fn cmd_copy_buffer_to_image2(cmd: *mut c_void, info: *const c_void) {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, *const c_void)>(H_CMD_COPY_BUFFER_TO_IMAGE2.load(Relaxed))
     else {
         return;
@@ -1246,7 +1246,7 @@ extern "C" fn cmd_copy_buffer_to_image2(cmd: *mut c_void, info: *const c_void) {
     copy_regions(dev, cmd, src, image, emu, layout, &regions, "vkCmdCopyBufferToImage2");
 }
 
-extern "C" fn cmd_copy_image(
+unsafe extern "C" fn cmd_copy_image(
     cmd: *mut c_void,
     src: u64,
     src_layout: i32,
@@ -1265,7 +1265,7 @@ extern "C" fn cmd_copy_image(
     }
 }
 
-extern "C" fn cmd_copy_image2(cmd: *mut c_void, info: *const c_void) {
+unsafe extern "C" fn cmd_copy_image2(cmd: *mut c_void, info: *const c_void) {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, *const c_void)>(H_CMD_COPY_IMAGE2.load(Relaxed)) else {
         return;
     };
@@ -1293,7 +1293,7 @@ fn check_image_pair(via: &str, src: u64, dst: u64) -> bool {
     }
 }
 
-extern "C" fn cmd_blit_image(
+unsafe extern "C" fn cmd_blit_image(
     cmd: *mut c_void,
     src: u64,
     src_layout: i32,
@@ -1312,7 +1312,7 @@ extern "C" fn cmd_blit_image(
     f(cmd, src, src_layout, dst, dst_layout, count, regions, filter);
 }
 
-extern "C" fn cmd_blit_image2(cmd: *mut c_void, info: *const c_void) {
+unsafe extern "C" fn cmd_blit_image2(cmd: *mut c_void, info: *const c_void) {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, *const c_void)>(H_CMD_BLIT_IMAGE2.load(Relaxed)) else {
         return;
     };
@@ -1330,7 +1330,7 @@ fn note_blit(via: &str, src: u64, dst: u64) {
     }
 }
 
-extern "C" fn cmd_copy_image_to_buffer(
+unsafe extern "C" fn cmd_copy_image_to_buffer(
     cmd: *mut c_void,
     image: u64,
     layout: i32,
@@ -1352,7 +1352,7 @@ extern "C" fn cmd_copy_image_to_buffer(
     f(cmd, image, layout, dst, count, regions);
 }
 
-extern "C" fn cmd_copy_image_to_buffer2(cmd: *mut c_void, info: *const c_void) {
+unsafe extern "C" fn cmd_copy_image_to_buffer2(cmd: *mut c_void, info: *const c_void) {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, *const c_void)>(H_CMD_COPY_IMAGE_TO_BUFFER2.load(Relaxed))
     else {
         return;
@@ -1369,7 +1369,7 @@ extern "C" fn cmd_copy_image_to_buffer2(cmd: *mut c_void, info: *const c_void) {
     f(cmd, info);
 }
 
-extern "C" fn bind_buffer_memory(device: *mut c_void, buffer: u64, memory: u64, offset: u64) -> i32 {
+unsafe extern "C" fn bind_buffer_memory(device: *mut c_void, buffer: u64, memory: u64, offset: u64) -> i32 {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, u64, u64, u64) -> i32>(H_BIND_BUFFER_MEMORY.load(Relaxed))
     else {
         return VK_ERROR_INITIALIZATION_FAILED;
@@ -1381,7 +1381,7 @@ extern "C" fn bind_buffer_memory(device: *mut c_void, buffer: u64, memory: u64, 
     rc
 }
 
-extern "C" fn bind_buffer_memory2(device: *mut c_void, count: u32, infos: *const c_void) -> i32 {
+unsafe extern "C" fn bind_buffer_memory2(device: *mut c_void, count: u32, infos: *const c_void) -> i32 {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, u32, *const c_void) -> i32>(H_BIND_BUFFER_MEMORY2.load(Relaxed))
     else {
         return VK_ERROR_INITIALIZATION_FAILED;
@@ -1397,7 +1397,7 @@ extern "C" fn bind_buffer_memory2(device: *mut c_void, count: u32, infos: *const
     rc
 }
 
-extern "C" fn destroy_buffer(device: *mut c_void, buffer: u64, alloc: *const c_void) {
+unsafe extern "C" fn destroy_buffer(device: *mut c_void, buffer: u64, alloc: *const c_void) {
     if active_device(device as usize).is_some() {
         state().buffers.remove(&buffer);
     }
@@ -1406,7 +1406,7 @@ extern "C" fn destroy_buffer(device: *mut c_void, buffer: u64, alloc: *const c_v
     }
 }
 
-extern "C" fn map_memory(
+unsafe extern "C" fn map_memory(
     device: *mut c_void,
     memory: u64,
     offset: u64,
@@ -1427,7 +1427,7 @@ extern "C" fn map_memory(
     rc
 }
 
-extern "C" fn map_memory2(device: *mut c_void, info: *const c_void, out: *mut *mut c_void) -> i32 {
+unsafe extern "C" fn map_memory2(device: *mut c_void, info: *const c_void, out: *mut *mut c_void) -> i32 {
     let Some(f) =
         as_fn::<extern "C" fn(*mut c_void, *const c_void, *mut *mut c_void) -> i32>(H_MAP_MEMORY2.load(Relaxed))
     else {
@@ -1441,7 +1441,7 @@ extern "C" fn map_memory2(device: *mut c_void, info: *const c_void, out: *mut *m
     rc
 }
 
-extern "C" fn unmap_memory(device: *mut c_void, memory: u64) {
+unsafe extern "C" fn unmap_memory(device: *mut c_void, memory: u64) {
     if active_device(device as usize).is_some() {
         state().mapped.remove(&memory);
     }
@@ -1450,7 +1450,7 @@ extern "C" fn unmap_memory(device: *mut c_void, memory: u64) {
     }
 }
 
-extern "C" fn free_memory(device: *mut c_void, memory: u64, alloc: *const c_void) {
+unsafe extern "C" fn free_memory(device: *mut c_void, memory: u64, alloc: *const c_void) {
     if active_device(device as usize).is_some() {
         state().mapped.remove(&memory);
     }
@@ -1511,7 +1511,7 @@ fn check_pending(cmds: impl Iterator<Item = usize>) {
     }
 }
 
-extern "C" fn queue_submit(queue: *mut c_void, count: u32, submits: *const c_void, fence: u64) -> i32 {
+unsafe extern "C" fn queue_submit(queue: *mut c_void, count: u32, submits: *const c_void, fence: u64) -> i32 {
     let Some(f) =
         as_fn::<extern "C" fn(*mut c_void, u32, *const c_void, u64) -> i32>(H_QUEUE_SUBMIT.load(Relaxed))
     else {
@@ -1530,7 +1530,7 @@ extern "C" fn queue_submit(queue: *mut c_void, count: u32, submits: *const c_voi
     f(queue, count, submits, fence)
 }
 
-extern "C" fn queue_submit2(queue: *mut c_void, count: u32, submits: *const c_void, fence: u64) -> i32 {
+unsafe extern "C" fn queue_submit2(queue: *mut c_void, count: u32, submits: *const c_void, fence: u64) -> i32 {
     let Some(f) =
         as_fn::<extern "C" fn(*mut c_void, u32, *const c_void, u64) -> i32>(H_QUEUE_SUBMIT2.load(Relaxed))
     else {
@@ -1549,7 +1549,7 @@ extern "C" fn queue_submit2(queue: *mut c_void, count: u32, submits: *const c_vo
     f(queue, count, submits, fence)
 }
 
-extern "C" fn allocate_command_buffers(device: *mut c_void, info: *const c_void, out: *mut usize) -> i32 {
+unsafe extern "C" fn allocate_command_buffers(device: *mut c_void, info: *const c_void, out: *mut usize) -> i32 {
     let Some(f) =
         as_fn::<extern "C" fn(*mut c_void, *const c_void, *mut usize) -> i32>(H_ALLOCATE_COMMAND_BUFFERS.load(Relaxed))
     else {
@@ -1567,7 +1567,7 @@ extern "C" fn allocate_command_buffers(device: *mut c_void, info: *const c_void,
     rc
 }
 
-extern "C" fn begin_command_buffer(cmd: *mut c_void, info: *const c_void) -> i32 {
+unsafe extern "C" fn begin_command_buffer(cmd: *mut c_void, info: *const c_void) -> i32 {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, *const c_void) -> i32>(H_BEGIN_COMMAND_BUFFER.load(Relaxed))
     else {
         return VK_ERROR_INITIALIZATION_FAILED;
@@ -1576,7 +1576,7 @@ extern "C" fn begin_command_buffer(cmd: *mut c_void, info: *const c_void) -> i32
     f(cmd, info)
 }
 
-extern "C" fn reset_command_buffer(cmd: *mut c_void, flags: u32) -> i32 {
+unsafe extern "C" fn reset_command_buffer(cmd: *mut c_void, flags: u32) -> i32 {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, u32) -> i32>(H_RESET_COMMAND_BUFFER.load(Relaxed)) else {
         return VK_ERROR_INITIALIZATION_FAILED;
     };
@@ -1584,7 +1584,7 @@ extern "C" fn reset_command_buffer(cmd: *mut c_void, flags: u32) -> i32 {
     f(cmd, flags)
 }
 
-extern "C" fn free_command_buffers(device: *mut c_void, pool: u64, count: u32, cmds: *const usize) {
+unsafe extern "C" fn free_command_buffers(device: *mut c_void, pool: u64, count: u32, cmds: *const usize) {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, u64, u32, *const usize)>(H_FREE_COMMAND_BUFFERS.load(Relaxed))
     else {
         return;
@@ -1602,7 +1602,7 @@ extern "C" fn free_command_buffers(device: *mut c_void, pool: u64, count: u32, c
 
 fn cmds_of_pool(pool: u64, forget: bool) -> Vec<usize> {
     let mut st = state();
-    let list: Vec<usize> = st.cmd_pool.iter().filter(|(_, &p)| p == pool).map(|(&c, _)| c).collect();
+    let list: Vec<usize> = st.cmd_pool.iter().filter(|&(_, &p)| p == pool).map(|(&c, _)| c).collect();
     if forget {
         for c in &list {
             st.cmd_pool.remove(c);
@@ -1611,7 +1611,7 @@ fn cmds_of_pool(pool: u64, forget: bool) -> Vec<usize> {
     list
 }
 
-extern "C" fn reset_command_pool(device: *mut c_void, pool: u64, flags: u32) -> i32 {
+unsafe extern "C" fn reset_command_pool(device: *mut c_void, pool: u64, flags: u32) -> i32 {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, u64, u32) -> i32>(H_RESET_COMMAND_POOL.load(Relaxed)) else {
         return VK_ERROR_INITIALIZATION_FAILED;
     };
@@ -1621,7 +1621,7 @@ extern "C" fn reset_command_pool(device: *mut c_void, pool: u64, flags: u32) -> 
     f(device, pool, flags)
 }
 
-extern "C" fn destroy_command_pool(device: *mut c_void, pool: u64, alloc: *const c_void) {
+unsafe extern "C" fn destroy_command_pool(device: *mut c_void, pool: u64, alloc: *const c_void) {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, u64, *const c_void)>(H_DESTROY_COMMAND_POOL.load(Relaxed)) else {
         return;
     };
@@ -1820,7 +1820,7 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     static FAKE_CREATE_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-    extern "C" fn fake_create_image(_: *mut c_void, _: *const c_void, _: *const c_void, _: *mut u64) -> i32 {
+    unsafe extern "C" fn fake_create_image(_: *mut c_void, _: *const c_void, _: *const c_void, _: *mut u64) -> i32 {
         FAKE_CREATE_CALLS.fetch_add(1, Relaxed);
         VK_SUCCESS
     }

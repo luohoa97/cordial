@@ -58,8 +58,8 @@ fn automatic_browser_launch_starts_and_last_clean_client_closes_hidden_launcher(
     std::fs::write(lib_dir.join(install::LIBRARY), []).unwrap();
 
     let old_path = std::env::var_os("PATH");
-    std::env::set_var("PATH", root.path());
-    std::env::set_var("CORDIAL_PROFILE_ROOT", root.path().join("profiles"));
+    unsafe { std::env::set_var("PATH", root.path()); }
+    unsafe { std::env::set_var("CORDIAL_PROFILE_ROOT", root.path().join("profiles")); }
 
     let app = adw::Application::builder()
         .application_id("org.cordial.BrowserLifecycleTest")
@@ -100,10 +100,10 @@ fn automatic_browser_launch_starts_and_last_clean_client_closes_hidden_launcher(
         timeout.remove();
     }
     match old_path {
-        Some(path) => std::env::set_var("PATH", path),
-        None => std::env::remove_var("PATH"),
+        Some(path) => unsafe { std::env::set_var("PATH", path); },
+        None => unsafe { std::env::remove_var("PATH"); },
     }
-    std::env::remove_var("CORDIAL_PROFILE_ROOT");
+    unsafe { std::env::remove_var("CORDIAL_PROFILE_ROOT"); }
 
     // Then the join reached the child and its clean exit did not strand the shell.
     assert!(started.get());
@@ -126,7 +126,7 @@ fn manual_launch_entry_invalidates_lookup_without_consuming_join() {
         .unwrap_or_else(|e| e.into_inner());
     adw::init().unwrap();
     let root = tempfile::tempdir().unwrap();
-    std::env::set_var("CORDIAL_PROFILE_ROOT", root.path().join("profiles"));
+    unsafe { std::env::set_var("CORDIAL_PROFILE_ROOT", root.path().join("profiles")); }
     let app = adw::Application::builder()
         .application_id("org.cordial.ManualLaunchLifecycleTest")
         .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
@@ -152,7 +152,7 @@ fn manual_launch_entry_invalidates_lookup_without_consuming_join() {
         Some("roblox-player:1+launchmode:play+placelauncherurl:x")
     );
     shell.window.close();
-    std::env::remove_var("CORDIAL_PROFILE_ROOT");
+    unsafe { std::env::remove_var("CORDIAL_PROFILE_ROOT"); }
 }
 
 #[test]
@@ -191,8 +191,8 @@ fn changed_profile_after_account_resolution_falls_back_before_spawn() {
     std::fs::create_dir_all(&lib_dir).unwrap();
     std::fs::write(lib_dir.join(install::LIBRARY), []).unwrap();
     let old_path = std::env::var_os("PATH");
-    std::env::set_var("PATH", root.path());
-    std::env::set_var("CORDIAL_PROFILE_ROOT", root.path().join("profiles"));
+    unsafe { std::env::set_var("PATH", root.path()); }
+    unsafe { std::env::set_var("CORDIAL_PROFILE_ROOT", root.path().join("profiles")); }
 
     let app = adw::Application::builder()
         .application_id("org.cordial.ProfileSnapshotTest")
@@ -266,8 +266,8 @@ fn changed_profile_after_account_resolution_falls_back_before_spawn() {
     );
     window.close();
     match old_path {
-        Some(path) => std::env::set_var("PATH", path),
-        None => std::env::remove_var("PATH"),
+        Some(path) => unsafe { std::env::set_var("PATH", path); },
+        None => unsafe { std::env::remove_var("PATH"); },
     }
-    std::env::remove_var("CORDIAL_PROFILE_ROOT");
+    unsafe { std::env::remove_var("CORDIAL_PROFILE_ROOT"); }
 }

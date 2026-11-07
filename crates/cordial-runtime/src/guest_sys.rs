@@ -22,7 +22,7 @@ const EINVAL: c_int = 22;
 
 // ------------------------------------------------------------------ threads
 
-extern "C" {
+unsafe extern "C" {
     fn pthread_attr_init(a: *mut c_void) -> c_int;
     fn pthread_attr_destroy(a: *mut c_void) -> c_int;
     fn pthread_attr_getdetachstate(a: *const c_void, s: *mut c_int) -> c_int;
@@ -116,7 +116,7 @@ struct Start {
     stack: StackSpec,
 }
 
-extern "C" fn thread_start(p: *mut c_void) -> *mut c_void {
+unsafe extern "C" fn thread_start(p: *mut c_void) -> *mut c_void {
     // SAFETY: the Box leaked by `pthread_create_guest`, handed over once.
     let s = unsafe { Box::from_raw(p as *mut Start) };
     cordial_guest::set_thread_stack(s.stack);
@@ -386,7 +386,7 @@ const JMP_MAGIC: u64 = 0x636f_7264_6a6d_7031; // "cordjmp1"
 /// thread and re-entry depth, so a `longjmp` that would cross a host frame is
 /// refused rather than performed.
 fn setjmp() -> Handler {
-    extern "C" {
+    unsafe extern "C" {
         fn pthread_self() -> u64;
     }
     Box::new(|c| {
@@ -412,7 +412,7 @@ fn setjmp() -> Handler {
 /// `longjmp(buf, val)`: restores what `setjmp` saved and returns `val` (1
 /// for 0) from it -- the stub's own `ret` goes to the saved x30.
 fn longjmp() -> Handler {
-    extern "C" {
+    unsafe extern "C" {
         fn pthread_self() -> u64;
     }
     Box::new(|c| {
@@ -463,7 +463,7 @@ struct HostEpollEvent {
 }
 
 fn epoll_ctl() -> Handler {
-    extern "C" {
+    unsafe extern "C" {
         fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, ev: *mut HostEpollEvent) -> c_int;
     }
     Box::new(|c| {
@@ -488,7 +488,7 @@ fn epoll_ctl() -> Handler {
 }
 
 fn epoll_wait() -> Handler {
-    extern "C" {
+    unsafe extern "C" {
         fn epoll_wait(epfd: c_int, evs: *mut HostEpollEvent, max: c_int, timeout: c_int) -> c_int;
     }
     Box::new(|c| {
@@ -598,7 +598,7 @@ fn fd_chk(name: &'static str, op: u8) -> Handler {
 
 /// `__sendto_chk(fd, buf, len, buflen, flags, addr, addrlen)`.
 fn sendto_chk() -> Handler {
-    extern "C" {
+    unsafe extern "C" {
         fn sendto(fd: c_int, buf: *const c_void, len: usize, flags: c_int, addr: *const c_void, al: u32) -> isize;
     }
     Box::new(|c| {
@@ -623,7 +623,7 @@ fn sendto_chk() -> Handler {
 /// queries, whose `struct ifreq` (40 bytes) and `struct ifconf` (16) are
 /// the same on both LP64 ABIs. Any other request stops, naming its number.
 fn ioctl() -> Handler {
-    extern "C" {
+    unsafe extern "C" {
         fn ioctl(fd: c_int, req: u64, ...) -> c_int;
     }
     const SHARED: &[(u64, &str)] = &[
@@ -677,7 +677,7 @@ fn eai_to_bionic(r: c_int) -> c_int {
 /// NOFQDN 4, NAMEREQD 8, DGRAM 16), and the `EAI_*` results differ in sign.
 /// A flag bionic does not define fails with EAI_BADFLAGS, as bionic's does.
 fn getnameinfo() -> Handler {
-    extern "C" {
+    unsafe extern "C" {
         fn getnameinfo(sa: *const c_void, salen: u32, host: *mut u8, hl: u32, serv: *mut u8, sl: u32,
                        flags: c_int) -> c_int;
     }
@@ -707,7 +707,7 @@ fn getnameinfo() -> Handler {
 fn mallinfo() -> Handler {
     #[repr(C)]
     struct Mallinfo2([usize; 10]);
-    extern "C" {
+    unsafe extern "C" {
         fn mallinfo2() -> Mallinfo2;
     }
     Box::new(|c| {
@@ -734,7 +734,7 @@ fn ldiv() -> Handler {
 /// bionic's `strerror_r` is POSIX's (`int`), which glibc exports as
 /// `__xpg_strerror_r`.
 fn strerror_r() -> Handler {
-    extern "C" {
+    unsafe extern "C" {
         fn __xpg_strerror_r(e: c_int, buf: *mut u8, n: usize) -> c_int;
     }
     Box::new(|c| {
@@ -987,7 +987,7 @@ mod tests {
         rt.register(name, h)
     }
 
-    extern "C" {
+    unsafe extern "C" {
         #[link_name = "pthread_join"]
         fn host_join(t: u64, out: *mut *mut c_void) -> c_int;
     }
@@ -1011,7 +1011,7 @@ mod tests {
         // SAFETY: a glibc attr, as the guest's is on this host.
         unsafe {
             pthread_attr_init(attr.as_mut_ptr().cast());
-            extern "C" {
+            unsafe extern "C" {
                 fn pthread_attr_setstacksize(a: *mut c_void, s: usize) -> c_int;
             }
             pthread_attr_setstacksize(attr.as_mut_ptr().cast(), 256 << 10);
@@ -1044,7 +1044,7 @@ mod tests {
 
     #[test]
     fn epoll_events_cross_in_arm64s_layout() {
-        extern "C" {
+        unsafe extern "C" {
             fn epoll_create1(f: c_int) -> c_int;
             fn eventfd(v: u32, f: c_int) -> c_int;
             fn write(fd: c_int, b: *const c_void, n: usize) -> isize;
@@ -1173,7 +1173,7 @@ mod tests {
 
     #[test]
     fn raw_openat_and_fstatfs_answer_as_the_kernel_does() {
-        extern "C" {
+        unsafe extern "C" {
             #[link_name = "open"]
             fn host_open(p: *const std::ffi::c_char, f: c_int, ...) -> c_int;
         }

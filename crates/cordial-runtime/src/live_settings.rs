@@ -153,7 +153,7 @@ mod audio {
     use std::ffi::CString;
     use std::os::raw::c_char;
 
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_audio_set_output(name: *const c_char, note: *mut c_char, note_len: usize) -> usize;
         fn cordial_audio_output(out: *mut c_char, out_len: usize) -> usize;
         fn cordial_audio_set_input(name: *const c_char, note: *mut c_char, note_len: usize) -> usize;

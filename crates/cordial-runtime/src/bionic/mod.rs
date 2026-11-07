@@ -105,14 +105,14 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
     // see `thread_overrides` and `native/thread_trace.cpp`.
     v.extend(thread_overrides());
     if std::env::var_os("CORDIAL_TRACE_PATHS").is_some() {
-        extern "C" {
+        unsafe extern "C" {
             fn cordial_set_path_trace(on: c_int);
         }
         // SAFETY: sets one bool in system_paths.cpp.
         unsafe { cordial_set_path_trace(1) };
     }
     if std::env::var_os("CORDIAL_TRACE_THREADS").is_some() {
-        extern "C" {
+        unsafe extern "C" {
             fn cordial_set_thread_trace(on: c_int);
         }
         // SAFETY: sets one bool in thread_trace.cpp.
@@ -212,7 +212,7 @@ pub fn stack_chk_guard() -> u64 {
     STACK_CHK_GUARD as u64
 }
 
-extern "C" {
+unsafe extern "C" {
     fn __errno_location() -> *mut c_int;
     fn strlen(s: *const c_char) -> usize;
     fn strchr(s: *const c_char, c: c_int) -> *mut c_char;
@@ -303,7 +303,7 @@ impl BionicMallinfo {
 /// what the name promises; nothing here invents a number. `INFERRED` that the
 /// engine only uses this for telemetry -- no behaviour change was observed when
 /// it went from a stub to this.
-extern "C" fn bionic_mallinfo() -> BionicMallinfo {
+unsafe extern "C" fn bionic_mallinfo() -> BionicMallinfo {
     host_mallinfo2().map_or(BionicMallinfo::ZERO, |f| f())
 }
 
@@ -320,7 +320,7 @@ extern "C" fn bionic_mallinfo() -> BionicMallinfo {
 /// Forwarded rather than reimplemented. glibc's own implementation is what
 /// registers the callback with the thread's exit path, and there is no second
 /// place to put it.
-extern "C" fn bionic_cxa_thread_atexit_impl(
+unsafe extern "C" fn bionic_cxa_thread_atexit_impl(
     func: *mut c_void,
     arg: *mut c_void,
     dso_handle: *mut c_void,
@@ -330,7 +330,7 @@ extern "C" fn bionic_cxa_thread_atexit_impl(
     unsafe { host_cxa_thread_atexit_impl(func, arg, dso_handle) }
 }
 
-extern "C" fn bionic_errno() -> *mut c_int {
+unsafe extern "C" fn bionic_errno() -> *mut c_int {
     // SAFETY: glibc's per-thread errno slot; the same contract as bionic's.
     unsafe { __errno_location() }
 }
@@ -371,13 +371,13 @@ fn die_with(report: &str) -> ! {
     std::process::abort();
 }
 
-extern "C" fn bionic_assert(file: *const c_char, line: c_int, msg: *const c_char) -> ! {
+unsafe extern "C" fn bionic_assert(file: *const c_char, line: c_int, msg: *const c_char) -> ! {
     // SAFETY: bionic passes NUL-terminated strings or null.
     let (file, msg) = unsafe { (cstr(file), cstr(msg)) };
     die_with(&assert_report(&file, line, &msg))
 }
 
-extern "C" fn bionic_assert2(
+unsafe extern "C" fn bionic_assert2(
     file: *const c_char,
     line: c_int,
     function: *const c_char,
@@ -394,7 +394,7 @@ extern "C" fn bionic_assert2(
 /// as it stands. This used to ignore the result and hand back `buf`, which
 /// glibc leaves unwritten for a known errno (it returns a pointer to a static
 /// string instead), so the engine read an uninitialised buffer.
-extern "C" fn gnu_strerror_r(errnum: c_int, buf: *mut c_char, buflen: usize) -> *mut c_char {
+unsafe extern "C" fn gnu_strerror_r(errnum: c_int, buf: *mut c_char, buflen: usize) -> *mut c_char {
     // SAFETY: caller-supplied buffer of at least `buflen` bytes.
     unsafe { glibc_gnu_strerror_r(errnum, buf, buflen) }
 }
@@ -409,7 +409,7 @@ extern "C" fn gnu_strerror_r(errnum: c_int, buf: *mut c_char, buflen: usize) -> 
 /// INFERRED for a caught exception: the abort was read off the 2.738.1397
 /// arm64 and x86-64 builds' `message()`, and observed only through a
 /// coredump of an uncaught one.
-extern "C" fn bionic_strerror_r(errnum: c_int, buf: *mut c_char, buflen: usize) -> c_int {
+unsafe extern "C" fn bionic_strerror_r(errnum: c_int, buf: *mut c_char, buflen: usize) -> c_int {
     // SAFETY: caller-supplied buffer of at least `buflen` bytes.
     unsafe { __xpg_strerror_r(errnum, buf.cast(), buflen) }
 }
@@ -421,12 +421,12 @@ extern "C" fn bionic_strerror_r(errnum: c_int, buf: *mut c_char, buflen: usize) 
 // caller's bug look like an answer, which is the kind of lie a stub must not
 // tell, so they are validated by the host and not re-validated here.
 
-extern "C" fn strlen_chk(s: *const c_char, _bound: usize) -> usize {
+unsafe extern "C" fn strlen_chk(s: *const c_char, _bound: usize) -> usize {
     // SAFETY: the caller's NUL-terminated string, forwarded to the host.
     unsafe { strlen(s) }
 }
 
-extern "C" fn strchr_chk(s: *const c_char, c: c_int, _bound: usize) -> *mut c_char {
+unsafe extern "C" fn strchr_chk(s: *const c_char, c: c_int, _bound: usize) -> *mut c_char {
     // SAFETY: the caller's NUL-terminated string, forwarded to the host.
     unsafe { strchr(s, c) }
 }
@@ -434,12 +434,12 @@ extern "C" fn strchr_chk(s: *const c_char, c: c_int, _bound: usize) -> *mut c_ch
 /// Absent until Roblox 2.702.0.622, whose `libroblox.so` imports it: glibc has
 /// no `__strrchr_chk`, so the load stopped at "cannot locate symbol" before a
 /// single engine instruction ran. Same contract as `__strchr_chk`.
-extern "C" fn strrchr_chk(s: *const c_char, c: c_int, _bound: usize) -> *mut c_char {
+unsafe extern "C" fn strrchr_chk(s: *const c_char, c: c_int, _bound: usize) -> *mut c_char {
     // SAFETY: the caller's NUL-terminated string, forwarded to the host.
     unsafe { strrchr(s, c) }
 }
 
-extern "C" fn strncpy_chk2(
+unsafe extern "C" fn strncpy_chk2(
     dst: *mut c_char,
     src: *const c_char,
     n: usize,
@@ -450,22 +450,22 @@ extern "C" fn strncpy_chk2(
     unsafe { strncpy(dst, src, n) }
 }
 
-extern "C" fn write_chk(fd: c_int, buf: *const c_void, count: usize, _bound: usize) -> isize {
+unsafe extern "C" fn write_chk(fd: c_int, buf: *const c_void, count: usize, _bound: usize) -> isize {
     // SAFETY: the caller's buffer and count; the kernel reports a bad one as EFAULT.
     unsafe { write(fd, buf, count) }
 }
 
-extern "C" fn umask_chk(mode: u32) -> u32 {
+unsafe extern "C" fn umask_chk(mode: u32) -> u32 {
     // SAFETY: a plain scalar.
     unsafe { umask(mode) }
 }
 
-extern "C" fn poll_chk(fds: *mut c_void, nfds: u64, timeout: c_int, _bound: usize) -> c_int {
+unsafe extern "C" fn poll_chk(fds: *mut c_void, nfds: u64, timeout: c_int, _bound: usize) -> c_int {
     // SAFETY: the caller's `struct pollfd` array, identical in both libcs.
     unsafe { poll(fds, nfds, timeout) }
 }
 
-extern "C" fn readlink_chk(
+unsafe extern "C" fn readlink_chk(
     path: *const c_char,
     buf: *mut c_char,
     size: usize,
@@ -475,7 +475,7 @@ extern "C" fn readlink_chk(
     unsafe { readlink(path, buf, size) }
 }
 
-extern "C" fn fread_chk(
+unsafe extern "C" fn fread_chk(
     ptr: *mut c_void,
     size: usize,
     n: usize,
@@ -536,13 +536,13 @@ const PROPERTIES: &[(&str, &str)] = &[
 ///
 /// Must agree with `ro.build.version.sdk`: code that reads both and finds them
 /// inconsistent is code that will believe the smaller one.
-extern "C" fn android_get_device_api_level() -> c_int {
+unsafe extern "C" fn android_get_device_api_level() -> c_int {
     33
 }
 
 /// bionic's `__system_property_get(name, value)`. `value` is a caller buffer of
 /// `PROP_VALUE_MAX` (92) bytes; the return is the length written.
-extern "C" fn system_property_get(name: *const c_char, value: *mut c_char) -> c_int {
+unsafe extern "C" fn system_property_get(name: *const c_char, value: *mut c_char) -> c_int {
     if value.is_null() {
         return 0;
     }
@@ -602,7 +602,7 @@ fn property_reply(value: &str) -> Vec<u8> {
 
 pub mod sysconf_table;
 
-extern "C" {
+unsafe extern "C" {
     fn sysconf(name: c_int) -> i64;
 }
 
@@ -613,7 +613,7 @@ extern "C" {
 /// during static initialisation and, untranslated, is told 1000 — which is not a
 /// power of two, so the allocator that asked aborts. Nothing about that failure
 /// points back at `sysconf`, which is why the translation is worth its table.
-extern "C" fn bionic_sysconf(name: c_int) -> i64 {
+unsafe extern "C" fn bionic_sysconf(name: c_int) -> i64 {
     match classify_sysconf(name) {
         // SAFETY: `glibc` came from the generated table and is a valid selector.
         Sysconf::Host(glibc) => unsafe { sysconf(glibc) },
@@ -654,7 +654,7 @@ fn classify_sysconf(name: c_int) -> Sysconf {
 
 // --------------------------------------------------------------------- pathconf
 
-extern "C" {
+unsafe extern "C" {
     #[link_name = "pathconf"]
     fn host_pathconf(path: *const c_char, name: c_int) -> i64;
 }
@@ -699,7 +699,7 @@ const PATHCONF_MAP: &[(c_int, c_int)] = &[
 /// question without complaint. The path is passed through untouched: a caller
 /// asking about `/system` would want `system_paths.cpp`'s redirection, but
 /// nothing has been seen to, and redirecting on a guess is worse than not.
-extern "C" fn bionic_pathconf(path: *const c_char, name: c_int) -> i64 {
+unsafe extern "C" fn bionic_pathconf(path: *const c_char, name: c_int) -> i64 {
     match pathconf_selector(name) {
         // SAFETY: `path` is the caller's C string, forwarded as-is to the host
         // function with the same signature; `glibc` is a valid selector.
@@ -720,7 +720,7 @@ fn pathconf_selector(bionic: c_int) -> Option<c_int> {
 /// bionic's `isxdigit`. The ASCII answer, which is bionic's whatever the
 /// locale; glibc's reads the current locale's table, and nothing is gained by
 /// letting the host's locale decide what a hex digit is for the guest.
-extern "C" fn bionic_isxdigit(c: c_int) -> c_int {
+unsafe extern "C" fn bionic_isxdigit(c: c_int) -> c_int {
     u8::try_from(c).is_ok_and(|b| b.is_ascii_hexdigit()) as c_int
 }
 
@@ -1023,7 +1023,7 @@ fn symbol_table(fetch: SymbolFetch) -> Vec<(&'static str, *mut c_void)> {
 /// every later failure from silent into explained. Implemented in C++ because
 /// three of the six are variadic.
 pub fn liblog_overrides() -> Vec<(&'static str, *mut c_void)> {
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_liblog_symbols(count: *mut usize) -> *const Symbol;
     }
     symbol_table(cordial_liblog_symbols)
@@ -1046,7 +1046,7 @@ pub fn liblog_overrides() -> Vec<(&'static str, *mut c_void)> {
 /// specific reason than "nothing is implemented yet". See `opensles.cpp` and
 /// `pipewire_backend.cpp` for the split.
 pub fn opensles_overrides() -> Vec<(&'static str, *mut c_void)> {
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_opensles_symbols(count: *mut usize) -> *const Symbol;
     }
     symbol_table(cordial_opensles_symbols)
@@ -1065,7 +1065,7 @@ pub fn opensles_overrides() -> Vec<(&'static str, *mut c_void)> {
 /// path with a virtual library nobody opens — an experiment that looks like
 /// it ran and did not.
 pub fn aaudio_selected() -> bool {
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_audio_backend_is_aaudio() -> c_int;
     }
     // SAFETY: reads a process-wide `static` decided once in aaudio.cpp.
@@ -1080,7 +1080,7 @@ pub fn aaudio_selected() -> bool {
 /// announces itself rather than leaving the reader to infer it from whether
 /// sound comes out.
 pub fn announce_audio_backend() {
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_audio_backend_announce();
     }
     // SAFETY: no arguments, no return; writes one line to stderr.
@@ -1101,7 +1101,7 @@ pub fn announce_audio_backend() {
 /// a virtual library of its own — by default, since 2026-08-22, with
 /// `CORDIAL_AUDIO=java` the way back to FMOD's Java `AudioDevice` path.
 pub fn aaudio_overrides() -> Vec<(&'static str, *mut c_void)> {
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_aaudio_symbols(count: *mut usize) -> *const Symbol;
     }
     symbol_table(cordial_aaudio_symbols)
@@ -1175,7 +1175,7 @@ mod aaudio_tests {
 /// `Path does not exist: ""` during app startup. `open` is variadic, which is
 /// why this lives in C++ alongside liblog rather than in `trace.rs`.
 pub fn system_path_overrides() -> Vec<(&'static str, *mut c_void)> {
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_system_symbols(count: *mut usize) -> *const Symbol;
     }
     symbol_table(cordial_system_symbols)
@@ -1190,7 +1190,7 @@ pub fn system_path_overrides() -> Vec<(&'static str, *mut c_void)> {
 /// runs `RbxStorage::init`'s failing `stat("")` calls was never traced back to
 /// whoever spawned it.
 pub fn thread_overrides() -> Vec<(&'static str, *mut c_void)> {
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_thread_symbols(count: *mut usize) -> *const Symbol;
     }
     symbol_table(cordial_thread_symbols)
@@ -1204,7 +1204,7 @@ pub fn thread_overrides() -> Vec<(&'static str, *mut c_void)> {
 /// `AI_DEFAULT` sets a bit glibc rejects with `EAI_BADFLAGS`, and a result that
 /// did come back would have its `ai_addr` and `ai_canonname` transposed.
 pub fn netdb_overrides() -> Vec<(&'static str, *mut c_void)> {
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_netdb_symbols(count: *mut usize) -> *const Symbol;
     }
     symbol_table(cordial_netdb_symbols)
@@ -1219,7 +1219,7 @@ pub fn netdb_overrides() -> Vec<(&'static str, *mut c_void)> {
 /// so a block glibc allocated cannot be released by it. `s_realpath` established
 /// the pattern: never produce the host allocation. ADR-040 has the measurement.
 pub fn alloc_overrides() -> Vec<(&'static str, *mut c_void)> {
-    extern "C" {
+    unsafe extern "C" {
         fn cordial_alloc_symbols(count: *mut usize) -> *const Symbol;
     }
     symbol_table(cordial_alloc_symbols)
@@ -1229,7 +1229,7 @@ pub fn alloc_overrides() -> Vec<(&'static str, *mut c_void)> {
 mod foreign_alloc_tests {
     use super::*;
 
-    extern "C" {
+    unsafe extern "C" {
         #[link_name = "__errno_location"]
         fn libc_errno() -> *mut c_int;
     }

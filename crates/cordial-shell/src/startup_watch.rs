@@ -112,7 +112,7 @@ static CAPTURED: AtomicBool = AtomicBool::new(false);
 /// Runs on the thread being inspected. Writes only into the statics above;
 /// `backtrace` is called once from a normal context before the signal is sent,
 /// so the lazy load of libgcc it does is not done under a handler.
-extern "C" fn on_capture_signal(_: libc::c_int) {
+unsafe extern "C" fn on_capture_signal(_: libc::c_int) {
     let mut buf = [std::ptr::null_mut::<libc::c_void>(); MAX_FRAMES];
     // SAFETY: `buf` holds MAX_FRAMES pointers and MAX_FRAMES is passed as its size.
     let n = unsafe { libc::backtrace(buf.as_mut_ptr(), MAX_FRAMES as libc::c_int) }.max(0) as usize;
@@ -169,7 +169,7 @@ pub fn thread_stack(tid: i64) -> Option<Vec<String>> {
     // SAFETY: a zeroed `sigaction` with a handler and an empty mask is valid.
     let previous = unsafe {
         let mut act: libc::sigaction = std::mem::zeroed();
-        act.sa_sigaction = on_capture_signal as extern "C" fn(libc::c_int) as usize;
+        act.sa_sigaction = on_capture_signal as unsafe extern "C" fn(libc::c_int) as usize;
         libc::sigemptyset(&mut act.sa_mask);
         act.sa_flags = libc::SA_RESTART;
         let mut old: libc::sigaction = std::mem::zeroed();

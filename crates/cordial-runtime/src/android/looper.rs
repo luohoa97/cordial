@@ -166,7 +166,7 @@ mod census {
         c.store(c.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn gettid() -> c_int;
     }
 
@@ -325,7 +325,7 @@ struct Timespec {
     tv_nsec: i64,
 }
 
-extern "C" {
+unsafe extern "C" {
     fn nanosleep(req: *const Timespec, rem: *mut Timespec) -> c_int;
 }
 
@@ -379,7 +379,7 @@ struct EpollEvent {
     data: u64,
 }
 
-extern "C" {
+unsafe extern "C" {
     fn epoll_create1(flags: c_int) -> c_int;
     fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: *mut EpollEvent) -> c_int;
     fn epoll_wait(epfd: c_int, events: *mut EpollEvent, maxevents: c_int, timeout: c_int)
@@ -541,7 +541,7 @@ impl Looper {
         // The owning thread, so a `loopers` reading joins onto a backtrace.
         // SAFETY: `gettid` takes no arguments and cannot fail.
         let tid = unsafe {
-            extern "C" {
+            unsafe extern "C" {
                 fn gettid() -> c_int;
             }
             gettid()
@@ -650,7 +650,7 @@ static SIGNALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 const SIGINT: c_int = 2;
 const SIGTERM: c_int = 15;
 
-extern "C" {
+unsafe extern "C" {
     fn signal(signum: c_int, handler: usize) -> usize;
     #[link_name = "_exit"]
     fn libc_exit(status: c_int) -> !;
@@ -664,7 +664,7 @@ extern "C" {
 /// is sending signals at all — a person pressing Ctrl-C twice expects the
 /// process to go, not to be told politely that it is already going. `_exit` is
 /// async-signal-safe; nothing else attempted here would be.
-extern "C" fn on_terminating_signal(_sig: c_int) {
+unsafe extern "C" fn on_terminating_signal(_sig: c_int) {
     if SIGNALLED.swap(true, Ordering::Relaxed) {
         // SAFETY: `_exit` is async-signal-safe by specification, and this is
         // the second signal — the polite path has already been tried.
@@ -1427,12 +1427,12 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
             // plain JNI natives each verb also drives do not take one.
             crate::devctl::apply_queued(0);
         }
-        looper_poll_once(
+        unsafe { looper_poll_once(
             if watching { 50 } else { 8 },
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-        );
+        ) };
         // The engine's cookie jar is memory-only, so somebody has to write it
         // down. Driven from here rather than from the engine's own `Set-Cookie`
         // callback because that callback arrives on the engine's HTTP thread
@@ -1557,7 +1557,7 @@ fn teardown(handle: i64) {
                          Cookies were saved before it started.",
                         limit.as_secs()
                     );
-                    extern "C" {
+                    unsafe extern "C" {
                         fn _exit(status: c_int) -> !;
                     }
                     // SAFETY: `_exit` runs no handlers and touches no memory;
@@ -1601,7 +1601,7 @@ fn teardown(handle: i64) {
     // is trying to end cleanly.
     let grace = std::time::Instant::now() + std::time::Duration::from_millis(500);
     while std::time::Instant::now() < grace {
-        looper_poll_once(50, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+        unsafe { looper_poll_once(50, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) };
     }
 }
 
@@ -1700,12 +1700,12 @@ const IDENT_DISPLAY_CONNECTION: c_int = 0x436f_7264;
 
 // ------------------------------------------------------------------- the API
 
-extern "C" fn looper_prepare(_opts: c_int) -> *mut c_void {
+unsafe extern "C" fn looper_prepare(_opts: c_int) -> *mut c_void {
     super::trace(format_args!("ALooper_prepare"));
     Looper::prepare().map_or(std::ptr::null_mut(), |l| l as *const Looper as *mut c_void)
 }
 
-extern "C" fn looper_for_thread() -> *mut c_void {
+unsafe extern "C" fn looper_for_thread() -> *mut c_void {
     super::trace(format_args!("ALooper_forThread"));
     Looper::for_thread().map_or(std::ptr::null_mut(), |l| l as *const Looper as *mut c_void)
 }
@@ -1716,13 +1716,13 @@ fn as_looper(p: *mut c_void) -> Option<&'static Looper> {
     (!p.is_null()).then(|| unsafe { &*(p as *const Looper) })
 }
 
-extern "C" fn looper_acquire(looper: *mut c_void) {
+unsafe extern "C" fn looper_acquire(looper: *mut c_void) {
     if let Some(l) = as_looper(looper) {
         l.refs.fetch_add(1, Ordering::Relaxed);
     }
 }
 
-extern "C" fn looper_release(looper: *mut c_void) {
+unsafe extern "C" fn looper_release(looper: *mut c_void) {
     // The count is tracked but never acted on: the looper is thread-local and
     // leaked, so dropping to zero would mean freeing something the thread may
     // still poll. Android's own loopers outlive their refcount reaching zero in
@@ -1732,7 +1732,7 @@ extern "C" fn looper_release(looper: *mut c_void) {
     }
 }
 
-extern "C" fn looper_add_fd(
+unsafe extern "C" fn looper_add_fd(
     looper: *mut c_void,
     fd: c_int,
     ident: c_int,
@@ -1795,7 +1795,7 @@ extern "C" fn looper_add_fd(
     1
 }
 
-extern "C" fn looper_remove_fd(looper: *mut c_void, fd: c_int) -> c_int {
+unsafe extern "C" fn looper_remove_fd(looper: *mut c_void, fd: c_int) -> c_int {
     let Some(l) = as_looper(looper) else {
         return -1;
     };
@@ -1812,7 +1812,7 @@ extern "C" fn looper_remove_fd(looper: *mut c_void, fd: c_int) -> c_int {
     }
 }
 
-extern "C" fn looper_wake(looper: *mut c_void) {
+unsafe extern "C" fn looper_wake(looper: *mut c_void) {
     let Some(l) = as_looper(looper) else {
         return;
     };
@@ -1856,7 +1856,7 @@ fn block_forever() -> bool {
     })
 }
 
-extern "C" fn looper_poll_once(
+unsafe extern "C" fn looper_poll_once(
     timeout_millis: c_int,
     out_fd: *mut c_int,
     out_events: *mut c_int,
@@ -2006,7 +2006,7 @@ extern "C" fn looper_poll_once(
             // entitled to add or remove descriptors, and holding the borrow would
             // panic when it did.
             if cb(fd, looper_events, data) == 0 {
-                looper_remove_fd(l as *const Looper as *mut c_void, fd);
+                unsafe { looper_remove_fd(l as *const Looper as *mut c_void, fd) };
             }
             if let Some(s) = seat {
                 census::bump(&s.r_callback);
@@ -2076,7 +2076,7 @@ fn health_line(drawn: u64, secs: f64, total: u64, pacing: Option<&str>) -> Strin
 mod tests {
     // Only the tests close a descriptor, so the binding lives with them rather
     // than in the module's extern block, where it read as dead code.
-    extern "C" {
+    unsafe extern "C" {
         fn close(fd: c_int) -> c_int;
     }
 

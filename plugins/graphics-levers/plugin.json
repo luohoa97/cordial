@@ -1,0 +1,27 @@
+{
+  "id": "graphics-levers",
+  "name": "Graphics Levers",
+  "version": "1.0.0",
+  "entry": "main.ts",
+  "capabilities": [
+    "flags.write",
+    "settings.read",
+    "log"
+  ],
+  "preferences": [
+    {
+      "key": "profile",
+      "title": "Graphics quality",
+      "description": "How much the engine loads, not how often it draws. On an NVIDIA card, textures are decoded on the CPU, so a higher setting loads more of them: it raises the average frame rate and deepens the dips in heavy scenes. Measured on an RTX 4050, Quality gave 137 frames a second on average with a 95-frame worst dip, Balanced 118 with a 59-frame dip. Engine default is the fastest and the least detailed.",
+      "type": "choice",
+      "default": "quality",
+      "options": [
+        { "value": "engine", "label": "Engine default (fastest, plainest)" },
+        { "value": "performance", "label": "Performance" },
+        { "value": "balanced", "label": "Balanced" },
+        { "value": "quality", "label": "Quality" },
+        { "value": "ultra", "label": "Ultra (most detail, most CPU decode)" }
+      ]
+    }
+  ]
+}

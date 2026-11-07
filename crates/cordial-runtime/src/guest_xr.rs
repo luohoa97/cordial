@@ -94,7 +94,7 @@ struct HostXr {
     lib: usize,
 }
 
-extern "C" {
+unsafe extern "C" {
     // The host's dlopen, as in `android::vulkan`: the guest's own dlopen is
     // the bionic linker's, which is what this module answers for.
     fn dlopen(filename: *const c_char, flags: i32) -> *mut c_void;

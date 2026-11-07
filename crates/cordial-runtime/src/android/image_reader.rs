@@ -26,7 +26,7 @@ const AMEDIA_ERROR_INVALID_OBJECT: i32 = AMEDIA_ERROR_BASE - 3;
 
 static REPORTED: AtomicBool = AtomicBool::new(false);
 
-extern "C" fn reader_new_with_usage(
+unsafe extern "C" fn reader_new_with_usage(
     width: i32,
     height: i32,
     format: i32,
@@ -47,9 +47,9 @@ extern "C" fn reader_new_with_usage(
     AMEDIA_ERROR_UNSUPPORTED
 }
 
-extern "C" fn reader_delete(_reader: *mut c_void) {}
+unsafe extern "C" fn reader_delete(_reader: *mut c_void) {}
 
-extern "C" fn reader_get_window(_reader: *mut c_void, window: *mut *mut c_void) -> i32 {
+unsafe extern "C" fn reader_get_window(_reader: *mut c_void, window: *mut *mut c_void) -> i32 {
     if !window.is_null() {
         // SAFETY: as above.
         unsafe { *window = std::ptr::null_mut() };
@@ -57,7 +57,7 @@ extern "C" fn reader_get_window(_reader: *mut c_void, window: *mut *mut c_void) 
     AMEDIA_ERROR_INVALID_OBJECT
 }
 
-extern "C" fn reader_acquire_next_image(_reader: *mut c_void, image: *mut *mut c_void) -> i32 {
+unsafe extern "C" fn reader_acquire_next_image(_reader: *mut c_void, image: *mut *mut c_void) -> i32 {
     if !image.is_null() {
         // SAFETY: as above.
         unsafe { *image = std::ptr::null_mut() };
@@ -65,9 +65,9 @@ extern "C" fn reader_acquire_next_image(_reader: *mut c_void, image: *mut *mut c
     AMEDIA_ERROR_INVALID_OBJECT
 }
 
-extern "C" fn image_delete(_image: *mut c_void) {}
+unsafe extern "C" fn image_delete(_image: *mut c_void) {}
 
-extern "C" fn image_get_hardware_buffer(_image: *const c_void, buffer: *mut *mut c_void) -> i32 {
+unsafe extern "C" fn image_get_hardware_buffer(_image: *const c_void, buffer: *mut *mut c_void) -> i32 {
     if !buffer.is_null() {
         // SAFETY: as above.
         unsafe { *buffer = std::ptr::null_mut() };
@@ -75,14 +75,14 @@ extern "C" fn image_get_hardware_buffer(_image: *const c_void, buffer: *mut *mut
     AMEDIA_ERROR_INVALID_OBJECT
 }
 
-extern "C" fn image_get_timestamp(_image: *const c_void, _timestamp: *mut i64) -> i32 {
+unsafe extern "C" fn image_get_timestamp(_image: *const c_void, _timestamp: *mut i64) -> i32 {
     AMEDIA_ERROR_INVALID_OBJECT
 }
 
 /// Reference counting on a buffer that can only have come from an `AImage`,
 /// which this file never produces. Nothing to count.
-extern "C" fn hardware_buffer_acquire(_buffer: *mut c_void) {}
-extern "C" fn hardware_buffer_release(_buffer: *mut c_void) {}
+unsafe extern "C" fn hardware_buffer_acquire(_buffer: *mut c_void) {}
+unsafe extern "C" fn hardware_buffer_release(_buffer: *mut c_void) {}
 
 pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
     macro_rules! f {

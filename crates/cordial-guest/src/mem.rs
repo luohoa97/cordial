@@ -2,7 +2,7 @@
 
 use std::ffi::c_void;
 
-extern "C" {
+unsafe extern "C" {
     fn mmap(addr: *mut c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut c_void;
     fn munmap(addr: *mut c_void, len: usize) -> i32;
     fn mprotect(addr: *mut c_void, len: usize, prot: i32) -> i32;
