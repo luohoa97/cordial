@@ -59,8 +59,10 @@ Usage:  tools/pointer-lock-e2e.py [--profile NAME] [--keep]
 import argparse, os, re, socket, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+from headless_compositor import Execution, Unsupported, start  # noqa: E402
+
 HOLDERS = os.environ.get("CORDIAL_HOLDER_BIN", "/tmp/cordial-wl-holders")
-BOX = "cordial"
 OUT = os.environ.get("CORDIAL_LOCK_E2E_OUT", "/tmp/cordial-lock-e2e")
 
 BUTTON_SECONDARY = 2          # input::BUTTON_SECONDARY
@@ -69,10 +71,6 @@ KEY_ESC = 1                   # evdev
 
 def sh(argv, **kw):
     return subprocess.run(argv, capture_output=True, text=True, **kw)
-
-
-def in_box(cmd):
-    return sh(["distrobox", "enter", BOX, "--", "bash", "-lc", cmd])
 
 
 class Devctl:
@@ -103,11 +101,10 @@ class Devctl:
 
 
 class Holder:
-    def __init__(self, binary, display, args=()):
-        self.p = subprocess.Popen(
-            ["distrobox", "enter", BOX, "--", "bash", "-lc",
-             f"export WAYLAND_DISPLAY={display}; exec {binary} {' '.join(args)}"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    def __init__(self, comp, binary, args=()):
+        self.p = comp.popen([binary] + list(args), stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True)
         deadline = time.time() + 20
         while time.time() < deadline:
             if self.p.poll() is not None:
@@ -151,40 +148,6 @@ class Case:
         return [r for r in self.rows if r[0] is False]
 
 
-SWAY_CFG = """output HEADLESS-1 mode {w}x{h}
-default_border none
-exec sh -c 'printf %s "$WAYLAND_DISPLAY" > {stamp}'
-"""
-
-
-def start_sway(width, height):
-    stamp, cfg = "/tmp/cordial-lock-e2e-display", "/tmp/cordial-lock-e2e-sway.cfg"
-    for f in (stamp, cfg):
-        if os.path.exists(f):
-            os.unlink(f)
-    with open(cfg, "w") as fh:
-        fh.write(SWAY_CFG.format(w=width, h=height, stamp=stamp))
-    subprocess.Popen(
-        ["distrobox", "enter", BOX, "--", "bash", "-lc",
-         f"exec env -u WAYLAND_DISPLAY -u DISPLAY WLR_BACKENDS=headless "
-         f"WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 "
-         f"sway -c {cfg} > /tmp/cordial-lock-e2e-sway.log 2>&1"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + 25
-    while time.time() < deadline:
-        if os.path.exists(stamp) and os.path.getsize(stamp):
-            return sway_pid(cfg), open(stamp).read().strip()
-        time.sleep(0.2)
-    raise RuntimeError("sway never reported a display; see /tmp/cordial-lock-e2e-sway.log")
-
-
-def sway_pid(cfg):
-    for pid in in_box("pidof sway").stdout.split():
-        if cfg in in_box(f"tr '\\0' ' ' < /proc/{pid}/cmdline").stdout:
-            return int(pid)
-    return None
-
-
 def profile_holder(profile):
     """The pid holding this profile's lock, or None.
 
@@ -207,6 +170,9 @@ def main():
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=800)
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--backend", help="compositor backend (default: first with virtual input)")
+    ap.add_argument("--direct", action="store_true",
+                    help="run on this host rather than in the distrobox")
     args = ap.parse_args()
 
     os.makedirs(OUT, exist_ok=True)
@@ -226,23 +192,30 @@ def main():
         sys.exit(f"FAIL: profile {args.profile} is already open in pid {held}")
 
     case = Case()
-    sway = client = kbd = ptr = None
+    comp = client = kbd = ptr = None
     log_path = os.path.join(OUT, "client.log")
     try:
-        sway, display = start_sway(args.width, args.height)
-        print(f"== nested sway on {display}, {args.width}x{args.height}")
-        kbd = Holder(f"{HOLDERS}/wl-keyboard-holder", display)
-        ptr = Holder(f"{HOLDERS}/wl-pointer-holder", display,
+        try:
+            comp = start(args.width, args.height, out_dir=OUT, backend=args.backend,
+                         execution=Execution.from_env(direct=args.direct),
+                         required=("launch", "virtual_input"))
+        except (Unsupported, SystemExit) as exc:
+            sys.exit(f"FAIL: this test needs a compositor with wlroots virtual "
+                     f"input, which {args.backend or 'the available backends'} do "
+                     f"not provide ({exc})")
+        display = comp.wayland_display
+        print(f"== nested {comp.backend.name} on {display}, {args.width}x{args.height}")
+        kbd = Holder(comp, f"{HOLDERS}/wl-keyboard-holder")
+        ptr = Holder(comp, f"{HOLDERS}/wl-pointer-holder",
                      [str(args.width), str(args.height)])
-        caps = in_box("SWAYSOCK=$(ls -t $XDG_RUNTIME_DIR/sway-ipc.*.sock | head -1) "
-                      "swaymsg -t get_seats -r").stdout
+        caps = comp.ipc("-t get_seats").stdout
         if '"capabilities": 0' in caps or '"keyboards": 0' in caps:
             sys.exit("FAIL: the seat has no devices; every reading below would be "
                      "taken with Cordial's own input paths switched off")
 
-        env = dict(os.environ)
-        env.update(WAYLAND_DISPLAY=display, GDK_BACKEND="wayland",
-                   CORDIAL_DEV_CONTROL="1", CORDIAL_TRACE_MOUSE="1")
+        env = comp.host_env({"GDK_BACKEND": "wayland",
+                             "CORDIAL_DEV_CONTROL": "1",
+                             "CORDIAL_TRACE_MOUSE": "1"})
         log = open(log_path, "w")
         client = subprocess.Popen(
             [binary, "--lib-dir", lib, "--apk", apk, "--host-libc",
@@ -279,8 +252,8 @@ def main():
                 client.wait(timeout=15)
             except Exception:
                 client.kill()
-        if sway and not args.keep:
-            in_box(f"kill {sway}")
+        if comp and not args.keep:
+            comp.stop()
 
     bad = case.failed()
     print()

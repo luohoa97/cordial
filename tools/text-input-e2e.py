@@ -62,9 +62,13 @@ itself breaks `distrobox`.
 import argparse, json, os, re, shutil, socket, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+from headless_compositor import Execution, Unsupported, start  # noqa: E402
+
 HOLDERS = os.environ.get("CORDIAL_HOLDER_BIN", "/tmp/cordial-wl-holders")
-BOX = "cordial"                       # the distrobox with sway, grim and the holders
+BOX = "cordial"                       # fallback when no session has started yet
 OUT = os.environ.get("CORDIAL_E2E_OUT", "/tmp/cordial-text-e2e")
+COMP = None                           # the running Session, once main() starts one
 
 
 def sh(argv, **kw):
@@ -72,7 +76,9 @@ def sh(argv, **kw):
 
 
 def in_box(cmd):
-    """Run a shell command inside the container that has the compositor."""
+    """Run a shell command inside the compositor's environment."""
+    if COMP is not None:
+        return COMP.shell(cmd)
     return sh(["distrobox", "enter", BOX, "--", "bash", "-lc", cmd])
 
 
@@ -125,10 +131,16 @@ class Holder:
     """A persistent virtual input device, driven a line at a time."""
 
     def __init__(self, binary, display, args=()):
-        self.p = subprocess.Popen(
-            ["distrobox", "enter", BOX, "--", "bash", "-lc",
-             f"export WAYLAND_DISPLAY={display}; exec {binary} {' '.join(args)}"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if COMP is not None:
+            self.p = COMP.popen([binary] + list(args), stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True)
+        else:
+            self.p = subprocess.Popen(
+                ["distrobox", "enter", BOX, "--", "bash", "-lc",
+                 f"export WAYLAND_DISPLAY={display}; exec {binary} {' '.join(args)}"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True)
         # The holder prints "ready" once the device exists. Waiting for it is
         # the difference between a keyboard the seat has and one it is about
         # to have; every key sent before it is silently dropped.
@@ -184,81 +196,33 @@ class Case:
         return [r for r in self.results if not r[0]]
 
 
-SWAY_CFG = """xwayland disable
-output HEADLESS-1 mode {w}x{h}
-default_border none
-default_floating_border none
-focus_follows_mouse no
-{extra}
-exec sh -c 'printf %s "$WAYLAND_DISPLAY" > {stamp}'
-"""
+def start_compositor(width, height, backend=None, direct=False):
+    """Start a compositor with everything this file's window checks need.
 
-
-def start_sway(width, height):
-    """A headless sway, which reports the display it bound rather than being guessed at.
-
-    sway picks its own socket name -- `WAYLAND_DISPLAY` on its command line
-    names the display it would *connect* to, not the one it serves -- so it is
-    asked from an exec block. Guessing cost two runs.
+    The window tree, output mode changes, `grim` and the virtual keyboard are
+    Sway's. KWin has a window model of its own, but no virtual keyboard and no
+    output-mode change after start, so this harness asks for capabilities
+    rather than silently running half of itself. KWin is still a working
+    headless backend for the launch-only harnesses (`frame-pacing-check.py`,
+    `startup-freeze-survey.sh`).
     """
-    # Under OUT and not a fixed /tmp name: two agents running this at once
-    # shared one stamp file and each read the other's display.
+    global COMP
     os.makedirs(OUT, exist_ok=True)
-    stamp, cfg = os.path.join(OUT, "sway-display"), os.path.join(OUT, "sway.cfg")
-    sway_log = os.path.join(OUT, "sway.log")
-    for f in (stamp, cfg):
-        if os.path.exists(f):
-            os.unlink(f)
-    with open(cfg, "w") as fh:
-        fh.write(SWAY_CFG.format(w=width, h=height, stamp=stamp,
-                                 extra=os.environ.get("CORDIAL_E2E_SWAY_EXTRA", "")))
-    # Detached from this process's stdout. Inheriting it means the compositor
-    # holds the pipe open after the script exits, and anything reading the
-    # script through a pipe -- `| tail`, a harness, an agent -- waits forever
-    # for an EOF that only arrives when the compositor dies. One whole run's
-    # results were lost that way before this line existed.
-    subprocess.Popen(
-        ["distrobox", "enter", BOX, "--", "bash", "-lc",
-         f"exec env -u WAYLAND_DISPLAY -u DISPLAY WLR_BACKENDS=headless "
-         f"WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 "
-         f"sway -c {cfg} > {sway_log} 2>&1"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        if os.path.exists(stamp) and os.path.getsize(stamp):
-            global SWAY_PID
-            SWAY_PID = sway_pid(cfg)
-            return SWAY_PID, open(stamp).read().strip()
-        time.sleep(0.2)
-    raise RuntimeError(f"sway never reported a display; see {sway_log}")
-
-
-SWAY_PID = None
+    COMP = start(width, height, out_dir=OUT, backend=backend,
+                 execution=Execution.from_env(direct=direct),
+                 required=("launch", "ipc", "screenshot", "virtual_input", "output_resize"),
+                 extra_config=os.environ.get("CORDIAL_E2E_SWAY_EXTRA", ""))
+    return COMP
 
 
 def swaymsg(args, raw=True):
-    """Run swaymsg against *this run's* compositor.
+    """Run this run's compositor's own IPC command.
 
-    `ls -t sway-ipc.*.sock | head -1` picked the newest socket, which is
-    another agent's compositor whenever two of these run at once; the socket
-    name carries the compositor's pid, so name it.
+    The session names its socket by pid. `ls -t sway-ipc.*.sock | head -1`
+    picked the newest socket, which is another agent's compositor whenever two
+    of these run at once.
     """
-    return in_box(f"SWAYSOCK=$XDG_RUNTIME_DIR/sway-ipc.$(id -u).{SWAY_PID}.sock "
-                  f"swaymsg {'-r ' if raw else ''}{args}")
-
-
-def sway_pid(cfg):
-    """The compositor's own pid, so cleanup kills it rather than its launcher.
-
-    Killing the `distrobox enter` wrapper leaves sway running, and a stale
-    compositor holding a display is indistinguishable from a fresh one until
-    the seat comes back with no keyboard on it.
-    """
-    for pid in in_box("pidof sway").stdout.split():
-        argv = in_box(f"tr '\\0' ' ' < /proc/{pid}/cmdline").stdout
-        if cfg in argv:
-            return int(pid)
-    return None
+    return COMP.ipc(args, raw=raw)
 
 
 def profile_holder(profile):
@@ -320,6 +284,9 @@ def main():
                     help="output scale for the nested compositor (1.5 is fractional)")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=800)
+    ap.add_argument("--backend", help="compositor backend (default: first with the needed capabilities)")
+    ap.add_argument("--direct", action="store_true",
+                    help="run the compositor on this host rather than in the distrobox")
     args = ap.parse_args()
 
     if args.x11:
@@ -350,14 +317,21 @@ def main():
         sys.exit(f"FAIL: profile {args.profile!r} is already open in pid {held}. "
                  f"Pick another with --profile; do not kill a client someone is using.")
 
-    sway = client = kbd = ptr = None
+    comp = client = kbd = ptr = None
     case = Case()
     try:
         if args.scale:
             os.environ["CORDIAL_E2E_SWAY_EXTRA"] = (
                 os.environ.get("CORDIAL_E2E_SWAY_EXTRA", "") + f"\noutput HEADLESS-1 scale {args.scale}")
-        sway, display = start_sway(args.width, args.height)
-        print(f"== nested sway on {display}, {args.width}x{args.height}")
+        try:
+            comp = start_compositor(args.width, args.height, args.backend, args.direct)
+        except (Unsupported, SystemExit) as exc:
+            chosen = args.backend or "the available backends"
+            sys.exit(f"FAIL: this harness needs a window tree, a screenshot, output "
+                     f"resize and wlroots virtual input, which {chosen} do not "
+                     f"provide ({exc})")
+        display = comp.wayland_display
+        print(f"== nested {comp.backend.name} on {display}, {args.width}x{args.height}")
 
         # Both devices before the client, so the seat advertises a keyboard and
         # a pointer at the moment Cordial reads its capabilities. This is the
@@ -370,18 +344,16 @@ def main():
             sys.exit("FAIL: the seat does not advertise both a keyboard and a pointer; "
                      "every reading below would be taken with Cordial's key path switched off")
 
-        env = dict(os.environ)
-        env.update(
-            WAYLAND_DISPLAY=display,
-            GDK_BACKEND="wayland",
-            CORDIAL_DEV_CONTROL="1",
-            CORDIAL_TRACE_TEXT="1",
+        env = comp.host_env({
+            "GDK_BACKEND": "wayland",
+            "CORDIAL_DEV_CONTROL": "1",
+            "CORDIAL_TRACE_TEXT": "1",
             # The readback. Safe here and nowhere else: this harness types its
             # own known strings into a search box and never touches a sign-in
             # field. It also puts the clipboard in the log, so the log stays in
             # /tmp and is not something to paste into an issue.
-            CORDIAL_TRACE_TEXT_SHOW_PASSWORDS="1",
-        )
+            "CORDIAL_TRACE_TEXT_SHOW_PASSWORDS": "1",
+        })
         # **Redirecting XDG_* for the whole script breaks `distrobox`**, which
         # finds its container store through XDG_DATA_HOME: sway never starts and
         # nothing says why. CORDIAL_E2E_XDG_ROOT redirects the client alone
@@ -463,8 +435,8 @@ def main():
                     client.wait(timeout=15)
                 except Exception:
                     client.kill()
-            if sway:
-                in_box(f"kill {sway}")
+            if comp:
+                comp.stop()
 
     print()
     if case.failed:

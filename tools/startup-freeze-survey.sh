@@ -43,6 +43,13 @@
 # that was supposed to test it could not be judged -- you cannot measure whether
 # input prevents a freeze when nothing freezes.
 #
+# **The compositor is no longer fixed to sway.** `COMPOSITOR=kwin` uses KWin's
+# virtual backend, `HEADLESS_DIRECT=1` runs it on this host instead of in the
+# distrobox, and the default is the first backend able to launch. `NOFOCUS=1`
+# keeps its meaning on both: sway with a `no_focus` rule, KWin with a focus
+# holder and focus-stealing prevention. See
+# `docs/analysis/headless-compositors.md`.
+#
 # The nudge instrument was live this time, which is the part worth keeping. The
 # previous NUDGE arm was a silent no-op: the virtual pointer holder was started
 # after the client had already latched seat capabilities at open(), so nothing
@@ -123,6 +130,8 @@ APK="${CORDIAL_APK:-$HOME/.var/app/org.vinegarhq.Sober/data/sober/packages/x86_6
 LIB="${CORDIAL_LIB_DIR:-$HOME/.cache/cordial/lib/x86_64}"
 LOG="$OUT/${TAG:-run}$RUN.log"
 SOCK="$HOME/.local/share/cordial/profiles/$PROFILE/devctl.sock"
+COMP="$OUT/compositor-${TAG:-run}$RUN"
+STATE="$COMP/state.json"
 
 # Never `pkill -f`: the pattern matches the shell running it, and that has
 # killed the session issuing it five times in one day. `pidof` matches the
@@ -138,7 +147,7 @@ for p in $(pidof cordial-run 2>/dev/null); do
     kill -9 "$p" 2>/dev/null
   fi
 done
-distrobox enter cordial -- bash -lc 'for p in $(pidof sway); do kill -9 $p 2>/dev/null; done' >/dev/null 2>&1
+python3 "$ROOT/tools/headless_compositor.py" stop --state "$STATE" >/dev/null 2>&1 || true
 sleep 3
 
 # Windowed every time. Cordial remembers window state per profile, and a run
@@ -147,36 +156,30 @@ sleep 3
 printf '{\n  "fullscreen": false,\n  "maximised": false,\n  "width": null,\n  "height": null\n}\n' \
   > "$HOME/.local/share/cordial/profiles/$PROFILE/game-window.json"
 
-# sway rather than cage: cage's seat never gains a keyboard, which changes which
-# of Cordial's code runs. Headless, on its own display, so nothing is injected
-# anywhere near the developer's session.
-DISP=$(python3 - <<'PY'
-import subprocess, os, time
-stamp, cfg = "/tmp/cordial-freeze-display", "/tmp/cordial-freeze-sway.cfg"
-for f in (stamp, cfg):
-    if os.path.exists(f):
-        os.unlink(f)
+# The compositor is chosen by the harness, not baked into this script. It is
+# still headless — `--virtual` under KWin, `WLR_BACKENDS=headless` under sway,
+# or the backend's own headless flag — and its socket is under a private
+# `XDG_RUNTIME_DIR` under `$OUT`, so nothing appears on the developer's session.
+#
 # `NOFOCUS=1` keeps the client's window from ever taking keyboard focus, which
 # is the user's own report: press Launch, do not click the new window, and it
-# freezes. sway's `no_focus` is the only way to reproduce that without a second
-# real window and a human not clicking it.
-open(cfg, "w").write(
-    "xwayland disable\noutput HEADLESS-1 mode 1280x800\ndefault_border none\n"
-    "focus_follows_mouse no\n"
-    + ('no_focus [app_id="Cordial"]\n' if os.environ.get("NOFOCUS") == "1" else "")
-    + "exec sh -c 'printf %%s \"$WAYLAND_DISPLAY\" > %s'\n" % stamp)
-subprocess.Popen(["distrobox", "enter", "cordial", "--", "bash", "-lc",
-  "exec env -u WAYLAND_DISPLAY -u DISPLAY WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 "
-  "WLR_HEADLESS_OUTPUTS=1 sway -c %s > /tmp/cordial-freeze-sway.log 2>&1" % cfg],
-  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-for _ in range(120):
-    if os.path.exists(stamp) and os.path.getsize(stamp):
-        print(open(stamp).read().strip())
-        break
-    time.sleep(0.2)
-PY
-)
+# freezes. Sway does that with a `no_focus` rule; KWin uses a focus-holder
+# window plus its focus-stealing-prevention setting. Both are implemented in
+# `tools/headless_compositor.py` so the arm means the same thing on either.
+COMPOSITOR_ARGS=()
+[ -n "${COMPOSITOR:-}" ] && COMPOSITOR_ARGS+=(--backend "$COMPOSITOR")
+[ "${HEADLESS_DIRECT:-0}" = "1" ] && COMPOSITOR_ARGS+=(--direct)
+[ "${NOFOCUS:-0}" = "1" ] && COMPOSITOR_ARGS+=(--no-focus)
+if ! python3 "$ROOT/tools/headless_compositor.py" \
+       start --state "$STATE" --out-dir "$COMP" --width 1280 --height 800 \
+       "${COMPOSITOR_ARGS[@]}" >/dev/null; then
+  printf '%s\tNO-COMPOSITOR\t-\t-\t-\t-\t-\n' "$RUN"
+  exit 1
+fi
+eval "$(python3 "$ROOT/tools/headless_compositor.py" env --state "$STATE")"
+DISP="$WAYLAND_DISPLAY"
 [ -n "$DISP" ] || { printf '%s\tNO-COMPOSITOR\t-\t-\t-\t-\t-\n' "$RUN"; exit 1; }
+trap 'python3 "$ROOT/tools/headless_compositor.py" stop --state "$STATE" >/dev/null 2>&1 || true' EXIT
 
 # GDK_BACKEND=wayland explicitly: the container exports x11, and a GTK window
 # that lands on the host's X server is a window nobody in the harness can see.
@@ -198,8 +201,8 @@ if [ "${NUDGE:-0}" = "1" ]; then
   [ -x "$HOLDER" ] || { echo "no $HOLDER -- run tools/build-wl-holders.sh in the container" >&2; exit 1; }
   NUDGE_FIFO=$OUT/nudge.fifo
   rm -f "$NUDGE_FIFO"; mkfifo "$NUDGE_FIFO"
-  distrobox enter cordial -- bash -lc "export WAYLAND_DISPLAY=$DISP; exec $HOLDER 1280 800" \
-    < "$NUDGE_FIFO" > /dev/null 2>&1 &
+  python3 "$ROOT/tools/headless_compositor.py" exec --state "$STATE" -- \
+    "$HOLDER" 1280 800 < "$NUDGE_FIFO" > /dev/null 2>&1 &
   NUDGE_HOLDER=$!
   exec 8> "$NUDGE_FIFO"
   sleep 1
@@ -437,5 +440,5 @@ fi
 kill -9 $CLIENT 2>/dev/null
 kill "${STAMPER:-0}" 2>/dev/null
 rm -f "$STDOUT_FIFO"
-distrobox enter cordial -- bash -lc 'for p in $(pidof sway); do kill -9 $p 2>/dev/null; done' >/dev/null 2>&1
+python3 "$ROOT/tools/headless_compositor.py" stop --state "$STATE" >/dev/null 2>&1 || true
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$RUN" "$READY" "$P10" "$P25" "$COOKIES" "$VERDICT" "$STAGE"

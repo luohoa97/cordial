@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Drive a touch at Cordial's engine canvas, in a nested headless sway.
+"""Drive a touch at Cordial's engine canvas, in a nested headless compositor.
 
-Starts a headless sway, puts `wl-touch-proxy.py` between it and the client so
+Starts a headless compositor (sway by default, because the virtual input
+devices below need wlroots), puts `wl-touch-proxy.py` between it and the client so
 the client believes the seat has a touchscreen, launches `cordial-run` signed
 out on its own data root, and injects finger-down/up on the canvas subsurface
 (and, as a control, on GTK's own toplevel). It reports whether the client is
@@ -28,7 +29,10 @@ import subprocess
 import sys
 import time
 
-BOX = "cordial"
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+from headless_compositor import Execution, Unsupported, start  # noqa: E402
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROXY = os.path.join(HERE, "wl-touch-proxy.py")
 
@@ -37,21 +41,16 @@ def sh(argv, **kw):
     return subprocess.run(argv, capture_output=True, text=True, **kw)
 
 
-def in_box(cmd):
-    return sh(["distrobox", "enter", BOX, "--", "bash", "-lc", cmd])
-
-
 HOLDERS = os.environ.get("CORDIAL_HOLDER_BIN", "/tmp/cordial-wl-holders")
 
 
 class Holder:
-    """A persistent virtual device inside the nested sway (tools/build-wl-holders.sh)."""
+    """A persistent virtual device inside the nested compositor (tools/build-wl-holders.sh)."""
 
-    def __init__(self, binary, display, args=()):
-        self.p = subprocess.Popen(
-            ["distrobox", "enter", BOX, "--", "bash", "-lc",
-             f"export WAYLAND_DISPLAY={display}; exec {binary} {' '.join(args)}"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    def __init__(self, comp, binary, args=()):
+        self.p = comp.popen([binary] + list(args), stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True)
         deadline = time.time() + 20
         while time.time() < deadline:
             if self.p.poll() is not None:
@@ -90,6 +89,9 @@ def main():
     ap.add_argument("--toplevel-only", action="store_true",
                     help="tap only GTK's own surface (shows the crash is specific to the canvas)")
     ap.add_argument("--gdb", action="store_true", help="attach gdb to the client and print a backtrace if it faults")
+    ap.add_argument("--backend", help="compositor backend (default: first with virtual input)")
+    ap.add_argument("--direct", action="store_true",
+                    help="run on this host rather than in the distrobox")
     a = ap.parse_args()
     W, H = map(int, a.output.split("x"))
 
@@ -107,38 +109,29 @@ def main():
             os.symlink(f"{src}/{f}", f"{build}/{f}")
 
     # ---- the real compositor
-    stamp, cfg = f"{root}/display", f"{root}/sway.cfg"
-    open(cfg, "w").write(
-        f"xwayland disable\noutput HEADLESS-1 mode {W}x{H}\ndefault_border none\n"
-        f"exec sh -c 'printf %s \"$WAYLAND_DISPLAY\" > {stamp}'\n")
-    subprocess.Popen(
-        ["distrobox", "enter", BOX, "--", "bash", "-lc",
-         f"exec env -u WAYLAND_DISPLAY -u DISPLAY WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 "
-         f"WLR_HEADLESS_OUTPUTS=1 sway -c {cfg} > {root}/sway.log 2>&1"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    t = time.time() + 30
-    while time.time() < t and not (os.path.exists(stamp) and os.path.getsize(stamp)):
-        time.sleep(0.2)
-    if not os.path.exists(stamp):
-        sys.exit(f"FAIL: sway never reported a display; see {root}/sway.log")
-    upstream = open(stamp).read().strip()
-    sway_pid = None
-    for pid in in_box("pidof sway").stdout.split():
-        if cfg in in_box(f"tr '\\0' ' ' < /proc/{pid}/cmdline").stdout:
-            sway_pid = int(pid)
-    print(f"== sway {upstream} {W}x{H} pid {sway_pid}", flush=True)
+    comp = proxy = None
+    try:
+        comp = start(W, H, out_dir=root, backend=a.backend,
+                     execution=Execution.from_env(direct=a.direct),
+                     required=("launch", "virtual_input"))
+    except (Unsupported, SystemExit) as exc:
+        sys.exit(f"FAIL: this test needs wlroots virtual input, which "
+                 f"{a.backend or 'the available backends'} do not provide ({exc})")
+    upstream = comp.wayland_display
+    print(f"== {comp.backend.name} {upstream} {W}x{H} pid {comp.pid}", flush=True)
 
     # A seat with no keyboard or pointer makes Cordial skip binding them, which
     # would leave the pointer half of this test measuring nothing.
     kbd = ptr = None
     if a.pointer:
-        kbd = Holder(f"{HOLDERS}/wl-keyboard-holder", upstream)
-        ptr = Holder(f"{HOLDERS}/wl-pointer-holder", upstream, [str(W), str(H)])
+        kbd = Holder(comp, f"{HOLDERS}/wl-keyboard-holder")
+        ptr = Holder(comp, f"{HOLDERS}/wl-pointer-holder", [str(W), str(H)])
 
     # ---- the proxy that adds the touchscreen
     listen, control = f"cordial-touch-{os.getpid()}", f"{root}/control.sock"
     proxy = subprocess.Popen(
         [sys.executable, PROXY, "serve", "--upstream", upstream, "--listen", listen, "--control", control, "--trace-cursor"],
+        env=comp.host_env({"WAYLAND_DISPLAY": upstream}),
         stdout=open(f"{root}/proxy.log", "w"), stderr=subprocess.STDOUT)
     t = time.time() + 10
     while time.time() < t and not os.path.exists(control):
@@ -147,10 +140,9 @@ def main():
     def ctl(*words):
         return sh([sys.executable, PROXY, "send", control, *map(str, words)]).stdout.strip()
 
-    env = dict(os.environ)
-    env.update(WAYLAND_DISPLAY=listen, GDK_BACKEND="wayland", CORDIAL_DEV_CONTROL="1",
-               CORDIAL_TRACE_TOUCH="1", CORDIAL_TRACE_MOUSE="1", XDG_DATA_HOME=root + "/data")
-    env.pop("DISPLAY", None)
+    env = comp.host_env({"WAYLAND_DISPLAY": listen, "GDK_BACKEND": "wayland",
+                         "CORDIAL_DEV_CONTROL": "1", "CORDIAL_TRACE_TOUCH": "1",
+                         "CORDIAL_TRACE_MOUSE": "1", "XDG_DATA_HOME": root + "/data"})
     for kv in a.env:
         k, _, v = kv.partition("=")
         env[k] = v
@@ -258,9 +250,10 @@ def main():
                 client.wait(timeout=15)
             except Exception:
                 client.kill()
-        proxy.terminate()
-        if sway_pid:
-            in_box(f"kill {sway_pid}")
+        if proxy:
+            proxy.terminate()
+        if comp:
+            comp.stop()
 
     print()
     if failures:

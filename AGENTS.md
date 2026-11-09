@@ -558,6 +558,13 @@ Wayland has no window-targeted injection. To drive Cordial's own input, call
 there is nothing to send through. To drive somebody else's window, nest a
 headless compositor on its own `WAYLAND_DISPLAY` and inject inside that.
 
+**Start that compositor with `tools/headless_compositor.py`, not a new config.**
+It has the sway, KWin (`--virtual`), weston and mutter invocations in one place,
+chooses one that provides the capability the harness asks for, and keeps every
+socket and D-Bus name under a private runtime directory. A harness that needs
+the virtual keyboard/pointer gets sway; one that only needs a window and a
+screenshot can run under KWin. See `docs/analysis/headless-compositors.md`.
+
 **To type real keys at Cordial's own widgets, hold the device open.**
 `tools/build-wl-holders.sh` builds two small clients that create a virtual
 keyboard and a virtual pointer inside a nested compositor and *keep* them:
