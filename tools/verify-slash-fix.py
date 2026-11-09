@@ -2,8 +2,9 @@
 """Verify commit 22127ba: pairing a forwarded press's release to itself,
 so a single "/" reliably opens chat and Sober #987 stays fixed.
 
-Model is tools/text-input-e2e.py (nested sway in the "cordial" distrobox,
-never cage, so a real seat exists), but the keystrokes under test are driven
+Model is tools/text-input-e2e.py (a nested headless compositor, sway because
+the virtual keyboard is wlroots, never cage, so a real seat exists), but the
+keystrokes under test are driven
 straight at the devctl socket rather than through the virtual keyboard:
 
   * `key down 53 0` / `key up 53 0` call `input::pass_key_event` directly --
@@ -25,18 +26,16 @@ guaranteed on every attempt rather than hoped for from a blind timing sweep.
 import argparse, json, os, re, socket, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+from headless_compositor import Execution, Unsupported, start  # noqa: E402
+
 HOLDERS = os.environ.get("CORDIAL_HOLDER_BIN", "/tmp/cordial-wl-holders")
-BOX = "cordial"
 OUT = "/tmp/cordial-agent-slash-out"
 TAG = "cordial-agent-slash"
 
 
 def sh(argv, **kw):
     return subprocess.run(argv, capture_output=True, text=True, **kw)
-
-
-def in_box(cmd):
-    return sh(["distrobox", "enter", BOX, "--", "bash", "-lc", cmd])
 
 
 class Devctl:
@@ -77,11 +76,10 @@ class Devctl:
 
 
 class Holder:
-    def __init__(self, binary, display, args=()):
-        self.p = subprocess.Popen(
-            ["distrobox", "enter", BOX, "--", "bash", "-lc",
-             f"export WAYLAND_DISPLAY={display}; exec {binary} {' '.join(args)}"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    def __init__(self, comp, binary, args=()):
+        self.p = comp.popen([binary] + list(args), stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True)
         deadline = time.time() + 20
         while time.time() < deadline:
             if self.p.poll() is not None:
@@ -107,43 +105,6 @@ class Holder:
             self.p.wait(timeout=5)
         except Exception:
             self.p.kill()
-
-
-SWAY_CFG = """xwayland disable
-output HEADLESS-1 mode {w}x{h}
-default_border none
-default_floating_border none
-focus_follows_mouse no
-exec sh -c 'printf %s "$WAYLAND_DISPLAY" > {stamp}'
-"""
-
-
-def start_sway(width, height, stamp, cfg, logf):
-    for f in (stamp, cfg):
-        if os.path.exists(f):
-            os.unlink(f)
-    with open(cfg, "w") as fh:
-        fh.write(SWAY_CFG.format(w=width, h=height, stamp=stamp))
-    subprocess.Popen(
-        ["distrobox", "enter", BOX, "--", "bash", "-lc",
-         f"exec env -u WAYLAND_DISPLAY -u DISPLAY WLR_BACKENDS=headless "
-         f"WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 "
-         f"sway -c {cfg} > {logf} 2>&1"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + 25
-    while time.time() < deadline:
-        if os.path.exists(stamp) and os.path.getsize(stamp):
-            return sway_pid(cfg), open(stamp).read().strip()
-        time.sleep(0.2)
-    raise RuntimeError(f"sway never reported a display; see {logf}")
-
-
-def sway_pid(cfg):
-    for pid in in_box("pidof sway").stdout.split():
-        argv = in_box(f"tr '\\0' ' ' < /proc/{pid}/cmdline").stdout
-        if cfg in argv:
-            return int(pid)
-    return None
 
 
 def profile_holder(profile):
@@ -209,6 +170,9 @@ def main():
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=800)
+    ap.add_argument("--backend", help="compositor backend (default: first with virtual input)")
+    ap.add_argument("--direct", action="store_true",
+                    help="run on this host rather than in the distrobox")
     args = ap.parse_args()
 
     os.makedirs(OUT, exist_ok=True)
@@ -236,11 +200,7 @@ def main():
     if held:
         sys.exit(f"FAIL: profile {args.profile!r} is already open in pid {held}.")
 
-    stamp = f"/tmp/{TAG}-display"
-    cfg = f"/tmp/{TAG}-sway.cfg"
-    swaylog = f"/tmp/{TAG}-sway.log"
-
-    sway = client = kbd = ptr = None
+    comp = client = kbd = ptr = None
     results = []
 
     def check(name, got, want):
@@ -251,26 +211,33 @@ def main():
         return ok
 
     try:
-        sway, display = start_sway(args.width, args.height, stamp, cfg, swaylog)
-        print(f"== nested sway on {display}, {args.width}x{args.height} (pid {sway})")
+        try:
+            comp = start(args.width, args.height, out_dir=OUT, backend=args.backend,
+                         execution=Execution.from_env(direct=args.direct),
+                         required=("launch", "virtual_input"))
+        except (Unsupported, SystemExit) as exc:
+            sys.exit(f"FAIL: this test needs wlroots virtual input, which "
+                     f"{args.backend or 'the available backends'} do not provide "
+                     f"({exc})")
+        display = comp.wayland_display
+        print(f"== nested {comp.backend.name} on {display}, {args.width}x{args.height} "
+              f"(pid {comp.pid})")
 
-        kbd = Holder(f"{HOLDERS}/wl-keyboard-holder", display)
-        ptr = Holder(f"{HOLDERS}/wl-pointer-holder", display, [str(args.width), str(args.height)])
-        caps = in_box(f"SWAYSOCK=$(ls -t $XDG_RUNTIME_DIR/sway-ipc.*.sock | head -1) "
-                      f"swaymsg -t get_seats -r").stdout
-        print(f"== seat: {caps.strip()[:200]}")
-        if '"capabilities":3' not in caps.replace(" ", ""):
+        kbd = Holder(comp, f"{HOLDERS}/wl-keyboard-holder")
+        ptr = Holder(comp, f"{HOLDERS}/wl-pointer-holder",
+                     [str(args.width), str(args.height)])
+        caps = comp.seat_capabilities()
+        print(f"== seat: {caps}")
+        if caps["capabilities"] & 3 != 3 or not caps["keyboards"] or not caps["pointers"]:
             sys.exit("FAIL: the seat does not advertise both a keyboard and a pointer")
 
-        env = dict(os.environ)
-        env.update(
-            WAYLAND_DISPLAY=display,
-            GDK_BACKEND="wayland",
-            CORDIAL_WAYLAND="1",
-            CORDIAL_DEV_CONTROL="1",
-            CORDIAL_TRACE_TEXT="1",
-            CORDIAL_TRACE_TEXT_SHOW_PASSWORDS="1",
-        )
+        env = comp.host_env({
+            "GDK_BACKEND": "wayland",
+            "CORDIAL_WAYLAND": "1",
+            "CORDIAL_DEV_CONTROL": "1",
+            "CORDIAL_TRACE_TEXT": "1",
+            "CORDIAL_TRACE_TEXT_SHOW_PASSWORDS": "1",
+        })
         join_url = os.environ.get(
             "CORDIAL_TEST_LINK", f"roblox://experiences/start?placeId={args.place}")
         log = open(log_path, "w")
@@ -462,8 +429,8 @@ def main():
                     client.wait(timeout=15)
                 except Exception:
                     client.kill()
-            if sway:
-                in_box(f"kill {sway}")
+            if comp and not args.keep:
+                comp.stop()
 
     print()
     failed = [r for r in results if not r[0]]

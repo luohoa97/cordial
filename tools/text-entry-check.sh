@@ -14,7 +14,8 @@
 #   * `CORDIAL_SCRIPT` parses and never fires unless `CORDIAL_INSTR=1` is also
 #     set. That cost four more runs.
 #   * `cordial_screenshot` reads the engine's own swapchain and cannot see a GTK
-#     editor at all, so it reports success whatever happens. `grim` against the
+#     editor at all, so it reports success whatever happens. A composited
+#     screenshot (grim under sway, ScreenShot2 under KWin) against the
 #     nested compositor is the only capture that proves anything here.
 #   * a client left over from a previous run holds the profile lock, and the
 #     refusal reads as a launch failure.
@@ -35,7 +36,9 @@
 # identical from outside.
 #
 # Usage:  tools/text-entry-check.sh [profile] [text]
-# Needs:  a signed-in profile, `cage` and `grim` in the container, and a build.
+# Needs:  a signed-in profile, a headless compositor this runner can start,
+#         and a build. `CORDIAL_HEADLESS_COMPOSITOR=kwin` uses KWin's virtual
+#         backend; sway is the default where it is installed.
 
 set -uo pipefail
 
@@ -47,6 +50,8 @@ mkdir -p "$OUT"
 LOG="$OUT/client.log"
 SHOT="$OUT/typed.png"
 BIN="$ROOT/target/release/cordial-run"
+COMP="$OUT/compositor"
+STATE="$COMP/state.json"
 
 APK="${CORDIAL_APK:-$HOME/.var/app/org.vinegarhq.Sober/data/sober/packages/x86_64/com.roblox.client/base.apk}"
 LIB="${CORDIAL_LIB_DIR:-$HOME/.cache/cordial/lib/x86_64}"
@@ -71,13 +76,18 @@ echo "== text entry check: profile=$PROFILE typing=$TYPED"
 reap
 : > "$LOG"
 
-nohup distrobox enter cordial -- bash -lc "
-  cd '$ROOT'
-  export CORDIAL_DEV_CONTROL=1 CORDIAL_TRACE_TEXT=1 CORDIAL_INSTR=1
-  ${CORDIAL_KEYS_TO_GAME_WHILE_TYPING:+export CORDIAL_KEYS_TO_GAME_WHILE_TYPING='$CORDIAL_KEYS_TO_GAME_WHILE_TYPING'}
-  '$BIN' --headless --lib-dir '$LIB' --apk '$APK' \
-    --host-libc --game-activity --run 0 --profile '$PROFILE'
-" > "$LOG" 2>&1 &
+python3 "$ROOT/tools/headless_compositor.py" stop --state "$STATE" >/dev/null 2>&1 || true
+python3 "$ROOT/tools/headless_compositor.py" start --state "$STATE" \
+  --out-dir "$COMP" --width 1280 --height 800 --require screenshot >/dev/null ||
+  fail "could not start a headless compositor with screenshot support"
+eval "$(python3 "$ROOT/tools/headless_compositor.py" env --state "$STATE")"
+trap 'python3 "$ROOT/tools/headless_compositor.py" stop --state "$STATE" >/dev/null 2>&1 || true' EXIT
+
+nohup env CORDIAL_DEV_CONTROL=1 CORDIAL_TRACE_TEXT=1 CORDIAL_INSTR=1 \
+  ${CORDIAL_KEYS_TO_GAME_WHILE_TYPING:+CORDIAL_KEYS_TO_GAME_WHILE_TYPING="$CORDIAL_KEYS_TO_GAME_WHILE_TYPING"} \
+  python3 "$ROOT/tools/headless_compositor.py" exec --state "$STATE" -- \
+  "$BIN" --lib-dir "$LIB" --apk "$APK" \
+    --host-libc --game-activity --run 0 --profile "$PROFILE" > "$LOG" 2>&1 &
 
 # 1. wait for the app shell rather than guessing at it
 for _ in $(seq 1 90); do
@@ -99,8 +109,10 @@ mcp() {
 # 2. click the search box, and keep trying. "Ready" is not "laid out", and a
 #    single click at a fixed coordinate is the step that flaked most often --
 #    every failure of it was misread as a broken fix at least once today.
-DISP=$(basename "$(ls -t "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/wayland-* 2>/dev/null | grep -v lock | head -1)")
-shoot() { timeout 25 distrobox enter cordial -- bash -lc "export WAYLAND_DISPLAY=$DISP; grim '$1'" >/dev/null 2>&1; }
+shoot() {
+  timeout 25 python3 "$ROOT/tools/headless_compositor.py" screenshot \
+    --state "$STATE" --path "$1" >/dev/null 2>&1
+}
 shoot "$OUT/before-click.png"
 
 for attempt in 1 2 3 4 5; do

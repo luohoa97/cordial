@@ -50,8 +50,9 @@ control is `--client-env CORDIAL_X11_EDITOR=off`, which must fail every
 visibility assertion and none of the readback ones.
 
 `--visibility` is the one case here that asks whether typed text can be *seen*:
-it photographs the compositor's output with grim (the only instrument that sees
-a GTK widget) and compares the editor's rectangle with and without the text.
+it photographs the compositor's output (grim under sway, ScreenShot2 under KWin
+— the only instrument that sees a GTK widget) and compares the editor's
+rectangle with and without the text.
 Its controls are `--client-env CORDIAL_VISIBILITY_ANCHOR=off` (fullscreen and
 tiled-after must fail, ADR-056) and, with `--gles`, `VK_ICD_FILENAMES=/nonexistent
 GSK_RENDERER=ngl` (every case must fail, ADR-047). Set `CORDIAL_E2E_XDG_ROOT` to
@@ -62,18 +63,17 @@ itself breaks `distrobox`.
 import argparse, json, os, re, shutil, socket, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+from headless_compositor import Execution, Unsupported, start  # noqa: E402
+
 HOLDERS = os.environ.get("CORDIAL_HOLDER_BIN", "/tmp/cordial-wl-holders")
-BOX = "cordial"                       # the distrobox with sway, grim and the holders
+BOX = "cordial"                       # fallback when no session has started yet
 OUT = os.environ.get("CORDIAL_E2E_OUT", "/tmp/cordial-text-e2e")
+COMP = None                           # the running Session, once main() starts one
 
 
 def sh(argv, **kw):
     return subprocess.run(argv, capture_output=True, text=True, **kw)
-
-
-def in_box(cmd):
-    """Run a shell command inside the container that has the compositor."""
-    return sh(["distrobox", "enter", BOX, "--", "bash", "-lc", cmd])
 
 
 class Devctl:
@@ -125,10 +125,16 @@ class Holder:
     """A persistent virtual input device, driven a line at a time."""
 
     def __init__(self, binary, display, args=()):
-        self.p = subprocess.Popen(
-            ["distrobox", "enter", BOX, "--", "bash", "-lc",
-             f"export WAYLAND_DISPLAY={display}; exec {binary} {' '.join(args)}"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if COMP is not None:
+            self.p = COMP.popen([binary] + list(args), stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True)
+        else:
+            self.p = subprocess.Popen(
+                ["distrobox", "enter", BOX, "--", "bash", "-lc",
+                 f"export WAYLAND_DISPLAY={display}; exec {binary} {' '.join(args)}"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True)
         # The holder prints "ready" once the device exists. Waiting for it is
         # the difference between a keyboard the seat has and one it is about
         # to have; every key sent before it is silently dropped.
@@ -184,81 +190,25 @@ class Case:
         return [r for r in self.results if not r[0]]
 
 
-SWAY_CFG = """xwayland disable
-output HEADLESS-1 mode {w}x{h}
-default_border none
-default_floating_border none
-focus_follows_mouse no
-{extra}
-exec sh -c 'printf %s "$WAYLAND_DISPLAY" > {stamp}'
-"""
+def start_compositor(width, height, backend=None, direct=False):
+    """Start a compositor with everything this file's window checks need.
 
-
-def start_sway(width, height):
-    """A headless sway, which reports the display it bound rather than being guessed at.
-
-    sway picks its own socket name -- `WAYLAND_DISPLAY` on its command line
-    names the display it would *connect* to, not the one it serves -- so it is
-    asked from an exec block. Guessing cost two runs.
+    This harness asks for the five capabilities it actually uses: a window
+    model, a composited screenshot, output resize, and the virtual keyboard and
+    pointer. KWin has the first two but no wlroots virtual-input globals and no
+    output-mode change after start, so the capability list selects sway rather
+    than silently running half of itself. KWin is still a working headless
+    backend for the launch-only harnesses (`frame-pacing-check.py`,
+    `startup-freeze-survey.sh`) and for the screenshot-only
+    `text-entry-check.sh`.
     """
-    # Under OUT and not a fixed /tmp name: two agents running this at once
-    # shared one stamp file and each read the other's display.
+    global COMP
     os.makedirs(OUT, exist_ok=True)
-    stamp, cfg = os.path.join(OUT, "sway-display"), os.path.join(OUT, "sway.cfg")
-    sway_log = os.path.join(OUT, "sway.log")
-    for f in (stamp, cfg):
-        if os.path.exists(f):
-            os.unlink(f)
-    with open(cfg, "w") as fh:
-        fh.write(SWAY_CFG.format(w=width, h=height, stamp=stamp,
-                                 extra=os.environ.get("CORDIAL_E2E_SWAY_EXTRA", "")))
-    # Detached from this process's stdout. Inheriting it means the compositor
-    # holds the pipe open after the script exits, and anything reading the
-    # script through a pipe -- `| tail`, a harness, an agent -- waits forever
-    # for an EOF that only arrives when the compositor dies. One whole run's
-    # results were lost that way before this line existed.
-    subprocess.Popen(
-        ["distrobox", "enter", BOX, "--", "bash", "-lc",
-         f"exec env -u WAYLAND_DISPLAY -u DISPLAY WLR_BACKENDS=headless "
-         f"WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 "
-         f"sway -c {cfg} > {sway_log} 2>&1"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        if os.path.exists(stamp) and os.path.getsize(stamp):
-            global SWAY_PID
-            SWAY_PID = sway_pid(cfg)
-            return SWAY_PID, open(stamp).read().strip()
-        time.sleep(0.2)
-    raise RuntimeError(f"sway never reported a display; see {sway_log}")
-
-
-SWAY_PID = None
-
-
-def swaymsg(args, raw=True):
-    """Run swaymsg against *this run's* compositor.
-
-    `ls -t sway-ipc.*.sock | head -1` picked the newest socket, which is
-    another agent's compositor whenever two of these run at once; the socket
-    name carries the compositor's pid, so name it.
-    """
-    return in_box(f"SWAYSOCK=$XDG_RUNTIME_DIR/sway-ipc.$(id -u).{SWAY_PID}.sock "
-                  f"swaymsg {'-r ' if raw else ''}{args}")
-
-
-def sway_pid(cfg):
-    """The compositor's own pid, so cleanup kills it rather than its launcher.
-
-    Killing the `distrobox enter` wrapper leaves sway running, and a stale
-    compositor holding a display is indistinguishable from a fresh one until
-    the seat comes back with no keyboard on it.
-    """
-    for pid in in_box("pidof sway").stdout.split():
-        argv = in_box(f"tr '\\0' ' ' < /proc/{pid}/cmdline").stdout
-        if cfg in argv:
-            return int(pid)
-    return None
+    COMP = start(width, height, out_dir=OUT, backend=backend,
+                 execution=Execution.from_env(direct=direct),
+                 required=("launch", "ipc", "screenshot", "virtual_input", "output_resize"),
+                 extra_config=os.environ.get("CORDIAL_E2E_SWAY_EXTRA", ""))
+    return COMP
 
 
 def profile_holder(profile):
@@ -320,6 +270,9 @@ def main():
                     help="output scale for the nested compositor (1.5 is fractional)")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=800)
+    ap.add_argument("--backend", help="compositor backend (default: first with the needed capabilities)")
+    ap.add_argument("--direct", action="store_true",
+                    help="run the compositor on this host rather than in the distrobox")
     args = ap.parse_args()
 
     if args.x11:
@@ -350,38 +303,43 @@ def main():
         sys.exit(f"FAIL: profile {args.profile!r} is already open in pid {held}. "
                  f"Pick another with --profile; do not kill a client someone is using.")
 
-    sway = client = kbd = ptr = None
+    comp = client = kbd = ptr = None
     case = Case()
     try:
         if args.scale:
             os.environ["CORDIAL_E2E_SWAY_EXTRA"] = (
                 os.environ.get("CORDIAL_E2E_SWAY_EXTRA", "") + f"\noutput HEADLESS-1 scale {args.scale}")
-        sway, display = start_sway(args.width, args.height)
-        print(f"== nested sway on {display}, {args.width}x{args.height}")
+        try:
+            comp = start_compositor(args.width, args.height, args.backend, args.direct)
+        except (Unsupported, SystemExit) as exc:
+            chosen = args.backend or "the available backends"
+            sys.exit(f"FAIL: this harness needs a window tree, a screenshot, output "
+                     f"resize and wlroots virtual input, which {chosen} do not "
+                     f"provide ({exc})")
+        display = comp.wayland_display
+        print(f"== nested {comp.backend.name} on {display}, {args.width}x{args.height}")
 
         # Both devices before the client, so the seat advertises a keyboard and
         # a pointer at the moment Cordial reads its capabilities. This is the
         # whole reason the double-insert guard has never been exercised.
         kbd = Holder(f"{HOLDERS}/wl-keyboard-holder", display)
         ptr = Holder(f"{HOLDERS}/wl-pointer-holder", display, [str(args.width), str(args.height)])
-        caps = swaymsg("-t get_seats").stdout
-        print(f"== seat: {caps.strip()[:200]}")
-        if '"capabilities":3' not in caps.replace(" ", ""):
+        caps = COMP.seat_capabilities()
+        print(f"== seat: {caps}")
+        if caps["capabilities"] & 3 != 3 or not caps["keyboards"] or not caps["pointers"]:
             sys.exit("FAIL: the seat does not advertise both a keyboard and a pointer; "
                      "every reading below would be taken with Cordial's key path switched off")
 
-        env = dict(os.environ)
-        env.update(
-            WAYLAND_DISPLAY=display,
-            GDK_BACKEND="wayland",
-            CORDIAL_DEV_CONTROL="1",
-            CORDIAL_TRACE_TEXT="1",
+        env = comp.host_env({
+            "GDK_BACKEND": "wayland",
+            "CORDIAL_DEV_CONTROL": "1",
+            "CORDIAL_TRACE_TEXT": "1",
             # The readback. Safe here and nowhere else: this harness types its
             # own known strings into a search box and never touches a sign-in
             # field. It also puts the clipboard in the log, so the log stays in
             # /tmp and is not something to paste into an issue.
-            CORDIAL_TRACE_TEXT_SHOW_PASSWORDS="1",
-        )
+            "CORDIAL_TRACE_TEXT_SHOW_PASSWORDS": "1",
+        })
         # **Redirecting XDG_* for the whole script breaks `distrobox`**, which
         # finds its container store through XDG_DATA_HOME: sway never starts and
         # nothing says why. CORDIAL_E2E_XDG_ROOT redirects the client alone
@@ -463,8 +421,8 @@ def main():
                     client.wait(timeout=15)
                 except Exception:
                     client.kill()
-            if sway:
-                in_box(f"kill {sway}")
+            if comp:
+                comp.stop()
 
     print()
     if case.failed:
@@ -812,7 +770,10 @@ def run_cases(case, dev, kbd, ptr, log_path, args, display):
     case.check("a TextBox has focus", box["focus"] != "none", True)
     if box["focus"] == "none":
         shot = os.path.join(OUT, "no-focus.png")
-        in_box(f"WAYLAND_DISPLAY={display} grim {shot}")
+        try:
+            COMP.screenshot(shot)
+        except Exception as e:
+            case.note("composited capture", f"refused: {e}")
         try:
             dev.send(f"screenshot {os.path.join(OUT, 'no-focus-swapchain.png')}")
         except Exception as e:
@@ -1003,23 +964,19 @@ def run_cases(case, dev, kbd, ptr, log_path, args, display):
                   f"x={before.get('x')} y={before.get('y')} "
                   f"w={before.get('w')} h={before.get('h')}")
         new_w, new_h = int(args.width) - 120, int(args.height) - 80
-        r = swaymsg(f"output HEADLESS-1 mode {new_w}x{new_h}")
+        try:
+            COMP.resize_output(new_w, new_h)
+            out = COMP.output_rect()
+            got_mode = f"{out[2]}x{out[3]}"
+        except Exception as e:
+            got_mode = f"error: {e}"
         # **Prove the resize happened before asserting anything about it.**
         # The first version of this case did not, and passed while reporting a
         # byte-identical rectangle either side -- which is exactly what a
-        # swaymsg that silently did nothing would produce. An instrument that
-        # cannot fail is not evidence, and this suite exists because that
+        # compositor that silently did nothing would produce. An instrument
+        # that cannot fail is not evidence, and this suite exists because that
         # mistake has already been made here more than once.
-        modes = swaymsg("-t get_outputs").stdout
-        case.note("swaymsg said", (r.stdout or r.stderr).strip()[:120])
-        got_mode = ""
-        try:
-            for o in json.loads(modes):
-                if o.get("name") == "HEADLESS-1":
-                    cm = o.get("current_mode") or {}
-                    got_mode = f"{cm.get('width')}x{cm.get('height')}"
-        except Exception as e:
-            case.note("could not read the output mode", str(e))
+        case.note("compositor output", got_mode)
         case.check("the output really did change size",
                    got_mode, f"{new_w}x{new_h}")
         # Generous: the engine has to notice the configure, re-lay-out, and
@@ -1044,7 +1001,7 @@ def run_cases(case, dev, kbd, ptr, log_path, args, display):
         s = state()
         case.check("typing still reaches the box after a resize", s["text"], "resized")
 
-        swaymsg(f"output HEADLESS-1 mode {args.width}x{args.height}")
+        COMP.resize_output(args.width, args.height)
         time.sleep(2.0)
 
     run_enter_and_engine_text(case, dev, kbd, log_path)
@@ -1086,8 +1043,8 @@ def run_cases(case, dev, kbd, ptr, log_path, args, display):
 # while the surface that would show them is never presented, is covered, or
 # draws them in the colour of what is behind them. `cordial_screenshot` reads
 # the engine's swapchain and cannot see a GTK widget, so these cases photograph
-# the *compositor's* output with grim and compare the editor's rectangle with and
-# without the typed text.
+# the *compositor's* output through `Session.screenshot` and compare the editor's
+# rectangle with and without the typed text.
 
 
 def write_png(path, w, h, rgb):
@@ -1103,12 +1060,10 @@ def write_png(path, w, h, rgb):
                 + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
-def grab(display, name):
+def grab(name):
     """Photograph the compositor's output; returns (w, h, rgb bytes) and writes `name`.png."""
     ppm = os.path.join(OUT, name + ".ppm")
-    r = in_box(f"WAYLAND_DISPLAY={display} grim -t ppm {ppm}")
-    if r.returncode != 0:
-        raise RuntimeError(f"grim failed: {r.stderr.strip()}")
+    COMP.screenshot(ppm)
     data = open(ppm, "rb").read()
     os.unlink(ppm)
     parts = data.split(b"\n", 3)
@@ -1166,33 +1121,8 @@ VIS_INK_MIN = 8
 
 
 def window_origin(pid):
-    """Where the client's surface starts on the output, in logical pixels, plus the output size."""
-    tree = json.loads(swaymsg("-t get_tree").stdout)
-    out = json.loads(swaymsg("-t get_outputs").stdout)[0]["rect"]
-    found = []
-
-    def walk(n):
-        if n.get("pid") == pid and n.get("type") in ("con", "floating_con"):
-            found.append(n)
-        for c in n.get("nodes", []) + n.get("floating_nodes", []):
-            walk(c)
-    walk(tree)
-    if not found:
-        # An Xwayland client's pid is not always the one sway records; with a
-        # single window on the output the only leaf view is the client.
-        def leaves(n):
-            kids = n.get("nodes", []) + n.get("floating_nodes", [])
-            if not kids and n.get("type") in ("con", "floating_con") and (n.get("window") or n.get("app_id")):
-                found.append(n)
-            for c in kids:
-                leaves(c)
-        leaves(tree)
-    if not found:
-        return None
-    n = found[0]
-    return (n["rect"]["x"] + n["window_rect"]["x"] - out["x"],
-            n["rect"]["y"] + n["window_rect"]["y"] - out["y"], out["width"], out["height"],
-            n["window_rect"]["width"], n["window_rect"]["height"])
+    """Where the client's surface starts on the output, in logical pixels."""
+    return COMP.window_origin(pid)
 
 
 VIS_TEXT = "MMMMMMMMMMMM"
@@ -1240,7 +1170,7 @@ def visibility_case(case, label, dev, kbd, pid, display, multiline=False):
     time.sleep(0.8)
     origin = window_origin(pid)
     if origin is None:
-        case.check(f"[{label}] the client's window was found in sway's tree", False, True)
+        case.check(f"[{label}] the client's window was found in the compositor's window list", False, True)
         return
     ox, oy, ow, oh, win_w, win_h = origin
     box = dev.textbox()
@@ -1261,14 +1191,14 @@ def visibility_case(case, label, dev, kbd, pid, display, multiline=False):
         # proves two photographs of it agree.
         rect = (ox, oy, win_w, win_h)
     slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
-    empty1 = grab(display, f"{slug}-empty")
-    empty2 = grab(display, f"{slug}-empty-again")
+    empty1 = grab(f"{slug}-empty")
+    empty2 = grab(f"{slug}-empty-again")
     scale = empty1[0] / ow
     noise = crop_diff(empty1, empty2, scale, rect)
     kbd.cmd(f"type {VIS_TEXT}")
     wait_for(dev, lambda b: b["chars"] == len(VIS_TEXT))
     time.sleep(1.0)                     # a frame for the compositor to show the new text
-    typed = grab(display, f"{slug}-typed")
+    typed = grab(f"{slug}-typed")
     delta = crop_diff(empty1, typed, scale, rect)
     held = dev.textbox()
     case.note("window origin / header / output", f"{ox},{oy} +{header} on {ow}x{oh}, image {empty1[0]}x{empty1[1]} (scale {scale:.2f})")
@@ -1289,6 +1219,18 @@ def visibility_case(case, label, dev, kbd, pid, display, multiline=False):
                f"(>= {VIS_INK_MIN} more pixels of #d5d5dd)", ink - ink_before >= VIS_INK_MIN, True)
 
 
+def client_window(pid):
+    """The client's window, or the only window on the output."""
+    win = COMP.window(pid=pid)
+    if win is None:
+        windows = COMP.windows()
+        if len(windows) == 1:
+            win = windows[0]
+    if win is None:
+        sys.exit("FAIL: could not find the client's window to change its mode")
+    return win
+
+
 def run_visibility(case, dev, kbd, pid, display, args):
     modes = [m.strip() for m in args.visibility.split(",") if m.strip()]
     print(f"\n-- V. typed text is visible in the composited output: {', '.join(modes)}"
@@ -1297,14 +1239,16 @@ def run_visibility(case, dev, kbd, pid, display, args):
         if mode == "windowed":
             pass
         elif mode == "fullscreen":
-            swaymsg("fullscreen enable")
+            COMP.set_fullscreen(client_window(pid), True)
             time.sleep(3.0)
         elif mode == "tiled-after":
-            swaymsg("fullscreen enable"); time.sleep(2.0)
-            swaymsg("fullscreen disable"); time.sleep(3.0)
+            win = client_window(pid)
+            COMP.set_fullscreen(win, True); time.sleep(2.0)
+            COMP.set_fullscreen(win, False); time.sleep(3.0)
         elif mode == "floating":
-            swaymsg("floating enable"); time.sleep(0.5)
-            swaymsg("resize set 900 600"); swaymsg("move position 100 80")
+            win = client_window(pid)
+            COMP.set_floating(win, True); time.sleep(0.5)
+            COMP.set_geometry(win, 100, 80, 900, 600)
             time.sleep(3.0)
         else:
             sys.exit(f"unknown visibility mode {mode!r}")
@@ -1312,9 +1256,9 @@ def run_visibility(case, dev, kbd, pid, display, args):
         visibility_case(case, mode + " single-line", dev, kbd, pid, display, multiline=False)
         visibility_case(case, mode + " multi-line", dev, kbd, pid, display, multiline=True)
         if mode == "floating":
-            swaymsg("floating disable"); time.sleep(2.0)
+            COMP.set_floating(client_window(pid), False); time.sleep(2.0)
         elif mode == "fullscreen":
-            swaymsg("fullscreen disable"); time.sleep(2.0)
+            COMP.set_fullscreen(client_window(pid), False); time.sleep(2.0)
 
 
 # --------------------------------------------------------------------- X11

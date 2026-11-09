@@ -25,7 +25,8 @@ Usage:  tools/frame-pacing-check.py [--profile NAME] [--seconds N] [--idle]
 import argparse, os, re, socket, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BOX = "cordial"
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+from headless_compositor import Execution, start  # noqa: E402
 
 
 def send(sock, line):
@@ -46,6 +47,9 @@ def main():
     ap.add_argument("--seconds", type=float, default=40)
     ap.add_argument("--idle", action="store_true", help="the control: no input at all")
     ap.add_argument("--hz", type=float, default=60)
+    ap.add_argument("--backend", help="compositor backend (default: first available)")
+    ap.add_argument("--direct", action="store_true",
+                    help="run on this host rather than in the distrobox")
     args = ap.parse_args()
 
     out = "/tmp/cordial-pacing"
@@ -55,81 +59,61 @@ def main():
 
     for pid in subprocess.run(["pidof", "cordial-run"], capture_output=True, text=True).stdout.split():
         os.kill(int(pid), 9)
-    subprocess.run(["distrobox", "enter", BOX, "--", "bash", "-lc",
-                    "for p in $(pidof sway); do kill -9 $p 2>/dev/null; done"],
-                   capture_output=True)
     time.sleep(3)
 
-    stamp, cfg = "/tmp/cordial-pacing-display", "/tmp/cordial-pacing-sway.cfg"
-    for f in (stamp, cfg):
-        if os.path.exists(f):
-            os.unlink(f)
-    open(cfg, "w").write(
-        "xwayland disable\noutput HEADLESS-1 mode 1280x800\ndefault_border none\n"
-        f"exec sh -c 'printf %s \"$WAYLAND_DISPLAY\" > {stamp}'\n")
-    subprocess.Popen(["distrobox", "enter", BOX, "--", "bash", "-lc",
-                      "exec env -u WAYLAND_DISPLAY -u DISPLAY WLR_BACKENDS=headless "
-                      "WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 "
-                      f"sway -c {cfg} > /tmp/cordial-pacing-sway.log 2>&1"],
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    display = None
-    for _ in range(120):
-        if os.path.exists(stamp) and os.path.getsize(stamp):
-            display = open(stamp).read().strip()
-            break
-        time.sleep(0.2)
-    if not display:
-        sys.exit("FAIL: sway never reported a display")
-
-    env = dict(os.environ, WAYLAND_DISPLAY=display, GDK_BACKEND="wayland",
-               CORDIAL_DEV_CONTROL="1")
-    apk = os.path.expanduser("~/.var/app/org.vinegarhq.Sober/data/sober/packages/"
-                             "x86_64/com.roblox.client/base.apk")
-    client = subprocess.Popen(
-        [os.path.join(ROOT, "target/release/cordial-run"),
-         "--lib-dir", os.path.expanduser("~/.cache/cordial/lib/x86_64"), "--apk", apk,
-         "--host-libc", "--game-activity", "--run", "0", "--profile", args.profile],
-        env=env, stdout=open(log, "w"), stderr=subprocess.STDOUT)
-
-    for _ in range(120):
-        if re.search(r"app ready: (Home|Landing)", open(log, errors="replace").read()):
-            break
-        time.sleep(1)
-    else:
-        client.kill()
-        sys.exit(f"FAIL: never became ready; see {log}")
-    time.sleep(6)
-
-    first = int(re.search(r"presents=(\d+)", send(sock, "info")).group(1))
-    if first < 10:
-        time.sleep(6)
-        if int(re.search(r"presents=(\d+)", send(sock, "info")).group(1)) == first:
-            client.kill()
-            sys.exit("SKIPPED: this launch hit the startup freeze (docs/NEXT.md §0), "
-                     "which is not a pacing result. Run it again.")
-
-    # A small square, not a repeated point: `pass_mouse_move` derives its delta
-    # from the previous position, so the same coordinate twice reports no
-    # movement -- which the throttle reads as idle, which is the state this
-    # measurement exists to stay out of.
-    started, sent = time.time(), 0
-    box = [(500, 300), (700, 300), (700, 450), (500, 450)]
-    while time.time() - started < args.seconds:
-        if not args.idle:
-            x, y = box[sent % 4]
-            send(sock, f"move {x} {y}")
-            sent += 1
-        time.sleep(1.0 / args.hz)
-    elapsed = time.time() - started
-
-    info = send(sock, "info")
-    client.terminate()
+    comp = start(1280, 800, out_dir=out, backend=args.backend,
+                 execution=Execution.from_env(direct=args.direct),
+                 required=("launch",))
+    client = None
     try:
-        client.wait(timeout=15)
-    except Exception:
-        client.kill()
-    subprocess.run(["distrobox", "enter", BOX, "--", "bash", "-lc",
-                    "for p in $(pidof sway); do kill -9 $p 2>/dev/null; done"], capture_output=True)
+        env = comp.host_env({"GDK_BACKEND": "wayland", "CORDIAL_DEV_CONTROL": "1"})
+        apk = os.path.expanduser("~/.var/app/org.vinegarhq.Sober/data/sober/packages/"
+                                 "x86_64/com.roblox.client/base.apk")
+        client = subprocess.Popen(
+            [os.path.join(ROOT, "target/release/cordial-run"),
+             "--lib-dir", os.path.expanduser("~/.cache/cordial/lib/x86_64"), "--apk", apk,
+             "--host-libc", "--game-activity", "--run", "0", "--profile", args.profile],
+            env=env, stdout=open(log, "w"), stderr=subprocess.STDOUT)
+
+        for _ in range(120):
+            if re.search(r"app ready: (Home|Landing)", open(log, errors="replace").read()):
+                break
+            time.sleep(1)
+        else:
+            client.kill()
+            sys.exit(f"FAIL: never became ready; see {log}")
+        time.sleep(6)
+
+        first = int(re.search(r"presents=(\d+)", send(sock, "info")).group(1))
+        if first < 10:
+            time.sleep(6)
+            if int(re.search(r"presents=(\d+)", send(sock, "info")).group(1)) == first:
+                client.kill()
+                sys.exit("SKIPPED: this launch hit the startup freeze (docs/NEXT.md §0), "
+                         "which is not a pacing result. Run it again.")
+
+        # A small square, not a repeated point: `pass_mouse_move` derives its delta
+        # from the previous position, so the same coordinate twice reports no
+        # movement -- which the throttle reads as idle, which is the state this
+        # measurement exists to stay out of.
+        started, sent = time.time(), 0
+        box = [(500, 300), (700, 300), (700, 450), (500, 450)]
+        while time.time() - started < args.seconds:
+            if not args.idle:
+                x, y = box[sent % 4]
+                send(sock, f"move {x} {y}")
+                sent += 1
+            time.sleep(1.0 / args.hz)
+        elapsed = time.time() - started
+        info = send(sock, "info")
+    finally:
+        if client is not None:
+            client.terminate()
+            try:
+                client.wait(timeout=15)
+            except Exception:
+                client.kill()
+        comp.stop()
 
     mode = "idle (control)" if args.idle else f"input at {sent / elapsed:.0f}/s"
     print(f"== {mode}, {elapsed:.0f}s")
