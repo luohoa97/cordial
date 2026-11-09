@@ -7,6 +7,10 @@
 cmake_minimum_required(VERSION 3.16)
 project(cordial_guest LANGUAGES C CXX ASM)
 
+# ccache/sccache launchers for dynarmic and the shim. Neither tool is
+# required; see the file for why it is set either way.
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../../cmake/CompilerCache.cmake)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)

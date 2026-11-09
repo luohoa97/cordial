@@ -22,6 +22,23 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## Cold builds use ccache and sccache when installed, 2026-11-09
+
+Cargo's `target/` makes the edit loop cheap and everything else expensive: a
+`cargo clean`, a fresh checkout, and the `target-toolbox/`/`target-nix/`
+directories the recipes keep all compile the workspace from nothing. The tree
+now sends rustc through `sccache` (`.cargo/config.toml` →
+`tools/rustc-wrapper.sh`) and hands CMake `ccache`, or `sccache`, through
+`cmake/CompilerCache.cmake` — each only when the tool is installed. Neither is
+required, `CORDIAL_COMPILER_CACHE=off` is the opt-out, and the Flatpak, Nix and
+distro builds are unchanged.
+
+Three cold `cargo build --release` runs, 12 cores, same target path: 120 s with
+no cache, 135–149 s filling empty caches, 34–36 s warm (180 of 184 rustc
+invocations and 106 of 106 native objects hit). The edit loop is unchanged by
+design — sccache passes incremental compilations through without caching them.
+See [ADR-067](adr/ADR-067-compiler-caches-are-launchers-not-a-build-requirement.md).
+
 ## #92: two startup regimes, a stall that is Cordial's own sleep, and the freeze's window, 2026-10-16
 
 Fourteen signed-in launches of `CordialTest` (Roblox 2.742.0.1059, nested headless

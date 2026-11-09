@@ -1,0 +1,10 @@
+# Every rustc invocation goes through this script: it execs sccache when one is
+# installed and rustc when one is not. tools/rustc-wrapper.sh has the reasoning
+# -- mostly that making sccache a hard `rustc-wrapper` would fail every build on
+# a host that does not have it, which is most of them.
+#
+# A relative wrapper is resolved against the workspace root, so `cargo build`
+# works from any subdirectory. Set RUSTC_WRAPPER yourself to use your own
+# wrapper; the environment wins over this file.
+[build]
+rustc-wrapper = "./tools/rustc-wrapper.sh"

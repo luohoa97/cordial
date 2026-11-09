@@ -215,6 +215,38 @@ cargo build --release      # Clang required; AOSP bionic does not build with GCC
 cargo test --release
 ```
 
+### Compiler caches
+
+Install `ccache` and `sccache` and both builds use them without any flag:
+`sccache` wraps every rustc invocation through
+[`.cargo/config.toml`](.cargo/config.toml), and
+[`cmake/CompilerCache.cmake`](cmake/CompilerCache.cmake) hands CMake's
+`CMAKE_<LANG>_COMPILER_LAUNCHER` to `ccache` for the native tree and the
+submodules under it. Neither tool is a requirement: with neither installed the
+compile lines are exactly what they were before, which is why this is safe in
+the Flatpak, the Nix build and every distro package. `CORDIAL_COMPILER_CACHE=off`
+turns both off.
+
+```bash
+# Fedora; Debian/Ubuntu, Arch and others package ccache too. sccache is in
+# newer distributions and installs with `cargo install sccache --locked`.
+sudo dnf install ccache sccache
+```
+
+Install them inside the container too if you use `just build toolbox` — the
+build runs there and only sees that `PATH` — and the build works either way.
+
+The caches pay off after `cargo clean`, on a fresh checkout, or in a second
+target directory — Cargo's own incremental cache already covers the ordinary
+edit loop, and sccache passes incremental compilations through without storing
+them. On a 12-core machine a cold `cargo build --release` takes 120 s with no
+cache, 135–149 s on the first build that fills both (it writes about 275 MB),
+and 34–36 s against a warm one;
+[ADR-067](docs/adr/ADR-067-compiler-caches-are-launchers-not-a-build-requirement.md)
+has the method and the caveats. The caches live in `~/.cache/ccache` and
+`~/.cache/sccache`; `ccache -C` and `sccache --stop-server && rm -rf
+~/.cache/sccache` empty them.
+
 ### If you cannot build or test locally
 
 **Send the patch anyway.** A contribution that says "I could not run the tests,

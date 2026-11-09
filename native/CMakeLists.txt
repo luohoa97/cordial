@@ -14,6 +14,10 @@ if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     "AOSP bionic does not build with GCC.")
 endif()
 
+# ccache/sccache launchers for this tree and the linker submodule below it.
+# Neither tool is required; see the file for why it is set either way.
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/CompilerCache.cmake)
+
 # The AOSP bionic linker, via minecraft-linux's host wrapper. Target: `linker`.
 # crates/cordial-linker-sys/build.rs passes a patched overlay of the
 # submodule here (patches/apply.rs); the submodule itself is the default for
