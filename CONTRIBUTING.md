@@ -215,6 +215,44 @@ cargo build --release      # Clang required; AOSP bionic does not build with GCC
 cargo test --release
 ```
 
+### Compiler caches (optional)
+
+**Nothing in this section is needed to build Cordial, and a checkout with
+neither tool builds exactly as it always has.** If `ccache` or `sccache` happens
+to be installed, though, the build uses it with no flag and no configuration:
+`sccache` wraps every rustc invocation through
+[`.cargo/config.toml`](.cargo/config.toml), and
+[`cmake/CompilerCache.cmake`](cmake/CompilerCache.cmake) hands CMake's
+`CMAKE_<LANG>_COMPILER_LAUNCHER` to `ccache` for the native tree and the
+submodules under it. A missing tool is not an error and not a warning — it
+means nothing is cached. That is also why the Flatpak, the Nix build and every
+distro package are unaffected. `CORDIAL_COMPILER_CACHE=off` turns both off
+explicitly.
+
+Install them only if you want the cold-build speedup:
+
+```bash
+# Fedora; Debian/Ubuntu and Arch package ccache too. sccache is packaged by
+# newer distributions and installs with `cargo install sccache --locked`.
+sudo dnf install ccache sccache
+```
+
+`just build toolbox` runs the build inside the container and only sees that
+`PATH`, so install them there as well if you want the same speedup there —
+and if you would rather install neither, nothing about the build changes except
+its speed.
+
+The caches pay off after `cargo clean`, on a fresh checkout, or in a second
+target directory — Cargo's own incremental cache already covers the ordinary
+edit loop, and sccache passes incremental compilations through without storing
+them. On a 12-core machine a cold `cargo build --release` takes 120 s with no
+cache, 135–149 s on the first build that fills both (it writes about 275 MB),
+and 34–36 s against a warm one;
+[ADR-067](docs/adr/ADR-067-compiler-caches-are-launchers-not-a-build-requirement.md)
+has the method and the caveats. The caches live in `~/.cache/ccache` and
+`~/.cache/sccache`; `ccache -C` and `sccache --stop-server && rm -rf
+~/.cache/sccache` empty them.
+
 ### If you cannot build or test locally
 
 **Send the patch anyway.** A contribution that says "I could not run the tests,
