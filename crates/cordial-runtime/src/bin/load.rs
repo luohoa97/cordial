@@ -2007,7 +2007,7 @@ fn main() -> ExitCode {
     // Landing, because it asks these mirrors and they said user 0. See
     // `cordial_runtime::identity` and docs/design/sign-in.md §9.
     cordial_runtime::identity::listen();
-    cordial_runtime::identity::restore();
+    let signed_in_at_start = cordial_runtime::identity::restore();
 
     // Started this early, before `JNI_OnLoad`, so the AT-SPI bus connection
     // (a D-Bus round trip) has as much time as possible to finish before the
@@ -4919,6 +4919,50 @@ fn main() -> ExitCode {
                                                         if post_gate {
                                                             if linker::game_activity::flags_failed() == 0 {
                                                                 println!("  post gate: not needed, the engine loaded its flags itself");
+                                                            } else if signed_in_at_start {
+                                                                // A slow network leaves startup HTTP outstanding
+                                                                // for tens of seconds; the post's own block then
+                                                                // wedges the render thread. `HOME_PAGE_INTERACTIVE`
+                                                                // is the first point at which the feed is laid out,
+                                                                // and the 20 s arm of the delayed-proxy measurement
+                                                                // recovered after posting there. The 2 s wait for
+                                                                // Home keeps a restored-but-landing session on the
+                                                                // old step gate; it never announces Home.
+                                                                let home = std::time::Instant::now();
+                                                                while linker::game_activity::home_ready() == 0
+                                                                    && home.elapsed()
+                                                                        < std::time::Duration::from_secs(2)
+                                                                {
+                                                                    std::thread::sleep(
+                                                                        std::time::Duration::from_millis(2),
+                                                                    );
+                                                                }
+                                                                if linker::game_activity::home_ready() == 0 {
+                                                                    cordial_runtime::post_gate::hold(&logs_dir);
+                                                                } else {
+                                                                    let limit = std::env::var(
+                                                                        "CORDIAL_POST_INTERACTIVE_MS",
+                                                                    )
+                                                                    .ok()
+                                                                    .and_then(|v| v.parse::<u64>().ok())
+                                                                    .unwrap_or(30_000);
+                                                                    let t0 = std::time::Instant::now();
+                                                                    while linker::game_activity::home_interactive() == 0
+                                                                        && t0.elapsed()
+                                                                            < std::time::Duration::from_millis(limit)
+                                                                    {
+                                                                        std::thread::sleep(
+                                                                            std::time::Duration::from_millis(2),
+                                                                        );
+                                                                    }
+                                                                    let seen =
+                                                                        linker::game_activity::home_interactive() != 0;
+                                                                    println!(
+                                                                        "  post gate: HOME_PAGE_INTERACTIVE {} after {} ms",
+                                                                        if seen { "seen" } else { "NOT seen" },
+                                                                        t0.elapsed().as_millis()
+                                                                    );
+                                                                }
                                                             } else {
                                                                 cordial_runtime::post_gate::hold(&logs_dir);
                                                             }

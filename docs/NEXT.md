@@ -22,6 +22,33 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## Slow HTTP stalls the late post; wait for `HOME_PAGE_INTERACTIVE`, 2026-11-08
+
+A local HTTP proxy that delays every connection by 12 s, with `flag_cache.dat`
+set aside, reproduces the "skeleton on some launches" shape deterministically at
+3840x2159 in nested headless KWin. The client reaches `RootSwitchNavigator`, the
+late post is made, and it then presents 1-2 frames for the rest of a 60 s run.
+
+Arms, one launch each, presents at 2 / 12 / 60 s:
+
+| arm | presents | note |
+|---|---|---|
+| ADR-065 gate, async | 1 / 1 / 2 | |
+| gate off, sync 250 ms | 0 / 0 / 1 | |
+| async, Home + 80 ms | 0 / 0 / 1 | |
+| no post | 2 / 150 / 2935 | healthy, but no `ClientRunInfo` / `RbxStorage::init` in the engine log |
+| post at Home + 20 s | 1 / 148 / 3036 | 5 s pause at 447 frames, then recovered |
+| post at `HOME_PAGE_INTERACTIVE` | 1 / 149 / 4496 | post at 24.4 s, then healthy |
+
+The early post wedges the render thread while startup HTTP is outstanding; the
+no-post arm proves the feed can be laid out without the call, but it is not the
+same client. Waiting for the engine's own `HOME_PAGE_INTERACTIVE` before posting
+fixes the permanent stall and costs about 5 s of pause on the slow arm instead.
+On an ordinary network it is not visible: warm and cold launches announced the
+marker at 616 and 675 ms, and presented 1355 and 1319 frames in the first 30 s.
+Signed-out and `Landing` sessions never announce Home and keep ADR-065.
+See [ADR-066](adr/ADR-066-the-late-post-waits-for-the-home-page-on-a-slow-network.md).
+
 ## #92: two startup regimes, a stall that is Cordial's own sleep, and the freeze's window, 2026-10-16
 
 Fourteen signed-in launches of `CordialTest` (Roblox 2.742.0.1059, nested headless

@@ -440,6 +440,24 @@ extern "C" unsigned cordial_home_ready(void) {
     return g_home_ready.load(std::memory_order_acquire);
 }
 
+/// How many times the engine has reported `HOME_PAGE_INTERACTIVE`.
+///
+/// Later than `APP_READY Home`: the feed has been laid out and the client is
+/// usable. The late post-settings call is held until this on a slow network,
+/// where posting while startup HTTP is still outstanding wedges the render
+/// thread (measured with a deliberately delayed proxy; the call at 250 ms, at
+/// the first render step, or at Home + 80 ms all left the client at 1-2
+/// presents for a minute, against 2935 with no post at all).
+static std::atomic<unsigned> g_home_interactive{0};
+
+extern "C" void cordial_note_home_interactive(void) {
+    g_home_interactive.fetch_add(1, std::memory_order_release);
+}
+
+extern "C" unsigned cordial_home_interactive(void) {
+    return g_home_interactive.load(std::memory_order_acquire);
+}
+
 /// How many times the engine has said its flag load failed. Cordial's own
 /// bootstrap delivers settings and flags and the engine answers
 /// `onFlagsFailed` when it has no usable flag cache; with a valid cache it
@@ -1198,6 +1216,9 @@ public:
             if (auto* sink = g_app_ready_sink.load(std::memory_order_acquire)) {
                 sink(payload.c_str());
             }
+        }
+        if (kind == "HOME_PAGE_INTERACTIVE") {
+            cordial_note_home_interactive();
         }
     }
 
