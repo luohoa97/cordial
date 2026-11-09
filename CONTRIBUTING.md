@@ -215,26 +215,32 @@ cargo build --release      # Clang required; AOSP bionic does not build with GCC
 cargo test --release
 ```
 
-### Compiler caches
+### Compiler caches (optional)
 
-Install `ccache` and `sccache` and both builds use them without any flag:
+**Nothing in this section is needed to build Cordial, and a checkout with
+neither tool builds exactly as it always has.** If `ccache` or `sccache` happens
+to be installed, though, the build uses it with no flag and no configuration:
 `sccache` wraps every rustc invocation through
 [`.cargo/config.toml`](.cargo/config.toml), and
 [`cmake/CompilerCache.cmake`](cmake/CompilerCache.cmake) hands CMake's
 `CMAKE_<LANG>_COMPILER_LAUNCHER` to `ccache` for the native tree and the
-submodules under it. Neither tool is a requirement: with neither installed the
-compile lines are exactly what they were before, which is why this is safe in
-the Flatpak, the Nix build and every distro package. `CORDIAL_COMPILER_CACHE=off`
-turns both off.
+submodules under it. A missing tool is not an error and not a warning — it
+means nothing is cached. That is also why the Flatpak, the Nix build and every
+distro package are unaffected. `CORDIAL_COMPILER_CACHE=off` turns both off
+explicitly.
+
+Install them only if you want the cold-build speedup:
 
 ```bash
-# Fedora; Debian/Ubuntu, Arch and others package ccache too. sccache is in
+# Fedora; Debian/Ubuntu and Arch package ccache too. sccache is packaged by
 # newer distributions and installs with `cargo install sccache --locked`.
 sudo dnf install ccache sccache
 ```
 
-Install them inside the container too if you use `just build toolbox` — the
-build runs there and only sees that `PATH` — and the build works either way.
+`just build toolbox` runs the build inside the container and only sees that
+`PATH`, so install them there as well if you want the same speedup there —
+and if you would rather install neither, nothing about the build changes except
+its speed.
 
 The caches pay off after `cargo clean`, on a fresh checkout, or in a second
 target directory — Cargo's own incremental cache already covers the ordinary
