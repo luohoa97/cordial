@@ -1795,6 +1795,9 @@ fn main() -> ExitCode {
         return ExitCode::from(cordial_shell::vulkan_probe::run_probe_mode());
     }
 
+    // Before the engine has a thread; see the function's own doc.
+    cordial_shell::host_window::adopt_user_locale_keeping_c_numbers();
+
     // **Before `parse()`, and that is not stylistic.** `--profile` latches the
     // active profile directory as a side effect of being parsed, and the whole
     // point of `--headless` is that the compositor must already be this

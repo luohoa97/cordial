@@ -22,6 +22,32 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## #122: overlapping Home tiles are a decimal comma reaching the engine, 2026-11-09
+
+Reproduced on CachyOS, GNOME Wayland, Intel Arc 140V, Roblox 2.742.0.1059, the
+0.34.1 `.pkg.tar.zst`, `LANG=es_ES.UTF-8` and an empty `flags.json`. The second
+row of "Recommended for You" drew over the first.
+
+The same binary and profile with `LC_NUMERIC=C` drew the grid correctly. With
+the fix built, `cordial-run` drew it correctly in all 5 launches that reached
+Home (3 with the session's locale, 2 with `LC_ALL=es_ES.UTF-8`), against 2 of 2
+broken for the package alternated between them. `cordial-run` now takes the
+user's locale once, before the engine has a thread, keeps `LC_NUMERIC` at C, and
+stops GTK re-applying the locale when the window opens. Which libc call the
+layout goes through is `INFERRED`: nothing looked inside the engine.
+
+**`FFlagUIGpuGradient` is not what this was on this machine.** It was never set
+here. It may still matter for a build or GPU not measured here; the reports on
+#122 that it helped or did not are unexplained by this. Nor is "Flatpak against
+native" the distinction: the same symptom was reported from the Flatpak, and
+whether a given runtime has the user's locale is `INFERRED`.
+
+**The `SIGBUS` seen while measuring this is older and is not this fix.** Killing
+a client and relaunching at once crashed with a write to an empty
+`LocalStorage/memProfStorage<previous pid>.json`, the killed client's own file:
+2 of 7 relaunches of the fixed build and 1 of 10 of the unfixed 0.34.1 package.
+Only reached by killing the client; not investigated further.
+
 ## #92: two startup regimes, a stall that is Cordial's own sleep, and the freeze's window, 2026-10-16
 
 Fourteen signed-in launches of `CordialTest` (Roblox 2.742.0.1059, nested headless
