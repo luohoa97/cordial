@@ -103,7 +103,10 @@ Environment:
 
 The default execution is still the `cordial` distrobox when `distrobox` is
 installed, because that is where the build and the input holders are. A host
-without it runs directly. `CORDIAL_HARNESS_BOX=none` is the explicit form.
+without it runs directly. `CORDIAL_HARNESS_BOX=none` is the explicit form. If
+the box has no compositor that can provide what the harness asked for, the
+runner tries the host before giving up: a KDE machine with distrobox installed
+should not lose the KWin on its own desktop to a container that never had it.
 
 ## What each harness asks for now
 

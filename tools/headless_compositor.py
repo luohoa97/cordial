@@ -150,22 +150,27 @@ class Execution:
     named box.
     """
 
-    def __init__(self, box: str | None):
+    def __init__(self, box: str | None, forced: bool = False):
         self.box = box
+        # `forced` means the caller named this environment. When it did not,
+        # `start()` may try the host if the box has no usable compositor: a KDE
+        # developer with distrobox installed should not lose the KWin on their
+        # own desktop to a container that never had it.
+        self.forced = forced
         self._which_cache: dict[str, str | None] = {}
 
     @classmethod
     def from_env(cls, box: str | None = None, direct: bool = False) -> "Execution":
         env_box = os.environ.get("CORDIAL_HARNESS_BOX")
         if direct or env_box in ("none", "host", ""):
-            return cls(None)
+            return cls(None, forced=True)
         if box is not None:
-            return cls(box)
+            return cls(box, forced=True)
         if env_box:
-            return cls(env_box)
+            return cls(env_box, forced=True)
         if shutil.which("distrobox"):
             return cls("cordial")
-        return cls(None)
+        return cls(None, forced=True)
 
     def wrap(self, argv: Sequence[str]) -> list[str]:
         if self.box is None:
@@ -206,7 +211,7 @@ class Execution:
 
     @classmethod
     def from_prefix(cls, prefix: dict) -> "Execution":
-        return cls(prefix.get("box"))
+        return cls(prefix.get("box"), forced=True)
 
 
 @dataclass
@@ -790,7 +795,14 @@ def start(width: int = 1280, height: int = 800, *, out_dir: str,
     """Start a nested compositor and return a session for it."""
     execution = execution or Execution.from_env()
     required = tuple(required)
-    backend_name = _choose_backend(execution, backend, required)
+    try:
+        backend_name = _choose_backend(execution, backend, required)
+    except SystemExit:
+        if execution.forced or execution.box is None:
+            raise
+        host = Execution(None, forced=True)
+        backend_name = _choose_backend(host, backend, required)
+        execution = host
     spec = BACKENDS[backend_name]
     out_dir = os.path.abspath(out_dir)
     os.makedirs(out_dir, exist_ok=True)
