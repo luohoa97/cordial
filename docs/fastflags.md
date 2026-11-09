@@ -185,12 +185,23 @@ Look a channel up in [`docs/analysis/flog-channel-shapes.tsv`](https://github.co
 
 ## If the interface looks coarse
 
-The interface is laid out for a low-density phone: render resolution is 720p and `dpiScale` is 1.0. For a direct `cordial-run` launch, raise both:
+On Wayland this is automatic now: the canvas is created at the output's
+physical resolution and Roblox is told the matching density, so a 2× display
+renders a 2× framebuffer at the same interface size. Nothing needs setting for
+the usual case.
+
+`CORDIAL_DPI_SCALE` still overrides the density, and `CORDIAL_RESOLUTION` still
+sets the window's initial size. On X11, which has no output scale to follow, the
+old advice applies: raise both. For a direct `cordial-run` launch where the
+automatic answer is not what you want:
 
 ```bash
 CORDIAL_MONITOR=1 CORDIAL_RESOLUTION=1920x1200 CORDIAL_DPI_SCALE=1.75 \
 cordial-run --lib-dir /path/to/lib/x86_64 --apk /path/to/base.apk \
   --host-libc --game-activity --run 30
 ```
+
+Setting `CORDIAL_DPI_SCALE` moves the density and the density-independent screen
+size together. Raising density alone makes the interface larger, not sharper.
 
 Roblox's graphics-quality flags (`DebugFRMQualityLevelOverride` and the MSAA overrides) change nothing here, because they govern 3D scenes and the signed-out landing page is a 2D interface.

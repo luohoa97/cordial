@@ -143,8 +143,10 @@ env:
                                      while fullscreen (off by default)
   CORDIAL_RESOLUTION=<w>x<h>         render resolution (default 1280x720);
                                      CORDIAL_FULLSCREEN overrides it
-  CORDIAL_DPI_SCALE=<f>              UI density Roblox lays out against.
-                                     1.0 is a low-density phone; try 1.5-2
+  CORDIAL_DPI_SCALE=<f>              UI density Roblox lays out against, in
+                                     physical pixels per dp. Defaults to the
+                                     Wayland output scale (1.0 on X11); 1.0 is
+                                     a low-density phone.
   CORDIAL_PLATFORM_NAME=<name>       what Cordial answers when the engine asks
                                      which platform it is on. Defaults to the
                                      device profile's: Windows for pc-windows-11,
@@ -2518,7 +2520,11 @@ fn main() -> ExitCode {
                                     }
                         Ok(w) => {
                             let (width, height, _) = w.geometry();
-                            cordial_runtime::android::config::set_screen(width, height);
+                            let density = cordial_runtime::android::density_scale().max(0.1);
+                            cordial_runtime::android::config::set_screen(
+                                (width as f32 / density).round() as i32,
+                                (height as f32 / density).round() as i32,
+                            );
                             let apk_path = asset_folder(&opt.apk);
                             // Order taken from a Waydroid capture of the real
                             // Android client (docs/traces/render-bringup-sequence.log),
@@ -2962,6 +2968,71 @@ fn main() -> ExitCode {
                         println!("  uiMode: night={}", if dark { "yes" } else { "no" });
                         linker::game_activity::set_ui_mode_night(if dark { 1 } else { 0 });
 
+                        // **Settle the display before `initializeNativeCode`.**
+                        //
+                        // The engine builds `DisplayMetrics` once, inside that
+                        // call, and never reads density again -- measured, see
+                        // docs/NEXT.md, "The engine reads its density exactly
+                        // once". The host window used to be opened after it, so
+                        // the engine saw the compiled 1280x720 and density 1.0
+                        // whatever display it was about to draw on. On a HiDPI
+                        // output that meant a 3840-wide surface described as a
+                        // 3840-wide low-density screen: correct pixels, but a
+                        // half-size interface.
+                        //
+                        // GTK can already name the monitor, and Sober opens a
+                        // HiDPI window for the same reason. The density and the
+                        // pixel size have to move together; raising either alone
+                        // is the experiment docs/NEXT.md records as wrecking the
+                        // layout. `apply_resize` corrects the surface to the
+                        // real window later; density is the part that cannot
+                        // wait that long.
+                        if cordial_runtime::android::backend()
+                            == cordial_runtime::android::Backend::Wayland
+                        {
+                            if let Some((logical_w, logical_h, surface_scale)) =
+                                cordial_shell::host_window::primary_monitor()
+                            {
+                                // The user's `CORDIAL_DPI_SCALE` is the density
+                                // override and wins; otherwise the output's own
+                                // scale is the right answer. They are separate
+                                // from the surface scale because overriding
+                                // density changes how large the interface is,
+                                // not how many pixels the engine draws.
+                                let density_scale = match std::env::var("CORDIAL_DPI_SCALE")
+                                    .ok()
+                                    .and_then(|v| v.trim().parse::<f32>().ok())
+                                {
+                                    Some(s) if s > 0.0 && s <= 8.0 => s,
+                                    // `PlatformParams::Create` reports an
+                                    // unusable value and uses 1.0; the dp size
+                                    // is computed from the same answer.
+                                    Some(_) => 1.0,
+                                    None => surface_scale as f32,
+                                };
+                                if std::env::var_os("CORDIAL_DPI_SCALE").is_none() {
+                                    std::env::set_var(
+                                        "CORDIAL_DPI_SCALE",
+                                        density_scale.to_string(),
+                                    );
+                                }
+                                linker::game_activity::set_display_scale(density_scale);
+                                let physical_w = logical_w.saturating_mul(surface_scale);
+                                let physical_h = logical_h.saturating_mul(surface_scale);
+                                linker::game_activity::set_display_size(physical_w, physical_h);
+                                // `AConfiguration` and `DisplayMetrics` must
+                                // describe the same screen: physical pixels
+                                // divided by the density they are being told.
+                                let dp_w = (physical_w as f32 / density_scale).round() as i32;
+                                let dp_h = (physical_h as f32 / density_scale).round() as i32;
+                                cordial_runtime::android::config::set_screen(dp_w, dp_h);
+                                println!(
+                                    "  display: {physical_w}x{physical_h} physical, \
+                                     density {density_scale} ({dp_w}x{dp_h} dp)"
+                                );
+                            }
+                        }
+
                         // Without GameActivity nothing calls `bootstrapTheApp`
                         // back, so the settings are delivered here, on this
                         // thread, where `initializeNativeCode` would have
@@ -3001,8 +3072,16 @@ fn main() -> ExitCode {
                                     }
                                     Ok(w) => {
                                         let (width, height, format) = w.geometry();
-                                        cordial_runtime::android::config::set_screen(width, height);
-                                        println!("  window {width}x{height}");
+                                        let scale = cordial_runtime::android::display_scale().max(1);
+                                        let density =
+                                            cordial_runtime::android::density_scale().max(0.1);
+                                        let dp_w = (width as f32 / density).round() as i32;
+                                        let dp_h = (height as f32 / density).round() as i32;
+                                        cordial_runtime::android::config::set_screen(dp_w, dp_h);
+                                        println!(
+                                            "  window {width}x{height} physical \
+                                             ({dp_w}x{dp_h} dp, scale {scale}, density {density})"
+                                        );
 
                                         // Everything from here on calls into
                                         // the engine on the assumption it

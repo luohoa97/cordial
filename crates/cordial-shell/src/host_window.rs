@@ -126,6 +126,27 @@ fn fit_within(requested: (i32, i32), monitor: (i32, i32)) -> (i32, i32) {
     (requested.0.min(max_w), requested.1.min(max_h))
 }
 
+/// The primary monitor's logical size and scale, initialising GTK if needed.
+///
+/// This is the answer Android has at boot and the one the engine reads inside
+/// `initializeNativeCode`: the display it is drawing on, before any window
+/// exists. `open` still measures the real content rectangle afterwards; this
+/// only settles density and the initial screen description early enough for
+/// the one read that happens before the host window is created.
+pub fn primary_monitor() -> Option<(i32, i32, i32)> {
+    if !gtk::is_initialized() {
+        init_wayland().ok()?;
+    }
+    let display = gtk::gdk::Display::default()?;
+    let monitors = display.monitors();
+    let monitor = (0..monitors.n_items())
+        .filter_map(|i| monitors.item(i))
+        .filter_map(|obj| obj.downcast::<gtk::gdk::Monitor>().ok())
+        .next()?;
+    let geometry = monitor.geometry();
+    Some((geometry.width(), geometry.height(), monitor.scale_factor().max(1)))
+}
+
 /// The geometry of every monitor GDK currently lists.
 fn monitor_geometries() -> Vec<(i32, i32)> {
     let Some(display) = gtk::gdk::Display::default() else {
@@ -1135,6 +1156,19 @@ impl HostWindow {
 
     pub fn window(&self) -> &adw::Window {
         &self.window
+    }
+
+    /// Physical pixels per logical pixel for this toplevel.
+    ///
+    /// GTK reports one integer per monitor, not a fractional scale. The
+    /// engine's surface is sized in physical pixels -- Android's `SurfaceView`
+    /// always is -- while every coordinate GTK hands out ([`Self::content_rect`],
+    /// pointer events on GTK's own seat) is logical, so this is the conversion
+    /// between the two. Before it existed Cordial rendered the canvas at the
+    /// logical size and the compositor upscaled it on a HiDPI output, which is
+    /// the difference between a native image and a blurry one.
+    pub fn scale_factor(&self) -> i32 {
+        self.window.scale_factor().max(1)
     }
 
     pub fn header(&self) -> &adw::HeaderBar {

@@ -194,6 +194,13 @@ rather than changed here**, precisely because closing it responsibly means
 running the client at a new default and looking at it, which this session was
 asked not to do.
 
+**Resolved 2026-11-08 (PR #144).** Wayland now creates the canvas at the output's
+physical scale and settles `DisplayMetrics`, `AConfiguration` and the dp size from
+the same output scale before `initializeNativeCode`; a 2× display gets a 2×
+framebuffer at the same interface size, with no environment variables. The
+720p/`dpiScale` 1.0 default described above is now only what X11 and a client with
+no window scale still get.
+
 ## Summary for the maintainer
 
 | Item | State | Needs |

@@ -6090,6 +6090,18 @@ resizing issue" — worse in the everyday case and no better in the case it was
 for. `CORDIAL_DPI_SCALE` remains what it was, an override that changes
 `PlatformParams.dpiScale` only.
 
+**Superseded 2026-11-08, and the missing half was the surface.** That experiment
+raised density on a logical-size surface, so the interface grew by the factor
+and the pixels did not. Wayland now creates the canvas at the output scale
+(`wl_surface.set_buffer_scale`) and tells the engine the physical size, then
+settles `DisplayMetrics.density`, `DisplayMetrics` pixels and `AConfiguration`
+from the same output scale *before* `initializeNativeCode`. Measured on
+3840x2160 at scale 2: framebuffer 3840x2158, Vulkan swapchain 3840x2158,
+density 2.0, 1920x1080 dp, six-column layout unchanged; the Roblox-logo crop is
+pixel-identical to Sober's (PR #144). `CORDIAL_DPI_SCALE` is still the override,
+but it now moves density and the dp size together rather than
+`PlatformParams.dpiScale` alone.
+
 **The engine reads its density exactly once, and a resize does not make it read
 again.** Measured, not inferred: with a counter on every `DisplayMetrics`
 construction, one 46-second run printed
@@ -6110,8 +6122,9 @@ configuration change, which nothing here drives; whether the engine would honour
 one is untested.
 
 Consequence for the ordering, if anyone does revisit this: the density has to be
-settled *before* `initializeNativeCode`, which is earlier than the host window
-exists and therefore earlier than the display can be asked about itself.
+settled *before* `initializeNativeCode`. The host window still does not exist
+then, but GTK can already name the monitor, and that is where `load.rs` gets the
+scale now.
 
 Resizing is not currently a goal. Do not leave a partial or
 disabled-by-default mechanism for it in the tree.
