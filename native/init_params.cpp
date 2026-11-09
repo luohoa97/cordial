@@ -110,9 +110,27 @@ std::shared_ptr<String> S_pub(const char* v) { return S(v); }
 static int g_width = 1280;
 static int g_height = 720;
 
+/// Physical pixels per density-independent pixel: the output's integer scale
+/// factor. 1.0 on an ordinary 96 DPI desktop, 2.0 on a HiDPI output where the
+/// engine's surface is 3840 wide and Android is being told the screen is
+/// 1920 dp wide.
+///
+/// Kept here rather than read from the environment at each use because
+/// `DisplayMetrics` is built once, inside `initializeNativeCode`, and the
+/// launcher settles this before it. `CORDIAL_DPI_SCALE` still overrides
+/// `PlatformParams.dpiScale` on its own, because it predates this and is
+/// documented as the user's lever.
+static float g_scale = 1.0f;
+
 void set_display_size(int width, int height) {
     g_width = width;
     g_height = height;
+}
+
+void set_display_scale(float scale) {
+    if (scale >= 1.0f && scale <= 8.0f) {
+        g_scale = scale;
+    }
 }
 
 /// The display's physical size in millimetres, or zero for "nobody knows".
@@ -559,11 +577,17 @@ public:
         auto p = std::make_shared<DisplayMetrics>();
         p->widthPixels = width;
         p->heightPixels = height;
-        // 1.0 means "one density-independent pixel is one real pixel", which is
-        // what a desktop window wants: no scaling, no phone-sized controls.
-        p->density = 1.0f;
-        p->scaledDensity = 1.0f;
-        p->densityDpi = 160;
+        // Android's density is the number of physical pixels per
+        // density-independent pixel. On a HiDPI output the surface is already
+        // twice as many pixels wide, so density 2 makes the engine lay the
+        // same 1920 dp interface over 3840 pixels instead of laying out 3840
+        // dp of interface at one pixel each. The two have to move together:
+        // raising density without also raising `g_width` is what made the
+        // earlier density experiment wreck the layout.
+        p->density = g_scale;
+        p->scaledDensity = g_scale;
+        p->densityDpi = static_cast<jint>(160.0f * g_scale + 0.5f);
+        p->xdpi = p->ydpi = 96.0f * g_scale;
         to_jni(env, p);
         return p;
     }
@@ -707,12 +731,14 @@ public:
         auto p = std::make_shared<Configuration>();
         p->touchscreen =
             cordial::host_has_touchscreen() ? kTouchscreenFinger : kTouchscreenNoTouch;
-        // density is 1.0 at 160 dpi, so dp and px are the same number. Stated
-        // rather than multiplied by 1 so the relationship survives a future
-        // change to DisplayMetrics::densityDpi — if that moves, this must too.
-        p->screenWidthDp = width;
-        p->screenHeightDp = height;
-        p->smallestScreenWidthDp = width < height ? width : height;
+        // density is `g_scale` at 160 dpi, so dp and px differ by exactly that
+        // factor. The engine is given pixels everywhere else, so divide here
+        // rather than pretending a 4K surface is a 4K-wide phone.
+        p->screenWidthDp = static_cast<jint>(width / g_scale);
+        p->screenHeightDp = static_cast<jint>(height / g_scale);
+        p->smallestScreenWidthDp =
+            static_cast<jint>((width < height ? width : height) / g_scale);
+        p->densityDpi = static_cast<jint>(160.0f * g_scale + 0.5f);
         p->orientation = width >= height ? kOrientationLandscape : kOrientationPortrait;
         to_jni(env, p);
         return p;
@@ -1730,9 +1756,15 @@ public:
         // is why the app shell looks coarse on a desktop panel. Overridable
         // because the right value depends on the display, and nothing here can
         // measure the display's physical size reliably.
+        //
+        // The launcher sets this to the output's scale factor. It must move
+        // together with the surface size: the engine's window is physical
+        // pixels, so at a scale of 2 the same interface is laid out over twice
+        // the pixels rather than being drawn twice as large. Raising this
+        // alone is what made a past density experiment wreck the layout.
+        float scale = 1.0f;
         {
             const char* v = getenv("CORDIAL_DPI_SCALE");
-            float scale = 1.0f;
             if (v && *v) {
                 float parsed = strtof(v, nullptr);
                 if (parsed > 0.0f && parsed <= 8.0f) {
@@ -1747,9 +1779,11 @@ public:
         }
         // Physical size at roughly 96 DPI, which is what a desktop display is.
         // A phone's 400+ DPI here would make the engine scale its UI for a
-        // screen held at arm's length.
-        p->viewportWidthMm = static_cast<jint>(width * 25.4 / 96.0);
-        p->viewportHeightMm = static_cast<jint>(height * 25.4 / 96.0);
+        // screen held at arm's length. `width`/`height` are physical pixels
+        // now, so the physical density -- 96 DPI times the output scale -- is
+        // the divisor that keeps the millimetres this reports unchanged.
+        p->viewportWidthMm = static_cast<jint>(width * 25.4 / (96.0 * scale));
+        p->viewportHeightMm = static_cast<jint>(height * 25.4 / (96.0 * scale));
         to_jni(env, p);
         return p;
     }
@@ -2857,6 +2891,13 @@ extern "C" void cordial_set_display_size(int width, int height) {
     if (width > 0 && height > 0) {
         cordial::set_display_size(width, height);
     }
+}
+
+/// Physical pixels per density-independent pixel. Called before
+/// `initializeNativeCode`, which is the only time the engine reads the
+/// resulting `DisplayMetrics.density` (docs/NEXT.md).
+extern "C" void cordial_set_display_scale(float scale) {
+    cordial::set_display_scale(scale);
 }
 
 /// Zero or negative is accepted and means "unknown", unlike its neighbour

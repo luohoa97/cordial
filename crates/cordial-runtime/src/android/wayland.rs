@@ -538,6 +538,11 @@ const WL_COMPOSITOR_CREATE_SURFACE: u32 = 0;
 const WL_COMPOSITOR_CREATE_REGION: u32 = 1;
 const WL_POINTER_SET_CURSOR: u32 = 0;
 const WL_SURFACE_COMMIT: u32 = 6;
+/// `wl_surface.set_buffer_scale`. Needs a `wl_surface` at version 3 or newer,
+/// which is why `open` binds `wl_compositor` at 3 and creates the canvas at the
+/// same version. The engine's buffer is physical pixels; this number tells the
+/// compositor how many of them one surface-local unit is worth.
+const WL_SURFACE_SET_BUFFER_SCALE: u32 = 8;
 /// `wl_surface.set_opaque_region`. Sent by Cordial directly, not through GDK --
 /// see `set_engine_stacking`.
 const WL_SURFACE_SET_OPAQUE_REGION: u32 = 4;
@@ -1169,6 +1174,20 @@ pub struct WaylandWindow {
     conn_fd: c_int,
 
     buffers: Mutex<Geometry>,
+    /// Physical pixels per surface-local unit on the output this window is on.
+    ///
+    /// The engine's framebuffers are physical pixels (that is what Android's
+    /// `SurfaceView` reports, and what `geometry()` returns), while GTK's
+    /// allocations and `wl_pointer` coordinates are logical. This is the
+    /// conversion, and it is updated on a resize because a window can be moved
+    /// to an output with a different scale.
+    scale: AtomicI32,
+    /// Whether the canvas surface was created at version 3 or newer, and so
+    /// may be sent `wl_surface.set_buffer_scale`. A compositor old enough to
+    /// advertise only `wl_compositor` v1 leaves this false and the window
+    /// falls back to logical-size rendering rather than sending a request the
+    /// server would reject.
+    buffer_scale_supported: bool,
     /// Where the canvas currently sits inside the parent surface. Compared
     /// against the content widget's allocation every pump so a resize or a
     /// header-bar height change moves the subsurface exactly once, rather than
@@ -1535,6 +1554,12 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     }
     let (cx, cy, cw, ch) =
         host.content_rect().ok_or_else(|| "GTK's window has no content allocation".to_string())?;
+    // Physical pixels per logical unit of that allocation. The engine's
+    // framebuffer is the former; every coordinate this file gets from GTK or
+    // from `wl_pointer` is the latter. `1` on an old compositor below, where
+    // `set_buffer_scale` does not exist and logical-size rendering is the only
+    // thing the protocol can express.
+    let requested_scale = host.scale_factor().max(1);
 
     // ---- registry: walk every global, remembering the ones this backend
     // needs, then roundtrip so the walk is known to be complete before
@@ -1632,10 +1657,16 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     // what the compositor actually advertised. Binding a global GTK has also
     // bound is ordinary — a global may be bound any number of times, and the
     // resulting objects are independent.
-    let compositor = bind(compositor_name, 1, compositor_ver, unsafe { &*wl.compositor_interface }, "wl_compositor");
+    let compositor = bind(compositor_name, 3, compositor_ver, unsafe { &*wl.compositor_interface }, "wl_compositor");
     if compositor.is_null() {
         return Err("binding wl_compositor failed".into());
     }
+    // `wl_surface.set_buffer_scale` is a version-3 request. Bind and create at
+    // 3 when the compositor supports it; otherwise the canvas stays at version
+    // 1 and is rendered at the logical size, which is what this backend did
+    // before HiDPI support existed.
+    let surface_version = compositor_ver.clamp(1, 3);
+    let scale = if surface_version >= 3 { requested_scale } else { 1 };
     let subcompositor = bind(
         subcompositor_name,
         1,
@@ -1696,13 +1727,27 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
             compositor,
             WL_COMPOSITOR_CREATE_SURFACE,
             wl.surface_interface,
-            1,
+            surface_version,
             0,
             std::ptr::null_mut::<c_void>(),
         )
     };
     if surface.is_null() {
         return Err("wl_compositor.create_surface failed".into());
+    }
+    if scale > 1 {
+        // SAFETY: `surface` is the live proxy just created and `scale` is a
+        // positive integer; `set_buffer_scale` takes one int argument.
+        unsafe {
+            (wl.marshal_flags)(
+                surface,
+                WL_SURFACE_SET_BUFFER_SCALE,
+                std::ptr::null(),
+                1,
+                0,
+                scale,
+            );
+        }
     }
     let touch_stand_in = attach_touch_stand_in(&wl, &host, surface);
     let subsurface = unsafe {
@@ -1735,7 +1780,13 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     host.queue_commit();
     host.pump();
 
-    println!("[android] wayland: canvas {cw}x{ch} at ({cx},{cy}) as a subsurface of the libadwaita window");
+    println!(
+        "[android] wayland: canvas {}x{} at ({cx},{cy}) as a subsurface of the libadwaita window ({}x{} logical, scale {scale})",
+        cw * scale,
+        ch * scale,
+        cw,
+        ch
+    );
 
     // ---- wl_seat: pointer + keyboard. Cordial takes input from the seat
     // directly rather than through GTK, because what the engine wants is
@@ -1930,7 +1981,13 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         lock_requested_at: Mutex::new(None),
         lock_inactive_since: Mutex::new(None),
         conn_fd,
-        buffers: Mutex::new(Geometry { width: cw, height: ch, format: super::window::WINDOW_FORMAT_RGBA_8888 }),
+        buffers: Mutex::new(Geometry {
+            width: cw * scale,
+            height: ch * scale,
+            format: super::window::WINDOW_FORMAT_RGBA_8888,
+        }),
+        scale: AtomicI32::new(scale),
+        buffer_scale_supported: surface_version >= 3,
         placed_at: Mutex::new((cx, cy)),
         egl_window: Mutex::new(std::ptr::null_mut()),
         xkb: Mutex::new(None),
@@ -2087,7 +2144,7 @@ impl WaylandWindow {
         // size" and "it was called and returned without doing anything" looked
         // identical in a log. Those want opposite fixes.
         if instr_on() {
-            eprintln!("[instr] apply_resize(entry) requested {width}x{height}");
+            eprintln!("[instr] apply_resize(entry) requested {width}x{height} logical");
         }
         if width <= 0 || height <= 0 {
             if instr_on() {
@@ -2095,9 +2152,16 @@ impl WaylandWindow {
             }
             return;
         }
+        // GTK hands over logical units. The engine's surface is physical
+        // pixels, the same way Android's `SurfaceView` is, so this is where the
+        // two part company: the EGL window keeps the logical pair, and
+        // `config::set_screen` gets physical divided by the density the engine
+        // was started with.
+        let scale = self.current_scale();
+        let (pixel_width, pixel_height) = (width.saturating_mul(scale), height.saturating_mul(scale));
         let format = {
             let mut g = self.buffers.lock().unwrap_or_else(|e| e.into_inner());
-            if g.width == width && g.height == height {
+            if g.width == pixel_width && g.height == pixel_height {
                 if instr_on() {
                     eprintln!(
                         "[instr] apply_resize(early-return) already {}x{}; geometry() stays stale",
@@ -2108,12 +2172,12 @@ impl WaylandWindow {
             }
             if instr_on() {
                 eprintln!(
-                    "[instr] apply_resize(accept) {}x{} -> {width}x{height}",
+                    "[instr] apply_resize(accept) {}x{} -> {pixel_width}x{pixel_height} (scale {scale})",
                     g.width, g.height
                 );
             }
-            g.width = width;
-            g.height = height;
+            g.width = pixel_width;
+            g.height = pixel_height;
             g.format
         };
         // `config::set_screen` is otherwise only called once, right after the
@@ -2125,25 +2189,41 @@ impl WaylandWindow {
         // fix. Deliberately before the EGL resize, matching `load.rs`'s own
         // ordering of "tell the engine what the screen is" before "hand it
         // the surface".
-        super::config::set_screen(width, height);
+        //
+        // Density-independent pixels, so the physical pair divided by the
+        // density the engine was started with -- which is the logical pair
+        // unless the user overrode `CORDIAL_DPI_SCALE`.
+        let density = super::density_scale().max(0.1);
+        super::config::set_screen(
+            (pixel_width as f32 / density).round() as i32,
+            (pixel_height as f32 / density).round() as i32,
+        );
         let egl_win = *self.egl_window.lock().unwrap_or_else(|e| e.into_inner());
         if let (Some(egl), false) = (&self.egl, egl_win.is_null()) {
             // SAFETY: `egl_win` was created by `wl_egl_window_create` and is
             // still live (never destroyed for the process's lifetime, same
             // as everything else in this single-window runtime).
+            //
+            // Logical units: `wl_egl_window` counts surface-local pixels and
+            // Mesa multiplies by the surface's buffer scale itself.
             unsafe { (egl.resize)(egl_win, width, height, 0, 0) };
         }
         let handle = self.active_handle.load(Ordering::Relaxed);
         if instr_on() {
-            eprintln!("[instr] surface_resized -> {width}x{height}");
+            eprintln!("[instr] surface_resized -> {pixel_width}x{pixel_height}");
         }
         if handle != 0 {
-            if let Err(e) = cordial_linker_sys::game_activity::surface_resized(handle, format, width, height) {
+            if let Err(e) = cordial_linker_sys::game_activity::surface_resized(
+                handle,
+                format,
+                pixel_width,
+                pixel_height,
+            ) {
                 super::trace(format_args!("wayland: surface resize failed: {e}"));
             }
         }
         if instr_on() {
-            eprintln!("[instr] surface_resized {width}x{height} returned");
+            eprintln!("[instr] surface_resized {pixel_width}x{pixel_height} returned");
         }
         // Nudge the engine to repaint *now*, because a resized surface it has
         // not drawn into yet is visible, not merely stale.
@@ -2424,8 +2504,16 @@ impl WaylandWindow {
         }
         *cache = Some((generation, revision, text.to_owned(), caret, info));
         drop(cache);
+        // Engine pixels to GTK's logical units, once. Everything below --
+        // the widget rectangle, the Pango size, the rectangle the devcontrol
+        // reports -- is in the latter. The engine's `surface_resized` is
+        // physical, so `info` arrives in physical pixels; see
+        // [`WaylandWindow::current_scale`].
+        let scale = self.current_scale().max(1) as f32;
+        let (logical_x, logical_y) = (info.x / scale, info.y / scale);
+        let (logical_w, logical_h) = (info.width / scale, info.height / scale);
         *LAST_EDITOR_RECT.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some((info.x, info.y, info.width, info.height, placed.token()));
+            Some((logical_x, logical_y, logical_w, logical_h, placed.token()));
         // **Which font this box is in, if the engine named one.**
         //
         // A synthesised spec is skipped rather than read: `fallback_textbox_info`
@@ -2507,15 +2595,15 @@ impl WaylandWindow {
         let font_size = match face.as_ref() {
             Some((_, f)) => info.font_size * f.from_rbx_font_ratio,
             None => info.font_size,
-        };
+        } / scale;
 
         self.host.0.set_text_overlay(Some(cordial_shell::host_window::TextOverlay {
             text,
             caret_chars: caret,
-            x: info.x,
-            y: info.y,
-            width: info.width,
-            height: info.height,
+            x: logical_x,
+            y: logical_y,
+            width: logical_w,
+            height: logical_h,
             font_size,
             text_color: info.text_color as u32,
             font_family: face.as_ref().map(|(_, f)| f.family.as_str()),
@@ -2560,14 +2648,18 @@ impl WaylandWindow {
             // plausible default is still legible and still beats invisible.
             None => (1280.0, 720.0),
         };
-        let width = (w * 0.6).max(240.0);
-        let height = 44.0;
+        // `content_rect` is logical; `RawTextBoxInfo` is in engine pixels, the
+        // same units as `nativeGetTextBoxInfo` answers in.
+        let scale = self.current_scale().max(1) as f32;
+        let (w, h) = (w * scale, h * scale);
+        let width = (w * 0.6).max(240.0 * scale);
+        let height = 44.0 * scale;
         cordial_linker_sys::game_activity::RawTextBoxInfo {
             x: (w - width) / 2.0,
             y: (h * 0.72).min(h - height - 8.0).max(0.0),
             width,
             height,
-            font_size: 18.0,
+            font_size: 18.0 * scale,
             // White, which is legible against the engine's own dark chrome and
             // against most places a text box appears. The real spec carries the
             // box's colour and is preferred whenever it exists.
@@ -3252,6 +3344,41 @@ impl WaylandWindow {
         (g.width, g.height, g.format)
     }
 
+    /// Physical pixels per surface-local unit on this window's output.
+    pub fn scale_factor(&self) -> i32 {
+        self.current_scale()
+    }
+
+    /// Physical pixels per surface-local unit, kept current across a move to an
+    /// output with a different scale.
+    ///
+    /// `1` when the compositor only speaks `wl_surface` v1 and cannot be told
+    /// about a buffer scale at all. The canvas was created at that version in
+    /// that case, so it renders at the logical size -- the pre-HiDPI behaviour
+    /// rather than a protocol error.
+    fn current_scale(&self) -> i32 {
+        if !self.buffer_scale_supported {
+            return 1;
+        }
+        let scale = self.host.0.scale_factor().max(1);
+        let previous = self.scale.swap(scale, Ordering::Relaxed);
+        if previous != scale {
+            // SAFETY: `surface` is the canvas proxy, live for the process's
+            // lifetime, and `set_buffer_scale` takes one positive int.
+            unsafe {
+                (self.wl.marshal_flags)(
+                    self.surface,
+                    WL_SURFACE_SET_BUFFER_SCALE,
+                    std::ptr::null(),
+                    1,
+                    0,
+                    scale,
+                );
+            }
+        }
+        scale
+    }
+
     /// The `adw::Window` `HostWindowCell` wraps.
     ///
     /// Two callers were both blocked on this and neither invented a second
@@ -3296,6 +3423,11 @@ impl WaylandWindow {
         }
         let egl = self.egl.as_ref()?;
         let (w, h, _) = self.geometry();
+        // `wl_egl_window` counts surface-local units, and Mesa applies the
+        // surface's buffer scale when it allocates. Handing it physical pixels
+        // here would allocate scale-squared.
+        let scale = self.current_scale().max(1);
+        let (w, h) = (w / scale, h / scale);
         // SAFETY: `self.surface` is a live `wl_surface` proxy on this
         // connection; `wl_egl_window_create` is documented to accept it
         // directly.
@@ -3726,7 +3858,12 @@ unsafe extern "C" fn pointer_enter(
     // already canvas-local — no offset for the header bar has to be
     // subtracted anywhere, which is the main practical reason to let the
     // compositor do this rather than translating window coordinates by hand.
-    w.dispatch_pointer_motion(fixed_to_f32(x), fixed_to_f32(y));
+    //
+    // Canvas-local is *logical*; the engine's surface is physical. Everything
+    // that reaches `super::input` goes through this multiplication for that
+    // reason — see [`WaylandWindow::current_scale`].
+    let scale = w.current_scale() as f32;
+    w.dispatch_pointer_motion(fixed_to_f32(x) * scale, fixed_to_f32(y) * scale);
 }
 unsafe extern "C" fn pointer_leave(_data: *mut c_void, _pointer: *mut c_void, _serial: u32, _surface: *mut c_void) {
     // A leave is not necessarily a lost gesture: the toplevel may be taking
@@ -3755,7 +3892,8 @@ unsafe extern "C" fn pointer_motion(_data: *mut c_void, _pointer: *mut c_void, _
         if dialog_in_front(&w) {
             return;
         }
-        w.dispatch_pointer_motion(fixed_to_f32(x), fixed_to_f32(y));
+        let scale = w.current_scale() as f32;
+        w.dispatch_pointer_motion(fixed_to_f32(x) * scale, fixed_to_f32(y) * scale);
     }
 }
 unsafe extern "C" fn pointer_button(
@@ -4001,11 +4139,12 @@ unsafe extern "C" fn touch_down(
         );
     }
     let (cw, ch, _) = w.geometry();
+    let scale = w.current_scale() as f32;
     super::input::touch_down(
         w.active_handle.load(Ordering::Relaxed),
         id as i64,
-        fixed_to_f32(x),
-        fixed_to_f32(y),
+        fixed_to_f32(x) * scale,
+        fixed_to_f32(y) * scale,
         (cw, ch),
         w.now_ms(),
     );
@@ -4042,11 +4181,12 @@ unsafe extern "C" fn touch_motion(
         );
     }
     let (cw, ch, _) = w.geometry();
+    let scale = w.current_scale() as f32;
     super::input::touch_motion(
         w.active_handle.load(Ordering::Relaxed),
         id as i64,
-        fixed_to_f32(x),
-        fixed_to_f32(y),
+        fixed_to_f32(x) * scale,
+        fixed_to_f32(y) * scale,
         (cw, ch),
         w.now_ms(),
     );
@@ -4743,7 +4883,8 @@ unsafe extern "C" fn relative_pointer_motion(
         // `shell_config.rs` for that reasoning in full; a `NeverCursor`
         // variant is a small addition if it is ever needed, not a redesign.
         let (dx, dy) = if pointer_acceleration() { (_dx, _dy) } else { (dx_unaccel, dy_unaccel) };
-        w.dispatch_relative_motion(fixed_to_f32(dx), fixed_to_f32(dy));
+        let scale = w.current_scale() as f32;
+        w.dispatch_relative_motion(fixed_to_f32(dx) * scale, fixed_to_f32(dy) * scale);
         return;
     }
     // Unlocked: the cursor over Roblox's own interface, which is what the
@@ -5333,7 +5474,12 @@ fn constrain_toplevel() -> bool {
             self.set_pointer_position(cx, cy);
         }
         let offset = *self.placed_at.lock().unwrap_or_else(|e| e.into_inner());
-        let (x, y) = release_hint(toplevel, self.pointer_position(), offset);
+        // `set_cursor_position_hint` is surface-local to the surface the lock
+        // is on, which is GTK's toplevel (logical) or the canvas (also
+        // surface-local). The stored pointer is in engine pixels.
+        let scale = self.current_scale().max(1) as f32;
+        let (px, py) = self.pointer_position();
+        let (x, y) = release_hint(toplevel, (px / scale, py / scale), offset);
         // SAFETY: `*slot` is the live locked-pointer proxy; the two calls match
         // `set_cursor_position_hint`'s "ff" and `destroy`'s empty signature,
         // the latter sent with the destroy flag its `type="destructor"`
@@ -6493,6 +6639,10 @@ impl WaylandWindow {
     fn send_cursor_rectangle(&self) {
         let (x, y) = self.pointer_position();
         let (ox, oy) = *self.placed_at.lock().unwrap_or_else(|e| e.into_inner());
+        // `pointer_position` is in engine pixels; the text-input object lives
+        // on GTK's toplevel and takes surface-local logical units there.
+        let scale = self.current_scale().max(1) as f32;
+        let (x, y) = (x / scale, y / scale);
         unsafe {
             (self.wl.marshal_flags)(
                 self.text_input,

@@ -632,6 +632,7 @@ pub mod game_activity {
             n: usize,
         ) -> c_int;
         fn cordial_set_display_size(width: c_int, height: c_int);
+        fn cordial_set_display_scale(scale: f32);
         fn cordial_set_display_physical_mm(width_mm: c_int, height_mm: c_int);
         fn cordial_set_ui_mode_night(night: c_int);
         fn cordial_get_fint(
@@ -1900,6 +1901,15 @@ pub mod game_activity {
         // SAFETY: writes two ints behind a mutex-free but single-threaded
         // startup path, the same one `set_init_params` already runs on.
         unsafe { cordial_set_display_size(width as c_int, height as c_int) }
+    }
+
+    /// Physical pixels per density-independent pixel, for
+    /// `DisplayMetrics.density`. Must be set before `initializeNativeCode`,
+    /// which is the one time the engine reads it.
+    pub fn set_display_scale(scale: f32) {
+        // SAFETY: writes one float on the same single-threaded startup path as
+        // `set_display_size`.
+        unsafe { cordial_set_display_scale(scale) }
     }
 
     /// The display's physical size in millimetres, for

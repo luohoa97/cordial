@@ -197,6 +197,45 @@ pub fn canvas_size() -> (i32, i32) {
     g.map(|(w, h, _)| (w, h)).unwrap_or((0, 0))
 }
 
+/// Physical pixels per logical unit for the open window, or `1` when there is
+/// no window or the backend is X11 (whose windows are sized in logical units by
+/// Xwayland and upscaled by the compositor).
+///
+/// `geometry()` speaks physical pixels because that is what the engine's
+/// `SurfaceView` is. `AConfiguration`, GTK widget allocations and `wl_pointer`
+/// coordinates all speak logical units, so this is the conversion.
+pub fn display_scale() -> i32 {
+    match backend() {
+        Backend::Wayland => wayland::current().map_or(1, |w| w.scale_factor()).max(1),
+        Backend::X11 => 1,
+    }
+}
+
+/// The density the engine was told, as physical pixels per density-independent
+/// pixel: `CORDIAL_DPI_SCALE` when the user set one, otherwise the output
+/// scale the runtime settled before `initializeNativeCode`.
+///
+/// `AConfiguration` and `DisplayMetrics` are in dp, so every place that turns
+/// a pixel size into a screen size divides by this rather than by the surface
+/// scale. They are the same number unless somebody overrode density.
+pub fn density_scale() -> f32 {
+    fn valid(scale: f32) -> bool {
+        scale > 0.0 && scale <= 8.0
+    }
+    match std::env::var("CORDIAL_DPI_SCALE")
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+    {
+        // Mirrors `PlatformParams::Create`: an unusable value is reported there
+        // and treated as 1.0, so the dp size must not quietly use a different
+        // number.
+        Some(scale) if valid(scale) => scale,
+        Some(_) => 1.0,
+        None => display_scale() as f32,
+    }
+    .max(0.1)
+}
+
 /// The active backend's input connection descriptor, for the looper to watch
 /// alongside the engine's own fds. `None` before a window has been opened.
 pub fn connection_fd() -> Option<c_int> {
