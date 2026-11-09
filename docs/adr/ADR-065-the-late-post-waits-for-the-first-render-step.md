@@ -1,6 +1,6 @@
 # ADR-065: The late post waits for the engine's first render step
 
-**Status:** accepted
+**Status:** superseded by [ADR-066](ADR-066-the-late-post-waits-for-the-home-page-on-a-slow-network.md)
 **Date:** 2026-10-16
 **Related:** [ADR-001](ADR-001-in-process-hooking.md), [ADR-003](ADR-003-plugin-isolation.md)
 **Issue:** #92

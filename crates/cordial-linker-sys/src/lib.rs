@@ -2621,6 +2621,7 @@ pub mod game_activity {
         fn cordial_games_loaded() -> u32;
         fn cordial_experience_starts() -> u32;
         fn cordial_home_ready() -> u32;
+        fn cordial_home_interactive() -> u32;
         fn cordial_flags_failed() -> u32;
         fn cordial_last_place() -> i64;
         fn cordial_game_activity_window_focus(
@@ -2886,6 +2887,14 @@ pub mod game_activity {
     pub fn home_ready() -> u32 {
         // SAFETY: a plain atomic load on the C++ side.
         unsafe { cordial_home_ready() }
+    }
+
+    /// How many times the engine has reported `HOME_PAGE_INTERACTIVE` — later
+    /// than `home_ready`, and the point at which the home feed has been laid
+    /// out. The late post waits for this on a slow network.
+    pub fn home_interactive() -> u32 {
+        // SAFETY: a plain atomic load on the C++ side.
+        unsafe { cordial_home_interactive() }
     }
 
     /// The place id of the most recent load, or 0 if none has been reported.
