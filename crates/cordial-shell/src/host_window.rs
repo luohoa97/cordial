@@ -198,6 +198,9 @@ fn smallest_monitor() -> Option<(i32, i32)> {
 /// `cordial-run`. See [`APP_ID`]. `claim_webkit_application_id` is the other
 /// half of that, for WebKit rather than for the compositor.
 pub fn init_wayland() -> Result<(), String> {
+    // See `adopt_user_locale_keeping_c_numbers`: GTK would otherwise put the
+    // user's decimal separator back, with the engine already running.
+    gtk::disable_setlocale();
     if std::env::var("GDK_BACKEND").is_ok_and(|v| v != "wayland") {
         // SAFETY: `g_setenv` is not thread-safe against a concurrent
         // `getenv`, which is why the standard library marks its equivalent
@@ -213,6 +216,31 @@ pub fn init_wayland() -> Result<(), String> {
     adw::init().map_err(|e| format!("libadwaita would not initialise: {e}"))?;
     unmute_waylands_own_errors();
     Ok(())
+}
+
+/// Take the user's locale for everything except how numbers are written.
+///
+/// `libroblox.so` is built for bionic, whose locale is always C, and under
+/// `--host-libc` its number parsing and formatting resolve to glibc, which
+/// honours the process locale. `gtk_init` calls `setlocale(LC_ALL, "")`, so on
+/// a session with a decimal comma such as `es_ES` the engine's Home page laid
+/// its rows out too short and the game tiles overlapped (#122). Starting the
+/// same binary with `LC_NUMERIC=C` drew it correctly. Which of those calls the
+/// layout goes through is `INFERRED`; nothing here looked inside the engine.
+///
+/// Called once from `cordial-run`'s `main`, before the engine has a thread,
+/// because `setlocale` is not safe against one reading the locale. The GTK
+/// entry points disable their own `setlocale` for the same reason: they run
+/// when the window opens, and an `LC_NUMERIC=C` in the environment would not
+/// survive an `LC_ALL` there. Translations and `LC_CTYPE` stay the user's, so
+/// the editor and the web window are unaffected.
+pub fn adopt_user_locale_keeping_c_numbers() {
+    // SAFETY: both strings are NUL-terminated literals, and per the doc above
+    // this runs before any other thread exists.
+    unsafe {
+        libc::setlocale(libc::LC_ALL, c"".as_ptr());
+        libc::setlocale(libc::LC_NUMERIC, c"C".as_ptr());
+    }
 }
 
 /// Let libwayland's fatal messages reach the terminal again.
@@ -2543,6 +2571,19 @@ fn header_height_hint() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A decimal comma reaching the engine is what overlapped the Home tiles
+    /// (#122), and on a host with a C locale this passes either way, so it only
+    /// means something where the user's locale writes numbers differently.
+    #[test]
+    fn numbers_stay_c_whatever_the_users_locale_says() {
+        adopt_user_locale_keeping_c_numbers();
+        // SAFETY: a query, with a null locale name, of a category set just above.
+        let category = unsafe { std::ffi::CStr::from_ptr(libc::setlocale(libc::LC_NUMERIC, std::ptr::null())) };
+        assert_eq!(category.to_bytes(), b"C");
+        // SAFETY: a NUL-terminated literal, and a null end pointer is allowed.
+        assert_eq!(unsafe { libc::strtod(c"1.5".as_ptr(), std::ptr::null_mut()) }, 1.5);
+    }
 
     /// The header bar is what makes the two coordinate spaces differ, so the
     /// numbers here are a real layout: a 1280x720 surface whose content starts
