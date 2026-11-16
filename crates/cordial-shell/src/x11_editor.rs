@@ -213,6 +213,8 @@ pub fn init() -> Result<(), String> {
         }
     }
     gtk::gdk::set_allowed_backends("x11");
+    // The engine shares this process on X11 as well; see `host_locale`.
+    crate::host_locale::adopt();
     gtk::init().map_err(|e| format!("GTK would not initialise on X11: {e}"))?;
     let display = gtk::gdk::Display::default().ok_or("GTK has no default display")?;
     if display.type_().name() != "GdkX11Display" {

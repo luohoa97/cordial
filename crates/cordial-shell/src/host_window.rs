@@ -210,6 +210,9 @@ pub fn init_wayland() -> Result<(), String> {
     gtk::gdk::set_allowed_backends("wayland");
     glib::set_prgname(Some(APP_ID));
     claim_webkit_application_id();
+    // Before `adw::init`, which would otherwise put the engine's number
+    // parsing into the user's language; see `host_locale`.
+    crate::host_locale::adopt();
     adw::init().map_err(|e| format!("libadwaita would not initialise: {e}"))?;
     unmute_waylands_own_errors();
     Ok(())
