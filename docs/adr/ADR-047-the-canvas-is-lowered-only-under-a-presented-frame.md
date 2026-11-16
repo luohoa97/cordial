@@ -81,7 +81,8 @@ and reads the variable. The rule:
 | Situation | `GSK_RENDERER` |
 |---|---|
 | set by the user, non-empty | untouched, and the probe is never started |
-| a non-CPU Vulkan device exists | untouched (GTK renders through Vulkan) |
+| a device on NVIDIA's own driver (added 2026-11-17, see the last section) | `cairo` |
+| otherwise, a non-CPU Vulkan device exists | untouched (GTK renders through Vulkan) |
 | no loader, `vkCreateInstance` fails, no devices, or only a CPU renderer | `cairo` |
 | the probe timed out or crashed | untouched, and a line says so |
 
@@ -120,3 +121,40 @@ here, and was not tested against a compositor that withholds feedback. That
 cairo is needed when the only Vulkan device is a CPU renderer is a choice made
 on the brief and not measured: the GL conflict was only reproduced with the
 engine on GLES.
+
+## NVIDIA's own driver is cairo as well (2026-11-17)
+
+The opposite failure: GTK has a Vulkan renderer and it is what crashes. Four
+cores from the 0.34.1 Flatpak (RTX 3090 Ti, driver 620.70.06, COSMIC on
+Wayland, 2026-11-15 and 16) stop on the main thread at address zero, called
+from inside `libnvidia-eglcore`, called from `gdk_vulkan_context_begin_frame`
+at its `vkAcquireNextImageKHR` call (three) or from
+`gdk_vulkan_context_end_frame` (one). Three were at start, one 15 s after
+leaving a game an hour into a session. The engine's own threads in the driver
+were all parked in `pthread_cond_wait` or `poll`.
+
+So a device with vendor id `0x10DE` whose `driverName` is `NVIDIA`, or which
+does not name its driver, now gets `cairo` too, with its own log line and
+doctor line. Mesa's NVK on the same card names itself and is left alone.
+
+Measured on that machine, one binary, signed out, the window starting
+maximised and toggled in and out of fullscreen eight times per launch:
+
+| `GSK_RENDERER` | Launches | Died |
+|---|---|---|
+| `vulkan`, set by hand (the old default) | 30 | 2, both SIGSEGV at address zero under `libnvidia-glcore` and GTK's renderer |
+| unset, so cairo is chosen | 40 | 0 |
+
+Two in thirty against none in forty is weak on its own (Fisher's exact,
+p = 0.18). Counting every launch of the day, signed in or out, GTK on Vulkan
+died in 3 of 43 and cairo in 0 of 41 (p = 0.13). What carries the change is
+the mechanism: every core from both sources was in GTK's frame, and cairo is
+the one renderer that leaves GTK nothing to call in the driver.
+
+Presents over the same toggling were the same in both arms (about 1,650), so
+drawing the header bar on the CPU did not cost the game frames. Starting the
+window un-maximised, GTK on Vulkan died in 0 of 8, so the window's state
+matters; why is not known.
+
+INFERRED: that the fault is the driver's rather than GTK's, that other driver
+series crash the same way (only 620.70.06 was seen), and that NVK does not.
