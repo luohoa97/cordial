@@ -39,7 +39,14 @@ and are set by no packaging script, which is the same shape as
 
 ## What was decided not to do
 
-- **No renderer, window-system or GPU switch on NVIDIA's behalf.** Defaulting
+- **No renderer, window-system or GPU switch on NVIDIA's behalf** -- for the
+  engine. GTK's own renderer is the exception since 2026-11-17: on NVIDIA's
+  proprietary driver the window is drawn with cairo, because the client was
+  crashing inside the driver from GTK's Vulkan frame rather than the engine's
+  ([ADR-047](ADR-047-the-canvas-is-lowered-only-under-a-presented-frame.md)).
+  It is still decided before the engine picks a device, but nothing the
+  engine sees changes, and a wrong guess on a two-GPU laptop costs a title bar
+  drawn in software. Defaulting
   NVIDIA-on-Wayland to X11 (mocktail's choice) loses the embedded web windows,
   which the X11 backend cannot attach, reverses the primary backend of ADR-011
   on one forum report and one comment, and is decided before the device is known.

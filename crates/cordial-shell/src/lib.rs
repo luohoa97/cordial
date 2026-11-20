@@ -98,6 +98,7 @@ pub mod secrets;
 /// depends on this crate and has to read and write the same records.
 pub mod version;
 pub mod gtk_renderer;
+pub mod host_locale;
 pub mod vulkan_probe;
 pub mod window_state;
 pub mod webview_policy;

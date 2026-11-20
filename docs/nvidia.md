@@ -40,7 +40,13 @@ loaded, so a laptop that renders on its Intel or AMD chip is left alone
 - **Adds a hint to the crash page** when the game stops after any of the above,
   or after `RBXCRASH: OutOfMemory`, on an NVIDIA GPU.
 
-It does not switch renderer, window system or GPU for you.
+- **Draws its own window with GTK's software renderer (cairo)** on NVIDIA's
+  driver. GTK's Vulkan renderer was crashing the client inside the driver,
+  mostly at start and once on leaving a game. Only the title bar and the
+  text-box editor are drawn this way; the game still renders on the GPU. Set
+  `GSK_RENDERER` yourself to undo it. Why: [ADR-047](adr/ADR-047-the-canvas-is-lowered-only-under-a-presented-frame.md).
+
+It does not switch the game's renderer, window system or GPU for you.
 
 ## Problems and what to try
 

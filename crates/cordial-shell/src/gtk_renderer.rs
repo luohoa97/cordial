@@ -20,6 +20,16 @@
 //! reason. The question is whether a hardware Vulkan device exists, which is
 //! what [`crate::vulkan_probe`] already answers in a child process.
 //!
+//! **Why NVIDIA's own driver is cairo as well.** There the failure is the
+//! opposite one: GTK has a Vulkan renderer and it is the problem. Every core
+//! of a crashed client on driver 620.70.06 (2026-11-15 to 17: four from the
+//! 0.34.1 Flatpak, and each one a source build gave with GTK put back on
+//! Vulkan) stops on the main thread at address zero, called from inside the
+//! driver, called from GTK's frame (`gdk_vulkan_context_begin_frame` at its
+//! `vkAcquireNextImageKHR`, or `_end_frame`), not the engine's. Cairo takes GTK
+//! out of the driver altogether, which is the only one of GTK's renderers that
+//! does. What the driver trips over is not known; ADR-047 has the counts.
+//!
 //! **When it runs.** The probe starts in `cordial-run`'s `main`, concurrent
 //! with everything the client does before the engine asks for its window, and
 //! [`settle`] collects it there. On a healthy machine that is no added
@@ -53,14 +63,47 @@ pub enum Decision {
     /// GTK, and changing a renderer on no evidence is the wrong direction to
     /// be wrong in.
     KeepUnknown(String),
-    /// Set `GSK_RENDERER=cairo`; carries what the probe found.
+    /// Set `GSK_RENDERER=cairo` because GTK has no hardware Vulkan to render
+    /// with; carries what the probe found.
     Cairo(String),
+    /// Set `GSK_RENDERER=cairo` because GTK's Vulkan renderer would run on
+    /// NVIDIA's own driver beside the engine; carries the device.
+    CairoBesideNvidia(String),
 }
 
 impl Decision {
     pub fn is_cairo(&self) -> bool {
-        matches!(self, Decision::Cairo(_))
+        self.cairo().is_some()
     }
+
+    /// Why cairo was chosen and what leaving GTK alone would have cost, for
+    /// the client's log line and the doctor, which must not word it twice.
+    pub fn cairo(&self) -> Option<(&str, &'static str)> {
+        match self {
+            Decision::Cairo(why) => Some((
+                why,
+                "GTK's GL renderer stops presenting beside the engine's GLES, and a focused text box would have \
+                 no editor.",
+            )),
+            Decision::CairoBesideNvidia(why) => Some((
+                why,
+                "GTK's Vulkan renderer has crashed inside that driver while the engine draws through it too \
+                 (docs/nvidia.md).",
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// NVIDIA's own driver, as opposed to Mesa's NVK on the same card: NVK reports
+/// the same vendor id and brings Mesa's window-system code, which is not what
+/// the cores stop in. A driver that does not name itself is taken to be
+/// NVIDIA's, because the wrong guess that way costs a title bar drawn in
+/// software and the other way costs the client.
+fn nvidias_own_driver(d: &Device) -> bool {
+    crate::nvidia::is_nvidia(d.vendor_id)
+        && d.kind != Kind::Cpu
+        && d.driver_name.as_deref().is_none_or(|name| name.eq_ignore_ascii_case("NVIDIA"))
 }
 
 /// The decision, with both inputs passed in so it can be tested.
@@ -72,6 +115,16 @@ pub fn decide(user: Option<&str>, probed: &Result<Vec<Device>, Failure>) -> Deci
         return Decision::KeepUsers(v.to_string());
     }
     match probed {
+        // Any device, not the first: this is decided before GTK or the engine
+        // has picked one, and a two-GPU laptop that ends up on the other chip
+        // loses nothing by it that it would notice.
+        Ok(devices) if devices.iter().any(nvidias_own_driver) => {
+            let d = devices.iter().find(|d| nvidias_own_driver(d)).expect("just matched");
+            // The driver's own spelling where it gives one: the packed number
+            // loses the leading zero of 620.70.06.
+            let version = d.driver_info.clone().unwrap_or_else(|| d.driver_version_text());
+            Decision::CairoBesideNvidia(format!("{} is on NVIDIA's own driver ({version})", d.name))
+        }
         Ok(devices) if devices.iter().any(|d| d.kind != Kind::Cpu) => Decision::KeepHealthy,
         Ok(devices) => {
             let names = devices.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join(", ");
@@ -133,7 +186,8 @@ pub fn settle() -> Option<Decision> {
     let user = user_choice();
     let decision = decide(user.as_deref(), &probed);
     match &decision {
-        Decision::Cairo(why) => {
+        Decision::Cairo(_) | Decision::CairoBesideNvidia(_) => {
+            let (why, cost) = decision.cairo().expect("both arms are cairo");
             // SAFETY: `g_setenv` is not thread-safe against a concurrent
             // `getenv`, and the engine's threads are already running here --
             // the same compromise `init_wayland` makes for `GDK_BACKEND`, and
@@ -142,9 +196,8 @@ pub fn settle() -> Option<Decision> {
             // last moment before that.
             match unsafe { gtk4::glib::setenv(ENV, "cairo", true) } {
                 Ok(()) => println!(
-                    "[gtk] renderer: cairo, because {why} (probe wait {waited} ms); GTK's GL \
-                     renderer stops presenting beside the engine's GLES, and a focused text box \
-                     would have no editor. Set {ENV} yourself to choose another."
+                    "[gtk] renderer: cairo, because {why} (probe wait {waited} ms); {cost} Set {ENV} \
+                     yourself to choose another."
                 ),
                 Err(e) => eprintln!("[gtk] could not set {ENV}=cairo: {e}"),
             }
@@ -195,6 +248,54 @@ mod tests {
         assert_eq!(decide(None, &probed), Decision::KeepHealthy);
     }
 
+    /// What the probe printed on the machine the cores came from.
+    fn nvidia(driver_name: Option<&str>) -> Device {
+        Device {
+            vendor_id: 0x10de,
+            device_id: 0x2203,
+            name: "NVIDIA GeForce RTX 3090 Ti".into(),
+            driver_name: driver_name.map(str::to_string),
+            driver_info: driver_name.map(|_| "620.70.06".to_string()),
+            driver_version: (620 << 22) | (70 << 14) | (6 << 6),
+            ..device(Kind::Discrete, "")
+        }
+    }
+
+    #[test]
+    fn nvidias_own_driver_is_cairo_and_says_which() {
+        // A driver that says nothing about itself still has a packed version.
+        for (name, version) in [(Some("NVIDIA"), "(620.70.06)"), (None, "(620.70.6)")] {
+            match decide(None, &Ok(vec![nvidia(name)])) {
+                Decision::CairoBesideNvidia(why) => {
+                    assert!(why.contains("RTX 3090 Ti") && why.contains(version), "{why}")
+                }
+                other => panic!("{name:?} -> {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn nvidias_own_driver_anywhere_in_the_list_is_cairo() {
+        let probed = Ok(vec![device(Kind::Integrated, "Intel"), nvidia(Some("NVIDIA")), device(Kind::Cpu, "llvmpipe")]);
+        assert!(matches!(decide(None, &probed), Decision::CairoBesideNvidia(_)));
+    }
+
+    #[test]
+    fn mesa_on_an_nvidia_card_is_left_alone() {
+        assert_eq!(decide(None, &Ok(vec![nvidia(Some("NVK"))])), Decision::KeepHealthy);
+    }
+
+    #[test]
+    fn the_two_reasons_for_cairo_do_not_share_a_sentence() {
+        let none = decide(None, &Err(Failure::NoLoader));
+        let nv = decide(None, &Ok(vec![nvidia(Some("NVIDIA"))]));
+        let (_, without_vulkan) = none.cairo().unwrap();
+        let (_, beside_nvidia) = nv.cairo().unwrap();
+        assert!(without_vulkan.contains("GLES") && !beside_nvidia.contains("GLES"));
+        assert!(beside_nvidia.contains("docs/nvidia.md"));
+        assert_eq!(decide(None, &Ok(vec![device(Kind::Discrete, "gpu")])).cairo(), None);
+    }
+
     #[test]
     fn only_a_cpu_renderer_is_cairo() {
         let probed = Ok(vec![device(Kind::Cpu, "llvmpipe (LLVM 19.1.7, 256 bits)")]);
@@ -225,6 +326,7 @@ mod tests {
         let outcomes: Vec<Result<Vec<Device>, Failure>> = vec![
             Ok(vec![device(Kind::Discrete, "gpu")]),
             Ok(vec![device(Kind::Cpu, "llvmpipe")]),
+            Ok(vec![nvidia(Some("NVIDIA"))]),
             Err(Failure::NoLoader),
             Err(Failure::Instance(-9)),
             Err(Failure::TimedOut),
