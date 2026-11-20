@@ -84,6 +84,21 @@ extern "C" fn image_get_timestamp(_image: *const c_void, _timestamp: *mut i64) -
 extern "C" fn hardware_buffer_acquire(_buffer: *mut c_void) {}
 extern "C" fn hardware_buffer_release(_buffer: *mut c_void) {}
 
+/// `AMediaCodec_createCodecByName` returns the codec or null; Cordial has no
+/// codec to give, so null is the honest answer. Roblox 2.748.0.1527 imports it
+/// and `dlopen` stopped on the name before any engine code ran. A generated stub
+/// would have returned null too, but unnamed and with nothing reported.
+extern "C" fn codec_create_by_name(name: *const std::ffi::c_char) -> *mut c_void {
+    if !name.is_null() && !CODEC_REPORTED.swap(true, Ordering::Relaxed) {
+        // SAFETY: the NDK contract is a NUL-terminated string.
+        let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy();
+        eprintln!("[media] AMediaCodec_createCodecByName({name}) returned null: Cordial has no media codec");
+    }
+    std::ptr::null_mut()
+}
+
+static CODEC_REPORTED: AtomicBool = AtomicBool::new(false);
+
 pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
     macro_rules! f {
         ($name:literal, $fn:expr) => {
@@ -100,6 +115,7 @@ pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
         f!("AImage_getTimestamp", image_get_timestamp),
         f!("AHardwareBuffer_acquire", hardware_buffer_acquire),
         f!("AHardwareBuffer_release", hardware_buffer_release),
+        f!("AMediaCodec_createCodecByName", codec_create_by_name),
     ]
 }
 
@@ -128,6 +144,7 @@ mod tests {
             "AImage_delete",
             "AImage_getHardwareBuffer",
             "AImage_getTimestamp",
+            "AMediaCodec_createCodecByName",
         ] {
             assert!(names.contains(&want), "{want} is not answered");
         }
