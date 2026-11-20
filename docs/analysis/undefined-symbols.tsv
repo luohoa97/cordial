@@ -494,6 +494,7 @@ libroblox.so	ALooper_prepare
 libroblox.so	ALooper_release
 libroblox.so	ALooper_removeFd
 libroblox.so	AMediaCodec_configure
+libroblox.so	AMediaCodec_createCodecByName
 libroblox.so	AMediaCodec_createDecoderByType
 libroblox.so	AMediaCodec_createEncoderByType
 libroblox.so	AMediaCodec_delete
