@@ -27,7 +27,7 @@ flowchart TB
     subgraph run["cordial-run — one process = one instance = one window"]
       direction TB
       linker["<b>Ported AOSP bionic linker</b><br/>maps libroblox.so, walks DT_NEEDED"]
-      symtab["<b>Symbol table</b><br/>13 virtual libraries, ~650 symbols<br/>≈99 cordial · ≈502 host glibc · 49 honest stubs"]
+      symtab["<b>Symbol table</b><br/>15 virtual libraries, ~717 symbols<br/>≈172 cordial · ≈495 host glibc · 50 honest stubs"]
       jnivm["<b>libjnivm</b><br/>stands in for Android's ART"]
       fw["<b>Framework layer</b><br/>GameActivity · ANativeWindow · AAssetManager<br/>input · clipboard · accessibility · OpenSL ES"]
       engine["<b>libroblox.so</b><br/>Roblox's official Android x86-64 engine<br/><i>you supply it — Cordial ships none</i>"]
@@ -61,7 +61,7 @@ flowchart TB
 | **Plugins** | TypeScript on Deno, with zero permissions and a `bwrap` sandbox |
 | **`cordial-run`** | One process, one instance, one window. Holds the engine and everything that answers it |
 | **Ported AOSP bionic linker** | Maps `libroblox.so` and walks `DT_NEEDED` |
-| **Symbol table** | 13 virtual libraries, about 650 symbols, answering every name the engine imports |
+| **Symbol table** | 15 virtual libraries, about 717 symbols, answering every name the engine imports |
 | **libjnivm** | Stands in for Android's ART |
 | **Framework layer** | GameActivity, ANativeWindow, AAssetManager, input, clipboard, accessibility, OpenSL ES |
 | **`libroblox.so`** | Roblox's official Android x86-64 engine. You supply it; Cordial ships none |
@@ -100,8 +100,11 @@ setting and the per-profile VPN gate is a launch gate rather than a tunnel
 ## How the engine is answered
 
 Every name the engine imports resolves one of three ways. The split is printed at
-startup (about 99 Cordial, 502 host glibc, 49 stubs), so it can be checked
-rather than assumed.
+startup (172 Cordial, 495 host glibc, 50 stubs against Roblox 2.748.0.1527), so it
+can be checked rather than assumed. It moves with the build and with what the host
+offers: AAudio's 25 entries are registered only when it is the selected audio
+backend, and Vulkan's two only when the host has a `libvulkan.so.1` to borrow
+`vkGetInstanceProcAddr` from.
 
 | Route | Meaning |
 |---|---|
