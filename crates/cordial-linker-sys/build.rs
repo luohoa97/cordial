@@ -32,8 +32,22 @@ fn main() {
         &["0005-parse-relr-dynamic-tags", "0006-link-guest-arch-objects"],
     );
 
+    // Fedora 44's kernel headers use `__u128` in asm/sigcontext.h on aarch64,
+    // and bionic's older `linux/types.h` shadows the host's and does not
+    // define it, so linker.cpp stopped on "unknown type name '__u128'" and the
+    // aarch64 .rpm failed. Ubuntu's older headers do not name it, so the type
+    // is supplied only where the host's own header asks for it.
+    let host_wants_u128 = cfg!(target_arch = "aarch64")
+        && ["/usr/include/asm/sigcontext.h", "/usr/include/aarch64-linux-gnu/asm/sigcontext.h"]
+            .iter()
+            .any(|f| std::fs::read_to_string(f).map_or(false, |t| t.contains("__u128")));
+
     // AOSP bionic does not build with GCC; see docs/base-evaluation.md §2.1.
-    let dst = cmake::Config::new(&native)
+    let mut config = cmake::Config::new(&native);
+    if host_wants_u128 {
+        config.cflag("-D__u128=__uint128_t").cxxflag("-D__u128=__uint128_t");
+    }
+    let dst = config
         .define("CMAKE_C_COMPILER", "clang")
         .define("CMAKE_CXX_COMPILER", "clang++")
         .define("CMAKE_BUILD_TYPE", "Release")
